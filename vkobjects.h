@@ -29,6 +29,8 @@ struct VulkanContext {
     VkQueue presentationQueue;
     VkSwapchainKHR swapchain;
     VkFormat colorFormat;
+    std::vector<VkImage> swapchainImages;
+    std::vector<VkImageView> swapchainImageViews;
 };
 
 void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& outExtensions) {
@@ -410,7 +412,7 @@ T clamp(T value, T min, T max) {
 
 VkExtent2D getSwapImageSize(VulkanContext & context, const VkSurfaceCapabilitiesKHR& capabilities) {
     // Default size = window size
-    VkExtent2D size = { context.windowWidth, context.windowHeight };
+    VkExtent2D size = { (uint32_t)context.windowWidth, (uint32_t)context.windowHeight };
 
     // This happens when the window scales based on the size of an image
     if (capabilities.currentExtent.width == 0xFFFFFFF) {
@@ -575,6 +577,41 @@ void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDe
     }
 }
 
+void getSwapChainImageHandles(VkDevice device, VkSwapchainKHR chain, std::vector<VkImage>& outImageHandles) {
+    unsigned int imageCount = 0;
+    if (VK_SUCCESS != vkGetSwapchainImagesKHR(device, chain, &imageCount, nullptr)) {
+        throw std::runtime_error("unable to get number of images in swap chain");
+    }
+
+    outImageHandles.clear();
+    outImageHandles.resize(imageCount);
+    if (VK_SUCCESS != vkGetSwapchainImagesKHR(device, chain, &imageCount, outImageHandles.data())) {
+        throw std::runtime_error("unable to get image handles from swap chain");
+    }
+}
+
+void makeChainImageViews(VkDevice device, VkSwapchainKHR swapChain, VkFormat colorFormat, std::vector<VkImage> & images, std::vector<VkImageView> & imageViews) {
+    imageViews.resize(images.size());
+    for (size_t i=0; i < images.size(); i++) {
+        VkImageViewCreateInfo viewInfo = {};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = images[i];  // The image from the swap chain
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = colorFormat;  // Format of the swap chain images
+
+        // Subresource range describes which parts of the image are accessible
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;  // Color attachment
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+
+        if (vkCreateImageView(device, &viewInfo, nullptr, &imageViews[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create image views!");
+        }
+    }
+}
+
 void initVulkan(VulkanContext & context, SDL_Window * window) {
     if (context.initialized) {
         throw std::runtime_error("Vulkan context already initialized");
@@ -623,6 +660,10 @@ void initVulkan(VulkanContext & context, SDL_Window * window) {
     // swap chain with image handles and views
     context.swapchain = VK_NULL_HANDLE; // start null as this function will also recreate an old swapchain
     createSwapChain(context, context.presentationSurface, context.physicalDevice, context.device, context.swapchain);
+
+    getSwapChainImageHandles(context.device, context.swapchain, context.swapchainImages);
+
+    makeChainImageViews(context.device, context.swapchain, context.colorFormat, context.swapchainImages, context.swapchainImageViews);
 }
 
 void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator) {
@@ -633,6 +674,9 @@ void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT
 }
 
 void cleanupVulkan(VulkanContext & context) {
+    for (VkImageView view : context.swapchainImageViews) {
+        vkDestroyImageView(context.device, view, nullptr);
+    }
     vkDestroySwapchainKHR(context.device, context.swapchain, nullptr);
     vkDestroySurfaceKHR(context.instance, context.presentationSurface, nullptr);
     vkDestroyDevice(context.device, nullptr);

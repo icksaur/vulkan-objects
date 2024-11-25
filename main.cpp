@@ -429,19 +429,6 @@ std::tuple<VkImage, VkDeviceMemory, VkImageView> createImageFromTGAFile(const ch
     return std::make_tuple(image, memory, imageView);
 }
 
-void getSwapChainImageHandles(VkDevice device, VkSwapchainKHR chain, std::vector<VkImage>& outImageHandles) {
-    unsigned int imageCount = 0;
-    if (VK_SUCCESS != vkGetSwapchainImagesKHR(device, chain, &imageCount, nullptr)) {
-        throw std::runtime_error("unable to get number of images in swap chain");
-    }
-
-    outImageHandles.clear();
-    outImageHandles.resize(imageCount);
-    if (VK_SUCCESS != vkGetSwapchainImagesKHR(device, chain, &imageCount, outImageHandles.data())) {
-        throw std::runtime_error("unable to get image handles from swap chain");
-    }
-}
-
 std::tuple<VkImageView, VkImage, VkDeviceMemory> createDepthBuffer(VkPhysicalDevice gpu, VkDevice device, VkCommandPool commandPool, VkQueue graphicsQueue) {
     VkFormatProperties props;
     vkGetPhysicalDeviceFormatProperties(gpu, depthFormat, &props);
@@ -499,28 +486,6 @@ std::tuple<VkImageView, VkImage, VkDeviceMemory> createDepthBuffer(VkPhysicalDev
     transitionImageLayout(device, commandPool, graphicsQueue, image, depthFormat, oneMipLevel, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
     return std::make_tuple(imageView, image, memory);
-}
-
-void makeChainImageViews(VkDevice device, VkSwapchainKHR swapChain, std::vector<VkImage> & images, std::vector<VkImageView> & imageViews) {
-    imageViews.resize(images.size());
-    for (size_t i=0; i < images.size(); i++) {
-        VkImageViewCreateInfo viewInfo = {};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = images[i];  // The image from the swap chain
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = pipelineInfo.colorFormat;  // Format of the swap chain images
-
-        // Subresource range describes which parts of the image are accessible
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;  // Color attachment
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
-
-        if (vkCreateImageView(device, &viewInfo, nullptr, &imageViews[i]) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create image views!");
-        }
-    }
 }
 
 VkSampler createSampler(VkDevice device) {
@@ -1210,12 +1175,8 @@ int main(int argc, char *argv[]) {
     VkSurfaceKHR & presentationSurface = context.presentationSurface;
     VkQueue & presentationQueue = context.presentationQueue;
     VkSwapchainKHR & swapchain = context.swapchain;
-
-    std::vector<VkImage> chainImages;
-    getSwapChainImageHandles(device, swapchain, chainImages);
-
-    std::vector<VkImageView> chainImageViews(chainImages.size());
-    makeChainImageViews(device, swapchain, chainImages, chainImageViews);
+    std::vector<VkImage> & chainImages = context.swapchainImages;
+    std::vector<VkImageView> & chainImageViews = context.swapchainImageViews;
    
     // get the queue we want to submit the actual commands to
     VkQueue graphicsQueue;
@@ -1347,7 +1308,7 @@ int main(int argc, char *argv[]) {
             swapchain = VK_NULL_HANDLE;
             createSwapChain(context, presentationSurface, gpu, device, swapchain);
             getSwapChainImageHandles(device, swapchain, chainImages);
-            makeChainImageViews(device, swapchain, chainImages, chainImageViews);
+            makeChainImageViews(device, swapchain, context.colorFormat, chainImages, chainImageViews);
             createFramebuffers(device, renderPass, chainImageViews, presentFramebuffers, depthImageView);
         }
         SDL_Delay(100);
@@ -1396,9 +1357,6 @@ int main(int argc, char *argv[]) {
     vkDestroyRenderPass(device, renderPass, nullptr);
     for (VkFramebuffer framebuffer : presentFramebuffers) {
         vkDestroyFramebuffer(device, framebuffer, nullptr);
-    }
-    for (VkImageView view : chainImageViews) {
-        vkDestroyImageView(device, view, nullptr);
     }
     cleanupVulkan(context);
     SDL_Quit();
