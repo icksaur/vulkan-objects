@@ -1,0 +1,29 @@
+#version 450
+
+layout (local_size_x = 100, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 2) buffer VerticesSSBO {
+   float vertices[ ];
+};
+
+void writeVertex(float x, float y, float z, float u, float v, uint i) {
+    vertices[i] = x;
+    vertices[i+1] = y;
+    vertices[i+2] = z;
+    vertices[i+3] = u;
+    vertices[i+4] = v;
+}
+
+void main() 
+{
+    float z = float(gl_GlobalInvocationID.x) * 0.2;
+    uint offset = gl_GlobalInvocationID.x * 6 * 5;
+
+    // emit six vertices for a single quad
+    writeVertex(-0.5f, 0.5f, z, 0.0f, 0.0f, offset);
+    writeVertex(0.5f, 0.5f, z, 1.0f, 0.0f, offset+5);
+    writeVertex(-0.5f, -0.5f, z, 0.0f, 1.0f, offset+10);
+    writeVertex(-0.5f, -0.5f, z, 0.0f, 1.0f, offset+15);
+    writeVertex(0.5f, 0.5f, z, 1.0f, 0.0f, offset+20);
+    writeVertex(0.5f, -0.5f, z, 1.0f, 1.0f, offset+25);
+}
