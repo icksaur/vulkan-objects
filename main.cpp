@@ -45,13 +45,6 @@ T clamp(T value, T min, T max) {
     return (value < min) ? min : (value > max) ? max : value;
 }
 
-void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator) {
-    auto func = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT");
-    if (func != nullptr) {
-        func(instance, callback, pAllocator);
-    }
-}
-
 void getDeviceQueue(VkDevice device, int familyQueueIndex, VkQueue& outGraphicsQueue) {
     vkGetDeviceQueue(device, familyQueueIndex, 0, &outGraphicsQueue);
 }
@@ -1636,11 +1629,9 @@ int main(int argc, char *argv[]) {
         vkDestroyImageView(device, view, nullptr);
     }
     vkDestroySwapchainKHR(device, swapchain, nullptr);
-    vkDestroyDevice(device, nullptr);
-
-    destroyDebugReportCallbackEXT(instance, context.callback, nullptr);
     vkDestroySurfaceKHR(instance, presentationSurface, nullptr);
-    vkDestroyInstance(instance, nullptr);
+    
+    cleanupContext(context);
     SDL_Quit();
 
     return 1;

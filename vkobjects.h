@@ -366,3 +366,16 @@ void initVulkan(VulkanContext & context, SDL_Window * window) {
     // Create a logical device that interfaces with the physical device
     context.device = createLogicalDevice(context.physicalDevice, context.graphicsQueueIndex, foundLayers);
 }
+
+void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator) {
+    auto func = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT");
+    if (func != nullptr) {
+        func(instance, callback, pAllocator);
+    }
+}
+
+void cleanupContext(VulkanContext & context) {
+    vkDestroyDevice(context.device, nullptr);
+    destroyDebugReportCallbackEXT(context.instance, context.callback, nullptr);
+    vkDestroyInstance(context.instance, nullptr);
+}
