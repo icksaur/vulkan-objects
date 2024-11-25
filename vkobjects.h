@@ -9,6 +9,11 @@
 
 const char * appName = "VulkanExample";
 const char * engineName = "VulkanExampleEngine";
+VkPresentModeKHR preferredPresentationMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+VkImageUsageFlags desiredImageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+VkSurfaceTransformFlagBitsKHR desiredTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+VkFormat surfaceFormat = VK_FORMAT_B8G8R8A8_SRGB;
+VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 
 struct VulkanContext {
     bool initialized;
@@ -22,6 +27,8 @@ struct VulkanContext {
     VkDebugReportCallbackEXT callback;
     VkSurfaceKHR presentationSurface;
     VkQueue presentationQueue;
+    VkSwapchainKHR swapchain;
+    VkFormat colorFormat;
 };
 
 void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& outExtensions) {
@@ -307,6 +314,9 @@ VkDevice createLogicalDevice(VkPhysicalDevice& physicalDevice, unsigned int queu
     queueCreateInfo.pNext = NULL;
     queueCreateInfo.flags = 0;
 
+    VkPhysicalDeviceFeatures deviceFeatures = {};
+    deviceFeatures.samplerAnisotropy = VK_TRUE; // required for aniostropic filtering, the sampler must have anisotropy enabled too
+
     // Device creation information
     VkDeviceCreateInfo deviceCreateInfo;
     deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -319,6 +329,7 @@ VkDevice createLogicalDevice(VkPhysicalDevice& physicalDevice, unsigned int queu
     deviceCreateInfo.pNext = NULL;
     deviceCreateInfo.pEnabledFeatures = NULL;
     deviceCreateInfo.flags = 0;
+    deviceCreateInfo.pEnabledFeatures = &deviceFeatures;
 
     // Finally we're ready to create a new device
     VkDevice device;
@@ -356,6 +367,212 @@ VkQueue getPresentationQueue(VkPhysicalDevice gpu, VkDevice logicalDevice, uint 
     vkGetDeviceQueue(logicalDevice, graphicsQueueIndex, 0, &presentQueue);
 
     return presentQueue;
+}
+
+bool getPresentationMode(VkSurfaceKHR surface, VkPhysicalDevice device, VkPresentModeKHR& ioMode) {
+    uint32_t modeCount = 0;
+    if(vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &modeCount, NULL) != VK_SUCCESS) {
+        std::cout << "unable to query present mode count for physical device\n";
+        return false;
+    }
+
+    std::vector<VkPresentModeKHR> availableModes(modeCount);
+    if (vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &modeCount, availableModes.data()) != VK_SUCCESS) {
+        std::cout << "unable to query the various present modes for physical device\n";
+        return false;
+    }
+
+    for (auto& mode : availableModes) {
+        if (mode == ioMode) {
+            return true;
+        }
+    }
+    std::cout << "unable to obtain preferred display mode, fallback to FIFO\n";
+
+    std::cout << "available present modes: " << std::endl;
+    for (auto & mode : availableModes) {
+        std::cout << "    "  << mode << std::endl;
+    }
+
+    ioMode = VK_PRESENT_MODE_FIFO_KHR;
+    return true;
+}
+
+unsigned int getNumberOfSwapImages(const VkSurfaceCapabilitiesKHR& capabilities) {
+    unsigned int number = capabilities.minImageCount + 1;
+    return number > capabilities.maxImageCount ? capabilities.minImageCount : number;
+}
+
+template<typename T>
+T clamp(T value, T min, T max) {
+    return (value < min) ? min : (value > max) ? max : value;
+}
+
+VkExtent2D getSwapImageSize(VulkanContext & context, const VkSurfaceCapabilitiesKHR& capabilities) {
+    // Default size = window size
+    VkExtent2D size = { context.windowWidth, context.windowHeight };
+
+    // This happens when the window scales based on the size of an image
+    if (capabilities.currentExtent.width == 0xFFFFFFF) {
+        size.width  = clamp(size.width,  capabilities.minImageExtent.width,  capabilities.maxImageExtent.width);
+        size.height = clamp(size.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
+    } else {
+        size = capabilities.currentExtent;
+    }
+    return size;
+}
+
+bool getImageUsage(const VkSurfaceCapabilitiesKHR& capabilities, VkImageUsageFlags& foundUsages) {
+    const std::vector<VkImageUsageFlags> desiredUsages{desiredImageUsage};
+
+    foundUsages = desiredUsages[0];
+
+    for (const auto& usage : desiredUsages) {
+        VkImageUsageFlags image_usage = usage & capabilities.supportedUsageFlags;
+        if (image_usage != usage) {
+            std::cout << "unsupported image usage flag: " << usage << std::endl;
+            return false;
+        }
+
+        // Add bit if found as supported color
+        foundUsages = (foundUsages | usage);
+    }
+
+    return true;
+}
+
+VkSurfaceTransformFlagBitsKHR getSurfaceTransform(const VkSurfaceCapabilitiesKHR& capabilities) {
+    if (capabilities.supportedTransforms & desiredTransform) {
+        return desiredTransform;
+    }
+    std::cout << "unsupported surface transform: " << desiredTransform;
+    return capabilities.currentTransform;
+}
+
+bool getSurfaceFormat(VkPhysicalDevice device, VkSurfaceKHR surface, VkSurfaceFormatKHR& outFormat) {
+    unsigned int count(0);
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &count, nullptr) != VK_SUCCESS) {
+        std::cout << "unable to query number of supported surface formats";
+        return false;
+    }
+
+    std::vector<VkSurfaceFormatKHR> foundFormats(count);
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &count, foundFormats.data()) != VK_SUCCESS) {
+        std::cout << "unable to query all supported surface formats\n";
+        return false;
+    }
+
+    // This means there are no restrictions on the supported format.
+    // Preference would work
+    if (foundFormats.size() == 1 && foundFormats[0].format == VK_FORMAT_UNDEFINED) {
+        outFormat.format = surfaceFormat;
+        outFormat.colorSpace = colorSpace;
+        return true;
+    }
+
+    // Otherwise check if both are supported
+    for (const auto& outerFormat : foundFormats) {
+        // Format found
+        if (outerFormat.format == surfaceFormat) {
+            outFormat.format = outerFormat.format;
+            for (const auto& innerFormat : foundFormats) {
+                // Color space found
+                if (innerFormat.colorSpace == colorSpace) {
+                    outFormat.colorSpace = innerFormat.colorSpace;
+                    return true;
+                }
+            }
+
+            // No matching color space, pick first one
+            std::cout << "warning: no matching color space found, picking first available one\n!";
+            outFormat.colorSpace = foundFormats[0].colorSpace;
+            return true;
+        }
+    }
+
+    // No matching formats found
+    std::cout << "warning: no matching color format found, picking first available one\n";
+    outFormat = foundFormats[0];
+    return true;
+}
+
+void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, VkDevice device, VkSwapchainKHR& outSwapChain) {
+    vkDeviceWaitIdle(device);
+
+    // Get the surface capabilities
+    VkSurfaceCapabilitiesKHR surfaceCapabilities;
+    if(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &surfaceCapabilities) != VK_SUCCESS) {
+        throw std::runtime_error("failed to acquire surface capabilities");
+    }
+
+    // Get the image presentation mode (synced, immediate etc.)
+    VkPresentModeKHR presentation_mode = preferredPresentationMode;
+    if (!getPresentationMode(surface, physicalDevice, presentation_mode)) {
+        throw std::runtime_error("failed to get presentation mode");
+    }
+
+    // Get other swap chain related features
+    unsigned int swapImageCount = getNumberOfSwapImages(surfaceCapabilities);
+    std::cout << "swap chain image count: " << swapImageCount << std::endl;
+
+    // Size of the images
+    VkExtent2D swap_image_extent = getSwapImageSize(context, surfaceCapabilities);
+
+    if (swap_image_extent.width != context.windowWidth || swap_image_extent.height != context.windowHeight) {
+        throw std::runtime_error("unexpected swap image size");
+    }
+
+    // Get image usage (color etc.)
+    VkImageUsageFlags usageFlags;
+    if (!getImageUsage(surfaceCapabilities, usageFlags)) {
+        throw std::runtime_error("failed to get image usage flags");
+    }
+
+    // Get the transform, falls back on current transform when transform is not supported
+    VkSurfaceTransformFlagBitsKHR transform = getSurfaceTransform(surfaceCapabilities);
+
+    // Get swapchain image format
+    VkSurfaceFormatKHR imageFormat;
+    if (!getSurfaceFormat(physicalDevice, surface, imageFormat)) {
+        throw std::runtime_error("failed to get surface format");
+    }
+
+    context.colorFormat = imageFormat.format;
+
+    // Old swap chain
+    VkSwapchainKHR oldSwapChain = outSwapChain;
+
+    // Populate swapchain creation info
+    VkSwapchainCreateInfoKHR swapInfo;
+    swapInfo.pNext = nullptr;
+    swapInfo.flags = 0;
+    swapInfo.surface = surface;
+    swapInfo.minImageCount = swapImageCount;
+    swapInfo.imageFormat = imageFormat.format;
+    swapInfo.imageColorSpace = imageFormat.colorSpace;
+    swapInfo.imageExtent = swap_image_extent;
+    swapInfo.imageArrayLayers = 1;
+    swapInfo.imageUsage = usageFlags;
+    swapInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    swapInfo.queueFamilyIndexCount = 0;
+    swapInfo.pQueueFamilyIndices = nullptr;
+    swapInfo.preTransform = transform;
+    swapInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    swapInfo.presentMode = presentation_mode;
+    swapInfo.clipped = true;
+    swapInfo.oldSwapchain = NULL;
+    swapInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+
+    // Create a new one
+    if (VK_SUCCESS != vkCreateSwapchainKHR(device, &swapInfo, nullptr, &outSwapChain)) {
+        throw std::runtime_error("unable to create swap chain");
+    }
+
+    // Destroy old swap chain
+    if (oldSwapChain != VK_NULL_HANDLE) {
+        vkDestroySwapchainKHR(device, oldSwapChain, nullptr);
+        oldSwapChain = VK_NULL_HANDLE;
+    }
 }
 
 void initVulkan(VulkanContext & context, SDL_Window * window) {
@@ -402,6 +619,10 @@ void initVulkan(VulkanContext & context, SDL_Window * window) {
     context.presentationSurface = createSurface(window, context.instance, context.physicalDevice, context.graphicsQueueIndex);
 
     context.presentationQueue = getPresentationQueue(context.physicalDevice, context.device, context.graphicsQueueIndex, context.presentationSurface);
+
+    // swap chain with image handles and views
+    context.swapchain = VK_NULL_HANDLE; // start null as this function will also recreate an old swapchain
+    createSwapChain(context, context.presentationSurface, context.physicalDevice, context.device, context.swapchain);
 }
 
 void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator) {
@@ -412,6 +633,7 @@ void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT
 }
 
 void cleanupVulkan(VulkanContext & context) {
+    vkDestroySwapchainKHR(context.device, context.swapchain, nullptr);
     vkDestroySurfaceKHR(context.instance, context.presentationSurface, nullptr);
     vkDestroyDevice(context.device, nullptr);
     destroyDebugReportCallbackEXT(context.instance, context.callback, nullptr);

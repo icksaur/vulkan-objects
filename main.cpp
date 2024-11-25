@@ -18,11 +18,6 @@
 // Global Settings
 int windowWidth = 1280;
 int windowHeight = 720;
-VkPresentModeKHR preferredPresentationMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
-VkSurfaceTransformFlagBitsKHR desiredTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-VkFormat surfaceFormat = VK_FORMAT_B8G8R8A8_SRGB;
-VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-VkImageUsageFlags desiredImageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 VkFormat depthFormat = VK_FORMAT_D24_UNORM_S8_UINT; // some options are VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT
 
 #define COMPUTE_VERTICES // comment out to try CPU uploaded vertex buffer
@@ -40,42 +35,8 @@ std::vector<char> readFileBytes(std::istream & file) {
         std::istreambuf_iterator<char>());
 }
 
-template<typename T>
-T clamp(T value, T min, T max) {
-    return (value < min) ? min : (value > max) ? max : value;
-}
-
 void getDeviceQueue(VkDevice device, int familyQueueIndex, VkQueue& outGraphicsQueue) {
     vkGetDeviceQueue(device, familyQueueIndex, 0, &outGraphicsQueue);
-}
-
-bool getPresentationMode(VkSurfaceKHR surface, VkPhysicalDevice device, VkPresentModeKHR& ioMode) {
-    uint32_t modeCount = 0;
-    if(vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &modeCount, NULL) != VK_SUCCESS) {
-        std::cout << "unable to query present mode count for physical device\n";
-        return false;
-    }
-
-    std::vector<VkPresentModeKHR> availableModes(modeCount);
-    if (vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &modeCount, availableModes.data()) != VK_SUCCESS) {
-        std::cout << "unable to query the various present modes for physical device\n";
-        return false;
-    }
-
-    for (auto& mode : availableModes) {
-        if (mode == ioMode) {
-            return true;
-        }
-    }
-    std::cout << "unable to obtain preferred display mode, fallback to FIFO\n";
-
-    std::cout << "available present modes: " << std::endl;
-    for (auto & mode : availableModes) {
-        std::cout << "    "  << mode << std::endl;
-    }
-
-    ioMode = VK_PRESENT_MODE_FIFO_KHR;
-    return true;
 }
 
 bool getSurfaceProperties(VkPhysicalDevice device, VkSurfaceKHR surface, VkSurfaceCapabilitiesKHR& capabilities) {
@@ -84,52 +45,6 @@ bool getSurfaceProperties(VkPhysicalDevice device, VkSurfaceKHR surface, VkSurfa
         return false;
     }
     return true;
-}
-
-unsigned int getNumberOfSwapImages(const VkSurfaceCapabilitiesKHR& capabilities) {
-    unsigned int number = capabilities.minImageCount + 1;
-    return number > capabilities.maxImageCount ? capabilities.minImageCount : number;
-}
-
-VkExtent2D getSwapImageSize(const VkSurfaceCapabilitiesKHR& capabilities) {
-    // Default size = window size
-    VkExtent2D size = { (unsigned int)windowWidth, (unsigned int)windowHeight };
-
-    // This happens when the window scales based on the size of an image
-    if (capabilities.currentExtent.width == 0xFFFFFFF) {
-        size.width  = clamp(size.width,  capabilities.minImageExtent.width,  capabilities.maxImageExtent.width);
-        size.height = clamp(size.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
-    } else {
-        size = capabilities.currentExtent;
-    }
-    return size;
-}
-
-bool getImageUsage(const VkSurfaceCapabilitiesKHR& capabilities, VkImageUsageFlags& foundUsages) {
-    const std::vector<VkImageUsageFlags> desiredUsages{desiredImageUsage};
-
-    foundUsages = desiredUsages[0];
-
-    for (const auto& usage : desiredUsages) {
-        VkImageUsageFlags image_usage = usage & capabilities.supportedUsageFlags;
-        if (image_usage != usage) {
-            std::cout << "unsupported image usage flag: " << usage << std::endl;
-            return false;
-        }
-
-        // Add bit if found as supported color
-        foundUsages = (foundUsages | usage);
-    }
-
-    return true;
-}
-
-VkSurfaceTransformFlagBitsKHR getSurfaceTransform(const VkSurfaceCapabilitiesKHR& capabilities) {
-    if (capabilities.supportedTransforms & desiredTransform) {
-        return desiredTransform;
-    }
-    std::cout << "unsupported surface transform: " << desiredTransform;
-    return capabilities.currentTransform;
 }
 
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t memoryTypeBits, VkMemoryPropertyFlags properties) {
@@ -144,53 +59,6 @@ uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t memoryTypeBits
     }
 
     throw std::runtime_error("failed to find suitable memory type!");
-}
-
-bool getSurfaceFormat(VkPhysicalDevice device, VkSurfaceKHR surface, VkSurfaceFormatKHR& outFormat) {
-    unsigned int count(0);
-    if (vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &count, nullptr) != VK_SUCCESS) {
-        std::cout << "unable to query number of supported surface formats";
-        return false;
-    }
-
-    std::vector<VkSurfaceFormatKHR> foundFormats(count);
-    if (vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &count, foundFormats.data()) != VK_SUCCESS) {
-        std::cout << "unable to query all supported surface formats\n";
-        return false;
-    }
-
-    // This means there are no restrictions on the supported format.
-    // Preference would work
-    if (foundFormats.size() == 1 && foundFormats[0].format == VK_FORMAT_UNDEFINED) {
-        outFormat.format = surfaceFormat;
-        outFormat.colorSpace = colorSpace;
-        return true;
-    }
-
-    // Otherwise check if both are supported
-    for (const auto& outerFormat : foundFormats) {
-        // Format found
-        if (outerFormat.format == surfaceFormat) {
-            outFormat.format = outerFormat.format;
-            for (const auto& innerFormat : foundFormats) {
-                // Color space found
-                if (innerFormat.colorSpace == colorSpace) {
-                    outFormat.colorSpace = innerFormat.colorSpace;
-                    return true;
-                }
-            }
-
-            // No matching color space, pick first one
-            std::cout << "warning: no matching color space found, picking first available one\n!";
-            outFormat.colorSpace = foundFormats[0].colorSpace;
-            return true;
-        }
-    }
-
-    // No matching formats found
-    std::cout << "warning: no matching color format found, picking first available one\n";
-    outFormat = foundFormats[0];
-    return true;
 }
 
 std::tuple<VkBuffer, VkDeviceMemory> createBuffer(VkPhysicalDevice gpu, VkDevice device, VkBufferUsageFlags usageFlags, size_t byteCount) {
@@ -385,10 +253,16 @@ void generateMipmaps(VkDevice device, VkImage image, VkCommandPool commandPool, 
     writeToReadBarrier.subresourceRange.baseArrayLayer = 0;
     writeToReadBarrier.subresourceRange.layerCount = 1;
     writeToReadBarrier.subresourceRange.levelCount = 1;
-    writeToReadBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    writeToReadBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     writeToReadBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     writeToReadBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     writeToReadBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+    VkImageMemoryBarrier undefinedToWriteBarrier = writeToReadBarrier;
+    undefinedToWriteBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    undefinedToWriteBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    undefinedToWriteBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    undefinedToWriteBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
     VkImageMemoryBarrier readToSampleBarrier = writeToReadBarrier;
     readToSampleBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -412,6 +286,7 @@ void generateMipmaps(VkDevice device, VkImage image, VkCommandPool commandPool, 
     int mipHeight = height;
     
     for (size_t i=1; i<mipLevelCount; i++) {
+        undefinedToWriteBarrier.subresourceRange.baseMipLevel = i;
         writeToReadBarrier.subresourceRange.baseMipLevel = i - 1;
         readToSampleBarrier.subresourceRange.baseMipLevel = i - 1;
 
@@ -420,6 +295,14 @@ void generateMipmaps(VkDevice device, VkImage image, VkCommandPool commandPool, 
         blit.dstOffsets[1] = { mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1 };
         blit.dstSubresource.mipLevel = i;
 
+        // this mip undefined -> dest
+        vkCmdPipelineBarrier(scopedCommandBuffer.commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+            0, nullptr,
+            0, nullptr,
+            1, &undefinedToWriteBarrier);
+
+        // previous mip write -> read
         vkCmdPipelineBarrier(scopedCommandBuffer.commandBuffer,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
             0, nullptr,
@@ -432,6 +315,7 @@ void generateMipmaps(VkDevice device, VkImage image, VkCommandPool commandPool, 
             1, &blit,
             VK_FILTER_LINEAR);
 
+        // previous mip read -> sample
         vkCmdPipelineBarrier(scopedCommandBuffer.commandBuffer,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
             0, nullptr,
@@ -537,95 +421,12 @@ std::tuple<VkImage, VkDeviceMemory, VkImageView> createImageFromTGAFile(const ch
 
     generateMipmaps(device, image, commandPool, graphicsQueue, width, height, mipLevels);
 
-    // Transition to the final 2D image layout that allows us to sample in a shader.
-    transitionImageLayout(device, commandPool, graphicsQueue, image, format, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
     vkFreeMemory(device, stagingMemory, nullptr);
     vkDestroyBuffer(device, stagingBuffer, nullptr);
 
     VkImageView imageView = createImageView(device, image, format, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
 
     return std::make_tuple(image, memory, imageView);
-}
-
-void createSwapChain(VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, VkDevice device, VkSwapchainKHR& outSwapChain) {
-    vkDeviceWaitIdle(device);
-
-    // Get the surface capabilities
-    VkSurfaceCapabilitiesKHR surfaceCapabilities;
-    if(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &surfaceCapabilities) != VK_SUCCESS) {
-        throw std::runtime_error("failed to acquire surface capabilities");
-    }
-
-    // Get the image presentation mode (synced, immediate etc.)
-    VkPresentModeKHR presentation_mode = preferredPresentationMode;
-    if (!getPresentationMode(surface, physicalDevice, presentation_mode)) {
-        throw std::runtime_error("failed to get presentation mode");
-    }
-
-    // Get other swap chain related features
-    unsigned int swapImageCount = getNumberOfSwapImages(surfaceCapabilities);
-    std::cout << "swap chain image count: " << swapImageCount << std::endl;
-
-    // Size of the images
-    VkExtent2D swap_image_extent = getSwapImageSize(surfaceCapabilities);
-
-    pipelineInfo.w = (float)swap_image_extent.width;
-    pipelineInfo.h = (float)swap_image_extent.height;
-    pipelineInfo.extent.height = pipelineInfo.h;
-    pipelineInfo.extent.width = pipelineInfo.w;
-
-    // Get image usage (color etc.)
-    VkImageUsageFlags usageFlags;
-    if (!getImageUsage(surfaceCapabilities, usageFlags)) {
-        throw std::runtime_error("failed to get image usage flags");
-    }
-
-    // Get the transform, falls back on current transform when transform is not supported
-    VkSurfaceTransformFlagBitsKHR transform = getSurfaceTransform(surfaceCapabilities);
-
-    // Get swapchain image format
-    VkSurfaceFormatKHR imageFormat;
-    if (!getSurfaceFormat(physicalDevice, surface, imageFormat)) {
-        throw std::runtime_error("failed to get surface format");
-    }
-
-    pipelineInfo.colorFormat = imageFormat.format;
-
-    // Old swap chain
-    VkSwapchainKHR oldSwapChain = outSwapChain;
-
-    // Populate swapchain creation info
-    VkSwapchainCreateInfoKHR swapInfo;
-    swapInfo.pNext = nullptr;
-    swapInfo.flags = 0;
-    swapInfo.surface = surface;
-    swapInfo.minImageCount = swapImageCount;
-    swapInfo.imageFormat = imageFormat.format;
-    swapInfo.imageColorSpace = imageFormat.colorSpace;
-    swapInfo.imageExtent = swap_image_extent;
-    swapInfo.imageArrayLayers = 1;
-    swapInfo.imageUsage = usageFlags;
-    swapInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    swapInfo.queueFamilyIndexCount = 0;
-    swapInfo.pQueueFamilyIndices = nullptr;
-    swapInfo.preTransform = transform;
-    swapInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    swapInfo.presentMode = presentation_mode;
-    swapInfo.clipped = true;
-    swapInfo.oldSwapchain = NULL;
-    swapInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-
-    // Create a new one
-    if (VK_SUCCESS != vkCreateSwapchainKHR(device, &swapInfo, nullptr, &outSwapChain)) {
-        throw std::runtime_error("unable to create swap chain");
-    }
-
-    // Destroy old swap chain
-    if (oldSwapChain != VK_NULL_HANDLE) {
-        vkDestroySwapchainKHR(device, oldSwapChain, nullptr);
-        oldSwapChain = VK_NULL_HANDLE;
-    }
 }
 
 void getSwapChainImageHandles(VkDevice device, VkSwapchainKHR chain, std::vector<VkImage>& outImageHandles) {
@@ -1302,13 +1103,13 @@ void recordRenderPass(
     renderPassBeginInfo.clearValueCount = 2;                 // Two clear values (color and depth)
     renderPassBeginInfo.pClearValues = clearValues;
 
-    // begin recording the render pass
-    vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-
     // bind and dispatch compute
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
     vkCmdDispatch(commandBuffer, 1, 1, 1);
+
+    // begin recording the render pass
+    vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
     // Bind the descriptor which contains the shader uniform buffer
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
@@ -1396,6 +1197,11 @@ int main(int argc, char *argv[]) {
 
     VulkanContext context = {};
     initVulkan(context, window);
+    pipelineInfo.colorFormat = context.colorFormat;
+    pipelineInfo.w = context.windowWidth;
+    pipelineInfo.h = context.windowHeight;
+    pipelineInfo.extent.width = context.windowWidth;
+    pipelineInfo.extent.height = context.windowHeight;
 
     VkInstance & instance = context.instance;
     VkPhysicalDevice & gpu = context.physicalDevice;
@@ -1403,10 +1209,7 @@ int main(int argc, char *argv[]) {
     unsigned & graphicsQueueIndex = context.graphicsQueueIndex;
     VkSurfaceKHR & presentationSurface = context.presentationSurface;
     VkQueue & presentationQueue = context.presentationQueue;
-
-    // swap chain with image handles and views
-    VkSwapchainKHR swapchain = VK_NULL_HANDLE; // start null as this function will also recreate an old swapchain
-    createSwapChain(presentationSurface, gpu, device, swapchain);
+    VkSwapchainKHR & swapchain = context.swapchain;
 
     std::vector<VkImage> chainImages;
     getSwapChainImageHandles(device, swapchain, chainImages);
@@ -1542,7 +1345,7 @@ int main(int argc, char *argv[]) {
             std::tie(depthImageView, depthImage, depthMemory) = createDepthBuffer(gpu, device, commandPool, graphicsQueue);
 
             swapchain = VK_NULL_HANDLE;
-            createSwapChain(presentationSurface, gpu, device, swapchain);
+            createSwapChain(context, presentationSurface, gpu, device, swapchain);
             getSwapChainImageHandles(device, swapchain, chainImages);
             makeChainImageViews(device, swapchain, chainImages, chainImageViews);
             createFramebuffers(device, renderPass, chainImageViews, presentFramebuffers, depthImageView);
@@ -1584,8 +1387,10 @@ int main(int argc, char *argv[]) {
     vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
     vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
     vkDestroyFence(device, fence, nullptr);
+    vkDestroyShaderModule(device, compShader, nullptr);
     vkDestroyShaderModule(device, vertShader, nullptr);
     vkDestroyShaderModule(device, fragShader, nullptr);
+    vkDestroyPipeline(device, computePipeline, nullptr);
     vkDestroyPipeline(device, graphicsPipeline, nullptr);
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
     vkDestroyRenderPass(device, renderPass, nullptr);
@@ -1595,8 +1400,6 @@ int main(int argc, char *argv[]) {
     for (VkImageView view : chainImageViews) {
         vkDestroyImageView(device, view, nullptr);
     }
-    vkDestroySwapchainKHR(device, swapchain, nullptr);
-    
     cleanupVulkan(context);
     SDL_Quit();
 
