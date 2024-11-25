@@ -20,6 +20,8 @@ struct VulkanContext {
     VkPhysicalDevice physicalDevice;
     unsigned int graphicsQueueIndex;
     VkDebugReportCallbackEXT callback;
+    VkSurfaceKHR presentationSurface;
+    VkQueue presentationQueue;
 };
 
 void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& outExtensions) {
@@ -327,6 +329,35 @@ VkDevice createLogicalDevice(VkPhysicalDevice& physicalDevice, unsigned int queu
     return device;
 }
 
+VkSurfaceKHR createSurface(SDL_Window* window, VkInstance instance, VkPhysicalDevice gpu, uint32_t graphicsFamilyQueueIndex) {
+    VkSurfaceKHR surface; // SDL_Vulkan_DestroySurface doesn't seem to exist on my system.
+    if (SDL_TRUE != SDL_Vulkan_CreateSurface(window, instance, &surface)) {
+        throw std::runtime_error("Unable to create Vulkan compatible surface using SDL");
+    }
+
+    // Make sure the surface is compatible with the queue family and gpu
+    VkBool32 supported = false;
+    vkGetPhysicalDeviceSurfaceSupportKHR(gpu, graphicsFamilyQueueIndex, surface, &supported);
+    if (VK_TRUE != supported) {
+        throw std::runtime_error("Surface is not supported by physical device!");
+    }
+
+    return surface;
+}
+
+VkQueue getPresentationQueue(VkPhysicalDevice gpu, VkDevice logicalDevice, uint graphicsQueueIndex, VkSurfaceKHR presentation_surface) {
+    VkBool32 presentSupport = false;
+    vkGetPhysicalDeviceSurfaceSupportKHR(gpu, graphicsQueueIndex, presentation_surface, &presentSupport);
+    if (VK_FALSE == presentSupport) {
+        throw std::runtime_error("presentation queue is not supported on graphics queue index");
+    }
+
+    VkQueue presentQueue;
+    vkGetDeviceQueue(logicalDevice, graphicsQueueIndex, 0, &presentQueue);
+
+    return presentQueue;
+}
+
 void initVulkan(VulkanContext & context, SDL_Window * window) {
     if (context.initialized) {
         throw std::runtime_error("Vulkan context already initialized");
@@ -365,6 +396,12 @@ void initVulkan(VulkanContext & context, SDL_Window * window) {
 
     // Create a logical device that interfaces with the physical device
     context.device = createLogicalDevice(context.physicalDevice, context.graphicsQueueIndex, foundLayers);
+
+    // Create the surface we want to render to, associated with the window we created before
+    // This call also checks if the created surface is compatible with the previously selected physical device and associated render queue
+    context.presentationSurface = createSurface(window, context.instance, context.physicalDevice, context.graphicsQueueIndex);
+
+    context.presentationQueue = getPresentationQueue(context.physicalDevice, context.device, context.graphicsQueueIndex, context.presentationSurface);
 }
 
 void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator) {
@@ -374,7 +411,8 @@ void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT
     }
 }
 
-void cleanupContext(VulkanContext & context) {
+void cleanupVulkan(VulkanContext & context) {
+    vkDestroySurfaceKHR(context.instance, context.presentationSurface, nullptr);
     vkDestroyDevice(context.device, nullptr);
     destroyDebugReportCallbackEXT(context.instance, context.callback, nullptr);
     vkDestroyInstance(context.instance, nullptr);

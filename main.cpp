@@ -49,22 +49,6 @@ void getDeviceQueue(VkDevice device, int familyQueueIndex, VkQueue& outGraphicsQ
     vkGetDeviceQueue(device, familyQueueIndex, 0, &outGraphicsQueue);
 }
 
-VkSurfaceKHR createSurface(SDL_Window* window, VkInstance instance, VkPhysicalDevice gpu, uint32_t graphicsFamilyQueueIndex) {
-    VkSurfaceKHR surface; // SDL_Vulkan_DestroySurface doesn't seem to exist on my system.
-    if (SDL_TRUE != SDL_Vulkan_CreateSurface(window, instance, &surface)) {
-        throw std::runtime_error("Unable to create Vulkan compatible surface using SDL");
-    }
-
-    // Make sure the surface is compatible with the queue family and gpu
-    VkBool32 supported = false;
-    vkGetPhysicalDeviceSurfaceSupportKHR(gpu, graphicsFamilyQueueIndex, surface, &supported);
-    if (VK_TRUE != supported) {
-        throw std::runtime_error("Surface is not supported by physical device!");
-    }
-
-    return surface;
-}
-
 bool getPresentationMode(VkSurfaceKHR surface, VkPhysicalDevice device, VkPresentModeKHR& ioMode) {
     uint32_t modeCount = 0;
     if(vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &modeCount, NULL) != VK_SUCCESS) {
@@ -1269,19 +1253,6 @@ VkSemaphore createSemaphore(VkDevice device) {
     return semaphore;
 }
 
-VkQueue getPresentationQueue(VkPhysicalDevice gpu, VkDevice logicalDevice, uint graphicsQueueIndex, VkSurfaceKHR presentation_surface) {
-    VkBool32 presentSupport = false;
-    vkGetPhysicalDeviceSurfaceSupportKHR(gpu, graphicsQueueIndex, presentation_surface, &presentSupport);
-    if (VK_FALSE == presentSupport) {
-        throw std::runtime_error("presentation queue is not supported on graphics queue index");
-    }
-
-    VkQueue presentQueue;
-    vkGetDeviceQueue(logicalDevice, graphicsQueueIndex, 0, &presentQueue);
-
-    return presentQueue;
-}
-
 VkFence createFence(VkDevice device) {
     VkFenceCreateInfo createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -1430,12 +1401,8 @@ int main(int argc, char *argv[]) {
     VkPhysicalDevice & gpu = context.physicalDevice;
     VkDevice & device = context.device;
     unsigned & graphicsQueueIndex = context.graphicsQueueIndex;
-
-    // Create the surface we want to render to, associated with the window we created before
-    // This call also checks if the created surface is compatible with the previously selected physical device and associated render queue
-    VkSurfaceKHR presentationSurface = createSurface(window, instance, gpu, graphicsQueueIndex);
-
-    VkQueue presentationQueue = getPresentationQueue(gpu, device, graphicsQueueIndex, presentationSurface);
+    VkSurfaceKHR & presentationSurface = context.presentationSurface;
+    VkQueue & presentationQueue = context.presentationQueue;
 
     // swap chain with image handles and views
     VkSwapchainKHR swapchain = VK_NULL_HANDLE; // start null as this function will also recreate an old swapchain
@@ -1629,9 +1596,8 @@ int main(int argc, char *argv[]) {
         vkDestroyImageView(device, view, nullptr);
     }
     vkDestroySwapchainKHR(device, swapchain, nullptr);
-    vkDestroySurfaceKHR(instance, presentationSurface, nullptr);
     
-    cleanupContext(context);
+    cleanupVulkan(context);
     SDL_Quit();
 
     return 1;
