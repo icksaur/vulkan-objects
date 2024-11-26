@@ -899,6 +899,26 @@ void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT
     }
 }
 
+void rebuildPresentationResources(VulkanContext & context) {
+    vkDeviceWaitIdle(context.device);
+    for (VkImageView view : context.swapchainImageViews) {
+        vkDestroyImageView(context.device, view, nullptr);
+    }
+    vkDestroySwapchainKHR(context.device, context.swapchain, nullptr);
+
+    context.swapchain = VK_NULL_HANDLE;
+    createSwapChain(context, context.presentationSurface, context.physicalDevice, context.device, context.swapchain);
+    getSwapChainImageHandles(context.device, context.swapchain, context.swapchainImages);
+    makeChainImageViews(context.device, context.swapchain, context.colorFormat, context.swapchainImages, context.swapchainImageViews);
+
+    vkDestroyImageView(context.device, context.depthImageView, nullptr);
+    vkDestroyImage(context.device, context.depthImage, nullptr);
+    vkFreeMemory(context.device, context.depthMemory, nullptr);
+
+    std::tie(context.depthImageView, context.depthImage, context.depthMemory)
+        = createDepthBuffer(context.physicalDevice, context.device, context.commandPool, context.graphicsQueue, context.windowWidth, context.windowHeight);
+}
+
 void cleanupVulkan(VulkanContext & context) {
     vkDestroyCommandPool(context.device, context.commandPool, nullptr);
     vkDestroyImageView(context.device, context.depthImageView, nullptr);

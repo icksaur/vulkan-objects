@@ -1069,24 +1069,11 @@ int main(int argc, char *argv[]) {
             // This is a common Vulkan situation handled automatically by OpenGL.
             // We need to remake our swap chain, image views, and framebuffers.
             vkDeviceWaitIdle(device);
+            rebuildPresentationResources(context);
+
             for (VkFramebuffer framebuffer : presentFramebuffers) {
                 vkDestroyFramebuffer(device, framebuffer, nullptr);
             }
-            for (VkImageView view : chainImageViews) {
-                vkDestroyImageView(device, view, nullptr);
-            }
-            vkDestroySwapchainKHR(device, swapchain, nullptr);
-
-            vkDestroyImageView(device, depthImageView, nullptr);
-            vkDestroyImage(device, depthImage, nullptr);
-            vkFreeMemory(device, depthMemory, nullptr);
-
-            std::tie(depthImageView, depthImage, depthMemory) = createDepthBuffer(gpu, device, commandPool, graphicsQueue, windowWidth, windowHeight);
-
-            swapchain = VK_NULL_HANDLE;
-            createSwapChain(context, presentationSurface, gpu, device, swapchain);
-            getSwapChainImageHandles(device, swapchain, chainImages);
-            makeChainImageViews(device, swapchain, context.colorFormat, chainImages, chainImageViews);
             createPresentFramebuffers(device, renderPass, chainImageViews, presentFramebuffers, depthImageView);
         }
         SDL_Delay(100);
