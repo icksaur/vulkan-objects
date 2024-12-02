@@ -934,3 +934,101 @@ void cleanupVulkan(VulkanContext & context) {
     destroyDebugReportCallbackEXT(context.instance, context.callback, nullptr);
     vkDestroyInstance(context.instance, nullptr);
 }
+
+struct RenderpassBuilder {
+    VulkanContext & context;
+    std::vector<VkAttachmentDescription> attachmentDescriptions;
+    std::vector<VkSubpassDescription> subpassDescriptions;
+    std::vector<VkSubpassDependency> dependencies;
+    std::vector<VkAttachmentReference> colorAttachmentRefs;
+    VkAttachmentReference depthAttachmentRef;
+    bool hasDepthRef;
+    RenderpassBuilder(VulkanContext & context):context(context) {
+        attachmentDescriptions.reserve(2);
+        subpassDescriptions.reserve(1);
+        dependencies.reserve(1);
+        hasDepthRef = false;
+        depthAttachmentRef = {};
+    }
+    RenderpassBuilder& addColorAttachment(VkFormat format) {
+        VkAttachmentDescription colorAttachment = {};
+        colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        attachmentDescriptions.push_back(colorAttachment);
+        return *this;
+    }
+    RenderpassBuilder& addDepthAttachment() {
+        VkAttachmentDescription depthAttachment = {};
+        depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; // should already be in this format
+        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        attachmentDescriptions.push_back(depthAttachment);
+        return *this;
+    }
+    RenderpassBuilder& colorRef(int index) {
+        VkAttachmentReference colorAttachmentRef = {};
+        colorAttachmentRef.attachment = index;
+        colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAttachmentRefs.push_back(colorAttachmentRef);
+        return *this;
+    }
+    RenderpassBuilder& depthRef() {
+        if (hasDepthRef) {
+            throw std::runtime_error("a depth ref already exists and has not been put into a subpass");
+        }
+        hasDepthRef = true;
+        VkAttachmentReference depthAttachmentRef = {};
+        depthAttachmentRef.attachment = 1;
+        depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        return *this;
+    }
+};
+
+struct Renderpass {
+    VkRenderPass renderpass;
+    VulkanContext & context;
+    Renderpass(const RenderpassBuilder builder) : context(builder.context) {
+        VkSubpassDependency dependency = {};
+        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependency.dstSubpass = 0;
+        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+
+        VkSubpassDescription subpass = {};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        if (builder.colorAttachmentRefs.size() > 0) {
+            subpass.colorAttachmentCount = builder.colorAttachmentRefs.size();
+            subpass.pColorAttachments = builder.colorAttachmentRefs.data();
+        }
+        if (builder.hasDepthRef) {
+            subpass.pDepthStencilAttachment = &builder.depthAttachmentRef;
+        }
+
+        VkRenderPassCreateInfo renderPassInfo = {};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        renderPassInfo.subpassCount = 1;
+        renderPassInfo.pSubpasses = &subpass;
+        renderPassInfo.dependencyCount = 1;
+        renderPassInfo.pDependencies = &dependency;
+        renderPassInfo.attachmentCount = 2;
+        renderPassInfo.pAttachments = builder.attachmentDescriptions.data();
+
+        if (VK_SUCCESS != vkCreateRenderPass(builder.context.device, &renderPassInfo, nullptr, &renderpass)) {
+            throw std::runtime_error("failed to create render pass");
+        }
+    }
+    ~Renderpass() {
+        vkDestroyRenderPass(context.device, renderpass, nullptr);
+    }
+};

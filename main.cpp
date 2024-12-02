@@ -1010,15 +1010,13 @@ int main(int argc, char *argv[]) {
 
     updateDescriptorSet(device, descriptorSet, descriptorWriteSets);
 
-    // pipeline and render pass
-    VkPipelineLayout pipelineLayout = createPipelineLayout(device, descriptorSetLayout);
-
+    // render pass and present buffers
     VkRenderPass renderPass = createRenderPass(device);
-
-    // buffers to render to for presenting
     std::vector<VkFramebuffer> presentFramebuffers(chainImages.size());
     createPresentFramebuffers(device, renderPass, chainImageViews, presentFramebuffers, depthImageView);
 
+    // pipelines
+    VkPipelineLayout pipelineLayout = createPipelineLayout(device, descriptorSetLayout);
     VkPipeline graphicsPipeline = createGraphicsPipeline(device, pipelineLayout, renderPass, vertShader, fragShader);
     VkPipeline computePipeline = createComputePipeline(device, pipelineLayout, compShader);
 
