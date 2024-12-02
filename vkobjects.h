@@ -37,6 +37,8 @@ struct VulkanContext {
     VkDeviceMemory depthMemory;
     VkCommandPool commandPool;
     VkQueue graphicsQueue;
+    VulkanContext(SDL_Window * window);
+    ~VulkanContext();
 };
 
 
@@ -834,16 +836,11 @@ std::tuple<VkImageView, VkImage, VkDeviceMemory> createDepthBuffer(VkPhysicalDev
     return std::make_tuple(imageView, image, memory);
 }
 
-void initVulkan(VulkanContext & context, SDL_Window * window) {
-    if (context.initialized) {
-        throw std::runtime_error("Vulkan context already initialized");
-    }
-    context.window = window;
-
+VulkanContext::VulkanContext(SDL_Window * window):window(window) {
     int windowWidht, windowHeight;
     SDL_GetWindowSize(window, &windowWidht, &windowHeight);
-    context.windowWidth = windowWidht;
-    context.windowHeight = windowHeight;
+    this->windowWidth = windowWidht;
+    this->windowHeight = windowHeight;
 
    // Get available vulkan extensions, necessary for interfacing with native window
     // SDL takes care of this call and returns, next to the default VK_KHR_surface a platform specific extension
@@ -861,35 +858,35 @@ void initVulkan(VulkanContext & context, SDL_Window * window) {
         std::cout << "warning! not all requested layers could be found!\n";
 
     // Create Vulkan Instance
-    createVulkanInstance(foundLayers, foundExtensions, context.instance);
+    createVulkanInstance(foundLayers, foundExtensions, this->instance);
 
     // Vulkan messaging callback
-    setupDebugCallback(context.instance, context.callback);
+    setupDebugCallback(this->instance, this->callback);
 
     // Select GPU after succsessful creation of a vulkan instance (jeeeej no global states anymore)
-    context.graphicsQueueIndex = -1;
-    selectGPU(context.instance, context.physicalDevice, context.graphicsQueueIndex);
+    this->graphicsQueueIndex = -1;
+    selectGPU(this->instance, this->physicalDevice, this->graphicsQueueIndex);
 
     // Create a logical device that interfaces with the physical device
-    context.device = createLogicalDevice(context.physicalDevice, context.graphicsQueueIndex, foundLayers);
+    this->device = createLogicalDevice(this->physicalDevice, this->graphicsQueueIndex, foundLayers);
 
     // Create the surface we want to render to, associated with the window we created before
     // This call also checks if the created surface is compatible with the previously selected physical device and associated render queue
-    context.presentationSurface = createSurface(window, context.instance, context.physicalDevice, context.graphicsQueueIndex);
-    context.presentationQueue = getPresentationQueue(context.physicalDevice, context.device, context.graphicsQueueIndex, context.presentationSurface);
+    this->presentationSurface = createSurface(window, this->instance, this->physicalDevice, this->graphicsQueueIndex);
+    this->presentationQueue = getPresentationQueue(this->physicalDevice, this->device, this->graphicsQueueIndex, this->presentationSurface);
 
     // swap chain with image handles and views
-    context.swapchain = VK_NULL_HANDLE; // start null as createSwapChain recreates the chain if it exists
-    createSwapChain(context, context.presentationSurface, context.physicalDevice, context.device, context.swapchain);
-    getSwapChainImageHandles(context.device, context.swapchain, context.swapchainImages);
-    makeChainImageViews(context.device, context.swapchain, context.colorFormat, context.swapchainImages, context.swapchainImageViews);
+    this->swapchain = VK_NULL_HANDLE; // start null as createSwapChain recreates the chain if it exists
+    createSwapChain(*this, this->presentationSurface, this->physicalDevice, this->device, this->swapchain);
+    getSwapChainImageHandles(this->device, this->swapchain, this->swapchainImages);
+    makeChainImageViews(this->device, this->swapchain, this->colorFormat, this->swapchainImages, this->swapchainImageViews);
 
-    context.commandPool = createCommandPool(context.device, context.graphicsQueueIndex);
+    this->commandPool = createCommandPool(this->device, this->graphicsQueueIndex);
 
-    vkGetDeviceQueue(context.device, context.graphicsQueueIndex, 0, &context.graphicsQueue);
+    vkGetDeviceQueue(this->device, this->graphicsQueueIndex, 0, &this->graphicsQueue);
 
-    std::tie(context.depthImageView, context.depthImage, context.depthMemory)
-        = createDepthBuffer(context.physicalDevice, context.device, context.commandPool, context.graphicsQueue, context.windowWidth, context.windowHeight);
+    std::tie(this->depthImageView, this->depthImage, this->depthMemory)
+        = createDepthBuffer(this->physicalDevice, this->device, this->commandPool, this->graphicsQueue, this->windowWidth, this->windowHeight);
 }
 
 void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator) {
@@ -919,20 +916,20 @@ void rebuildPresentationResources(VulkanContext & context) {
         = createDepthBuffer(context.physicalDevice, context.device, context.commandPool, context.graphicsQueue, context.windowWidth, context.windowHeight);
 }
 
-void cleanupVulkan(VulkanContext & context) {
-    vkDestroyCommandPool(context.device, context.commandPool, nullptr);
-    vkDestroyImageView(context.device, context.depthImageView, nullptr);
-    vkDestroyImage(context.device, context.depthImage, nullptr);
-    vkFreeMemory(context.device, context.depthMemory, nullptr);
+VulkanContext::~VulkanContext() {
+    vkDestroyCommandPool(device, commandPool, nullptr);
+    vkDestroyImageView(device, depthImageView, nullptr);
+    vkDestroyImage(device, depthImage, nullptr);
+    vkFreeMemory(device, depthMemory, nullptr);
 
-    for (VkImageView view : context.swapchainImageViews) {
-        vkDestroyImageView(context.device, view, nullptr);
+    for (VkImageView view : swapchainImageViews) {
+        vkDestroyImageView(device, view, nullptr);
     }
-    vkDestroySwapchainKHR(context.device, context.swapchain, nullptr);
-    vkDestroySurfaceKHR(context.instance, context.presentationSurface, nullptr);
-    vkDestroyDevice(context.device, nullptr);
-    destroyDebugReportCallbackEXT(context.instance, context.callback, nullptr);
-    vkDestroyInstance(context.instance, nullptr);
+    vkDestroySwapchainKHR(device, swapchain, nullptr);
+    vkDestroySurfaceKHR(instance, presentationSurface, nullptr);
+    vkDestroyDevice(device, nullptr);
+    destroyDebugReportCallbackEXT(instance, callback, nullptr);
+    vkDestroyInstance(instance, nullptr);
 }
 
 struct RenderpassBuilder {
@@ -950,8 +947,9 @@ struct RenderpassBuilder {
         hasDepthRef = false;
         depthAttachmentRef = {};
     }
-    RenderpassBuilder& addColorAttachment(VkFormat format) {
+    RenderpassBuilder& colorAttachment() {
         VkAttachmentDescription colorAttachment = {};
+        colorAttachment.format = context.colorFormat;
         colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
         colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -962,8 +960,9 @@ struct RenderpassBuilder {
         attachmentDescriptions.push_back(colorAttachment);
         return *this;
     }
-    RenderpassBuilder& addDepthAttachment() {
+    RenderpassBuilder& depthAttachment() {
         VkAttachmentDescription depthAttachment = {};
+        depthAttachment.format = depthFormat;
         depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
         depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -981,22 +980,21 @@ struct RenderpassBuilder {
         colorAttachmentRefs.push_back(colorAttachmentRef);
         return *this;
     }
-    RenderpassBuilder& depthRef() {
+    RenderpassBuilder& depthRef(int index) {
         if (hasDepthRef) {
             throw std::runtime_error("a depth ref already exists and has not been put into a subpass");
         }
         hasDepthRef = true;
-        VkAttachmentReference depthAttachmentRef = {};
-        depthAttachmentRef.attachment = 1;
+        depthAttachmentRef.attachment = index;
         depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         return *this;
     }
 };
 
-struct Renderpass {
+struct RenderPass {
     VkRenderPass renderpass;
     VulkanContext & context;
-    Renderpass(const RenderpassBuilder builder) : context(builder.context) {
+    RenderPass(const RenderpassBuilder builder) : context(builder.context) {
         VkSubpassDependency dependency = {};
         dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
         dependency.dstSubpass = 0;
@@ -1021,14 +1019,14 @@ struct Renderpass {
         renderPassInfo.pSubpasses = &subpass;
         renderPassInfo.dependencyCount = 1;
         renderPassInfo.pDependencies = &dependency;
-        renderPassInfo.attachmentCount = 2;
+        renderPassInfo.attachmentCount = builder.attachmentDescriptions.size();
         renderPassInfo.pAttachments = builder.attachmentDescriptions.data();
 
         if (VK_SUCCESS != vkCreateRenderPass(builder.context.device, &renderPassInfo, nullptr, &renderpass)) {
             throw std::runtime_error("failed to create render pass");
         }
     }
-    ~Renderpass() {
+    ~RenderPass() {
         vkDestroyRenderPass(context.device, renderpass, nullptr);
     }
 };

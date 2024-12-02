@@ -8,6 +8,7 @@
 #include <vector>
 #include <set>
 #include <assert.h>
+#include <memory>
 
 #include "vkobjects.h"
 
@@ -21,12 +22,6 @@ int windowHeight = 720;
 
 #define COMPUTE_VERTICES // comment out to try CPU uploaded vertex buffer
 size_t quadCount = 100;
-
-struct PipelineInfo {
-    float w, h;
-    VkExtent2D extent;
-    VkFormat colorFormat;
-} pipelineInfo;
 
 std::vector<char> readFileBytes(std::istream & file) {
     return std::vector<char>(
@@ -313,7 +308,7 @@ VkSampler createSampler(VkDevice device) {
     return textureSampler;
 }
 
-void createPresentFramebuffers(VkDevice device, VkRenderPass renderPass, std::vector<VkImageView> & chainImageViews, std::vector<VkFramebuffer> & frameBuffers, VkImageView depthImageView) {
+void createPresentFramebuffers(VkDevice device, VkExtent2D extent, VkRenderPass renderPass, std::vector<VkImageView> & chainImageViews, std::vector<VkFramebuffer> & frameBuffers, VkImageView depthImageView) {
     for (size_t i=0; i<chainImageViews.size(); i++) {
         VkImageView imageViews[] { chainImageViews[i], depthImageView };
 
@@ -322,8 +317,8 @@ void createPresentFramebuffers(VkDevice device, VkRenderPass renderPass, std::ve
         framebufferInfo.renderPass = renderPass;
         framebufferInfo.attachmentCount = 2;  // We are using only a color attachment
         framebufferInfo.pAttachments = imageViews;  // Image view as color attachment
-        framebufferInfo.width = pipelineInfo.extent.width;
-        framebufferInfo.height = pipelineInfo.extent.height;
+        framebufferInfo.width = extent.width;
+        framebufferInfo.height = extent.height;
         framebufferInfo.layers = 1;
 
         if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &frameBuffers[i]) != VK_SUCCESS) {
@@ -374,69 +369,7 @@ VkPipelineLayout createPipelineLayout(VkDevice device, VkDescriptorSetLayout des
     return pipelineLayout;
 }
 
-VkRenderPass createRenderPass(VkDevice device) {
-    VkAttachmentDescription colorAttachment = {};
-    colorAttachment.format = pipelineInfo.colorFormat;
-    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-    VkAttachmentReference colorAttachmentRef = {};
-    colorAttachmentRef.attachment = 0;
-    colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    VkAttachmentDescription depthAttachment{};
-    depthAttachment.format = depthFormat;
-    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; // should already be in this format
-    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    VkAttachmentReference depthAttachmentRef{};
-    depthAttachmentRef.attachment = 1;
-    depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    VkSubpassDescription subpass = {};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorAttachmentRef;
-    subpass.pDepthStencilAttachment = &depthAttachmentRef;
-
-    VkSubpassDependency dependency = {};
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-
-    VkAttachmentDescription attachments[] { colorAttachment, depthAttachment };
-
-    VkRenderPassCreateInfo renderPassInfo = {};
-    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.subpassCount = 1;
-    renderPassInfo.pSubpasses = &subpass;
-    renderPassInfo.dependencyCount = 1;
-    renderPassInfo.pDependencies = &dependency;
-    renderPassInfo.attachmentCount = 2;
-    renderPassInfo.pAttachments = attachments;
-
-    VkRenderPass renderPass;
-    if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create render pass!");
-    }
-
-    return renderPass;
-}
-
-VkPipeline createGraphicsPipeline(VkDevice device, VkPipelineLayout pipelineLayout, VkRenderPass renderPass, VkShaderModule vertexShaderModule, VkShaderModule fragmentShaderModule) {
+VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D extent, VkPipelineLayout pipelineLayout, VkRenderPass renderPass, VkShaderModule vertexShaderModule, VkShaderModule fragmentShaderModule) {
     VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
     vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -489,14 +422,14 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkPipelineLayout pipelineLayo
     VkViewport viewport = {};
     viewport.x = 0.0f;
     viewport.y = 0.0f;
-    viewport.width = pipelineInfo.w;
-    viewport.height = pipelineInfo.h;
+    viewport.width = extent.width;
+    viewport.height = extent.height;
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
 
     VkRect2D scissor = {};
     scissor.offset = {0, 0};
-    scissor.extent = pipelineInfo.extent;
+    scissor.extent = extent;
 
     VkPipelineViewportStateCreateInfo viewportState = {};
     viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -555,7 +488,7 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkPipelineLayout pipelineLayo
     pipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;  // Not deriving from another pipeline
     pipelineCreateInfo.pDepthStencilState = &depthStencil;
     
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(device,  VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create graphics pipeline!");
     }
     
@@ -819,6 +752,7 @@ VkFence createFence(VkDevice device) {
 }
 
 void recordRenderPass(
+    VkExtent2D extent,
     VkPipeline computePipeline,
     VkPipeline graphicsPipeline,
     VkRenderPass renderPass,
@@ -843,7 +777,7 @@ void recordRenderPass(
 
     // Define the render area (usually the size of the swap chain image)
     renderPassBeginInfo.renderArea.offset = { 0, 0 };  // Starting at (0, 0)
-    renderPassBeginInfo.renderArea.extent = pipelineInfo.extent;  // Covers the whole framebuffer (usually the swap chain image size)
+    renderPassBeginInfo.renderArea.extent = extent;  // Covers the whole framebuffer (usually the swap chain image size)
 
     // Set clear values for attachments (e.g., clearing the color buffer to black and depth buffer to 1.0f)
     VkClearValue clearValues[2];
@@ -945,13 +879,8 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    VulkanContext context = {};
-    initVulkan(context, window);
-    pipelineInfo.colorFormat = context.colorFormat;
-    pipelineInfo.w = context.windowWidth;
-    pipelineInfo.h = context.windowHeight;
-    pipelineInfo.extent.width = context.windowWidth;
-    pipelineInfo.extent.height = context.windowHeight;
+    std::unique_ptr<VulkanContext> contextPtr = std::make_unique<VulkanContext>(window);
+    VulkanContext& context = *contextPtr;
 
     VkInstance & instance = context.instance;
     VkPhysicalDevice & gpu = context.physicalDevice;
@@ -1011,13 +940,19 @@ int main(int argc, char *argv[]) {
     updateDescriptorSet(device, descriptorSet, descriptorWriteSets);
 
     // render pass and present buffers
-    VkRenderPass renderPass = createRenderPass(device);
+    RenderpassBuilder renderpassBuilder(context);
+    renderpassBuilder.colorAttachment().depthAttachment();
+    renderpassBuilder.colorRef(0).depthRef(1);
+
+    std::unique_ptr<RenderPass> renderPassPtr = std::make_unique<RenderPass>(renderpassBuilder);
+    VkRenderPass & renderPass = renderPassPtr->renderpass;
+    
     std::vector<VkFramebuffer> presentFramebuffers(chainImages.size());
-    createPresentFramebuffers(device, renderPass, chainImageViews, presentFramebuffers, depthImageView);
+    createPresentFramebuffers(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, renderPass, chainImageViews, presentFramebuffers, depthImageView);
 
     // pipelines
     VkPipelineLayout pipelineLayout = createPipelineLayout(device, descriptorSetLayout);
-    VkPipeline graphicsPipeline = createGraphicsPipeline(device, pipelineLayout, renderPass, vertShader, fragShader);
+    VkPipeline graphicsPipeline = createGraphicsPipeline(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, pipelineLayout, renderPass, vertShader, fragShader);
     VkPipeline computePipeline = createComputePipeline(device, pipelineLayout, compShader);
 
     // vertex buffer for our vertices
@@ -1056,7 +991,7 @@ int main(int argc, char *argv[]) {
         }
 
 #ifdef COMPUTE_VERTICES
-        recordRenderPass(computePipeline, graphicsPipeline, renderPass, presentFramebuffers[nextImage], commandBuffers[nextImage], shaderStorageBuffer, pipelineLayout, descriptorSet);
+        recordRenderPass(VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, computePipeline, graphicsPipeline, renderPass, presentFramebuffers[nextImage], commandBuffers[nextImage], shaderStorageBuffer, pipelineLayout, descriptorSet);
 #else
         recordRenderPass(computePipeline, graphicsPipeline, renderPass, frameBuffers[nextImage], commandBuffers[nextImage], vertexBuffer, pipelineLayout, descriptorSet);
 #endif
@@ -1072,7 +1007,7 @@ int main(int argc, char *argv[]) {
             for (VkFramebuffer framebuffer : presentFramebuffers) {
                 vkDestroyFramebuffer(device, framebuffer, nullptr);
             }
-            createPresentFramebuffers(device, renderPass, chainImageViews, presentFramebuffers, depthImageView);
+            createPresentFramebuffers(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, renderPass, chainImageViews, presentFramebuffers, depthImageView);
         }
         SDL_Delay(100);
         
@@ -1112,12 +1047,11 @@ int main(int argc, char *argv[]) {
     vkDestroyPipeline(device, computePipeline, nullptr);
     vkDestroyPipeline(device, graphicsPipeline, nullptr);
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-    vkDestroyRenderPass(device, renderPass, nullptr);
     for (VkFramebuffer framebuffer : presentFramebuffers) {
         vkDestroyFramebuffer(device, framebuffer, nullptr);
     }
-
-    cleanupVulkan(context);
+    renderPassPtr.reset();
+    contextPtr.reset();
     SDL_Quit();
 
     return 1;
