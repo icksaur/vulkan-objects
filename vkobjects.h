@@ -41,7 +41,6 @@ struct VulkanContext {
     ~VulkanContext();
 };
 
-
 // a helper to start and end a command buffer which can be submitted and waited
 struct ScopedCommandBuffer {
     VkDevice device;
@@ -696,6 +695,129 @@ uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t memoryTypeBits
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
+void generateMipmaps(VkDevice device, VkImage image, VkCommandPool commandPool, VkQueue graphicsQueue, int width, int height, size_t mipLevelCount) {
+    VkImageMemoryBarrier writeToReadBarrier = {};
+    writeToReadBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    writeToReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    writeToReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    writeToReadBarrier.image = image;
+    writeToReadBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    writeToReadBarrier.subresourceRange.baseArrayLayer = 0;
+    writeToReadBarrier.subresourceRange.layerCount = 1;
+    writeToReadBarrier.subresourceRange.levelCount = 1;
+    writeToReadBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    writeToReadBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    writeToReadBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    writeToReadBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+    VkImageMemoryBarrier undefinedToWriteBarrier = writeToReadBarrier;
+    undefinedToWriteBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    undefinedToWriteBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    undefinedToWriteBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    undefinedToWriteBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+    VkImageMemoryBarrier readToSampleBarrier = writeToReadBarrier;
+    readToSampleBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    readToSampleBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    readToSampleBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    readToSampleBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    VkImageBlit blit{}; // blit configuration shared for all mip levels
+    blit.srcOffsets[0] = { 0, 0, 0 };
+    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.srcSubresource.baseArrayLayer = 0;
+    blit.srcSubresource.layerCount = 1;
+    blit.dstOffsets[0] = { 0, 0, 0 };
+    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.dstSubresource.baseArrayLayer = 0;
+    blit.dstSubresource.layerCount = 1;
+
+    ScopedCommandBuffer scopedCommandBuffer(device, commandPool, graphicsQueue);
+
+    int mipWidth = width;
+    int mipHeight = height;
+    
+    for (size_t i=1; i<mipLevelCount; i++) {
+        undefinedToWriteBarrier.subresourceRange.baseMipLevel = i;
+        writeToReadBarrier.subresourceRange.baseMipLevel = i - 1;
+        readToSampleBarrier.subresourceRange.baseMipLevel = i - 1;
+
+        blit.srcOffsets[1] = { mipWidth, mipHeight, 1 };
+        blit.srcSubresource.mipLevel = i - 1;
+        blit.dstOffsets[1] = { mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1 };
+        blit.dstSubresource.mipLevel = i;
+
+        // this mip undefined -> dest
+        vkCmdPipelineBarrier(scopedCommandBuffer.commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+            0, nullptr,
+            0, nullptr,
+            1, &undefinedToWriteBarrier);
+
+        // previous mip write -> read
+        vkCmdPipelineBarrier(scopedCommandBuffer.commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+            0, nullptr,
+            0, nullptr,
+            1, &writeToReadBarrier);
+        
+        vkCmdBlitImage(scopedCommandBuffer.commandBuffer,
+            image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, &blit,
+            VK_FILTER_LINEAR);
+
+        // previous mip read -> sample
+        vkCmdPipelineBarrier(scopedCommandBuffer.commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+            0, nullptr,
+            0, nullptr,
+            1, &readToSampleBarrier);
+        
+        if (mipWidth > 1) mipWidth /= 2;
+        if (mipHeight > 1) mipHeight /= 2;
+    }
+
+    // transition the final mip to shader read
+    VkImageMemoryBarrier writeToSampleBarrier = readToSampleBarrier;
+    writeToSampleBarrier.subresourceRange.baseMipLevel = mipLevelCount - 1;
+    writeToSampleBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    writeToSampleBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+    vkCmdPipelineBarrier(scopedCommandBuffer.commandBuffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+        0, nullptr,
+        0, nullptr,
+        1, &writeToSampleBarrier);
+
+    scopedCommandBuffer.submitAndWait();
+}
+
+void copyBufferToImage(VkDevice device, VkCommandPool commandPool, VkQueue graphicsQueue, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
+    ScopedCommandBuffer scopedCommandBuffer(device, commandPool, graphicsQueue);
+
+    VkBufferImageCopy region = {};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {
+        width,
+        height,
+        1
+    };
+
+    vkCmdCopyBufferToImage(scopedCommandBuffer.commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    scopedCommandBuffer.submitAndWait();
+}
+
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags imageAspects, size_t mipLevelCount) {
     VkImageView textureImageView;
     VkImageViewCreateInfo viewInfo = {};
@@ -896,6 +1018,37 @@ void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT
     }
 }
 
+std::tuple<VkBuffer, VkDeviceMemory> createBuffer(VkPhysicalDevice gpu, VkDevice device, VkBufferUsageFlags usageFlags, size_t byteCount) {
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+
+    VkBufferCreateInfo bufferInfo = {};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = byteCount;
+    bufferInfo.usage = usageFlags;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // Not shared across multiple queue families
+
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create vertex buffer!");
+    }
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(gpu, memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate vertex buffer memory!");
+    }
+
+    vkBindBufferMemory(device, buffer, memory, 0);
+
+    return std::make_tuple(buffer, memory);
+}
+
 void rebuildPresentationResources(VulkanContext & context) {
     vkDeviceWaitIdle(context.device);
     for (VkImageView view : context.swapchainImageViews) {
@@ -1087,4 +1240,112 @@ struct ShaderModule {
         vkDestroyShaderModule(context.device, module, nullptr);
     }
     operator VkShaderModule() const { return module; }
+};
+
+struct ImageBuilder {
+    VulkanContext & context;
+    bool buildMipmaps;
+    void * bytes;
+    int byteCount;
+    VkFormat format;
+    VkExtent2D extent; // width and height
+    ImageBuilder(VulkanContext & context) : context(context), buildMipmaps(true), bytes(nullptr) {}
+    ImageBuilder & createMipmaps(bool buildMipmaps) {
+        this->buildMipmaps = buildMipmaps;
+        return *this;
+    }
+    ImageBuilder & fromBytes(void * bytes, int byteCount, int width, int height, VkFormat format) {
+        this->bytes = bytes;
+        this->byteCount = byteCount;
+        extent.width = width;
+        extent.height = height;
+        this->format = format;
+        return *this;
+    }
+};
+
+struct Image {
+    VulkanContext & context;
+    VkImage image;
+    VkDeviceMemory memory;
+    VkImageView imageView;
+
+    Image(ImageBuilder & builder) : context(builder.context) {
+        // put the image bytes into a buffer for transitioning
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingMemory;
+        std::tie(stagingBuffer, stagingMemory) = createBuffer(context.physicalDevice, context.device, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, builder.byteCount);
+
+        void * stagingBytes;
+        vkMapMemory(context.device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &stagingBytes);
+        memcpy(stagingBytes, builder.bytes, (size_t)builder.byteCount);
+        vkUnmapMemory(context.device, stagingMemory);
+        
+        // bytes belong to caller, so don't free them here
+
+        size_t mipLevels;
+        if (builder.buildMipmaps) {
+            mipLevels = std::floor(log2(std::max(builder.extent.width, builder.extent.height))) + 1;
+        } else {
+            mipLevels = 1;
+        }
+
+        VkImageCreateInfo imageInfo = {};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.extent.width = builder.extent.width;
+        imageInfo.extent.height = builder.extent.height;
+        imageInfo.extent.depth = 1;
+        imageInfo.mipLevels = mipLevels;
+        imageInfo.arrayLayers = 1;
+        imageInfo.format = builder.format;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // we must "transition" this image to a device-optimal format
+
+        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT // copy bytes from image into mip levels
+            | VK_IMAGE_USAGE_TRANSFER_DST_BIT // copy bytes into image
+            | VK_IMAGE_USAGE_SAMPLED_BIT; // read by sampler in shader
+
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateImage(context.device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create Vulkan image");
+        }
+
+        VkMemoryRequirements memoryRequirements = {};
+        vkGetImageMemoryRequirements(context.device, image, &memoryRequirements);
+
+        VkMemoryAllocateInfo allocateInfo = {};
+        allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocateInfo.allocationSize = memoryRequirements.size;
+        allocateInfo.memoryTypeIndex = findMemoryType(context.physicalDevice, memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        if (vkAllocateMemory(context.device, &allocateInfo, nullptr, &memory) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate image memory");
+        }
+        vkBindImageMemory(context.device, image, memory, 0);
+
+        // Vulkan spec says images MUST be created either undefined or preinitialized layout, so we can't jump straight to DST_OPTIMAL.
+        transitionImageLayout(context.device, context.commandPool, context.graphicsQueue, image, builder.format, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+        // Now the image is in DST_OPTIMAL layout and we can copy the image data to it.
+        copyBufferToImage(context.device, context.commandPool, context.graphicsQueue, stagingBuffer, image, builder.extent.width, builder.extent.height);
+
+        if (builder.buildMipmaps) {
+            generateMipmaps(context.device, image, context.commandPool, context.graphicsQueue, builder.extent.width, builder.extent.height, mipLevels);
+        } else {
+            // todo: transition the single image to the optimal layout for sampling
+        }
+
+        vkFreeMemory(context.device, stagingMemory, nullptr);
+        vkDestroyBuffer(context.device, stagingBuffer, nullptr);
+
+        imageView = createImageView(context.device, image, builder.format, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
+    }
+    ~Image() {
+        vkDestroyImageView(context.device, imageView, nullptr);
+        vkFreeMemory(context.device, memory, nullptr);
+        vkDestroyImage(context.device, image, nullptr);
+    }
 };
