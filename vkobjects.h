@@ -1030,3 +1030,61 @@ struct RenderPass {
         vkDestroyRenderPass(context.device, renderpass, nullptr);
     }
 };
+
+struct ShaderBuilder {
+    VulkanContext & context;
+    VkShaderStageFlagBits stage;
+    std::vector<char> code;
+
+    ShaderBuilder(VulkanContext & context) : context(context), stage(VK_SHADER_STAGE_VERTEX_BIT) {}
+    ShaderBuilder& vertex() {
+        stage = VK_SHADER_STAGE_VERTEX_BIT;
+        return *this;
+    }
+    ShaderBuilder& fragment() {
+        stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        return *this;
+    }
+    ShaderBuilder& compute() {
+        stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        return *this;
+    }
+
+    ShaderBuilder& fromFile(const char * fileName) {
+        std::ifstream file(fileName, std::ios::ate);
+        if (!file.is_open()) {
+            throw std::runtime_error("failed to open shader file");
+        }
+        size_t fileSize = (size_t)file.tellg();
+        file.seekg(0);
+
+        code.resize(fileSize);
+        file.read((char*)&code[0], fileSize);
+        file.close();
+        return *this;
+    }
+    ShaderBuilder& fromBuffer(const char * data, size_t size) {
+        code.clear();
+        code.insert(code.end(), data, data + size);
+        return *this;
+    }
+};
+
+struct ShaderModule {
+    VulkanContext & context;
+    VkShaderModule module;
+    ShaderModule(ShaderBuilder & builder):context(builder.context) {
+        VkShaderModuleCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        createInfo.codeSize = builder.code.size();
+        createInfo.pCode = (uint32_t*)builder.code.data();
+
+        if (VK_SUCCESS != vkCreateShaderModule(builder.context.device, &createInfo, nullptr, &module)) {
+            throw std::runtime_error("failed to create shader module");
+        }
+    }
+    ~ShaderModule() {
+        vkDestroyShaderModule(context.device, module, nullptr);
+    }
+    operator VkShaderModule() const { return module; }
+};

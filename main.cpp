@@ -23,12 +23,6 @@ int windowHeight = 720;
 #define COMPUTE_VERTICES // comment out to try CPU uploaded vertex buffer
 size_t quadCount = 100;
 
-std::vector<char> readFileBytes(std::istream & file) {
-    return std::vector<char>(
-        std::istreambuf_iterator<char>(file),
-        std::istreambuf_iterator<char>());
-}
-
 void getDeviceQueue(VkDevice device, int familyQueueIndex, VkQueue& outGraphicsQueue) {
     vkGetDeviceQueue(device, familyQueueIndex, 0, &outGraphicsQueue);
 }
@@ -200,7 +194,10 @@ std::tuple<VkImage, VkDeviceMemory, VkImageView> createImageFromTGAFile(const ch
     VkDeviceMemory memory;
 
     std::ifstream file(filename);
-    std::vector<char> fileBytes = readFileBytes(file);
+    std::vector<char> fileBytes = std::vector<char>(
+        std::istreambuf_iterator<char>(file),
+        std::istreambuf_iterator<char>());
+
     file.close();
     unsigned width, height;
     int bpp;
@@ -209,7 +206,7 @@ std::tuple<VkImage, VkDeviceMemory, VkImageView> createImageFromTGAFile(const ch
         throw std::runtime_error("failed to read file as TGA");
     }
 
-    unsigned tgaByteCount = width*height*(bpp/8);
+    unsigned byteCount = width*height*(bpp/8);
 
     // TGA is BGR order, not RGB
     // Further, TGA does not specify linear or non-linear color component intensity.
@@ -221,11 +218,11 @@ std::tuple<VkImage, VkDeviceMemory, VkImageView> createImageFromTGAFile(const ch
     // put the image bytes into a buffer for transitioning
     VkBuffer stagingBuffer;
     VkDeviceMemory stagingMemory;
-    std::tie(stagingBuffer, stagingMemory) = createBuffer(gpu, device, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, tgaByteCount);
+    std::tie(stagingBuffer, stagingMemory) = createBuffer(gpu, device, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, byteCount);
 
     void * stagingBytes;
     vkMapMemory(device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &stagingBytes);
-    memcpy(stagingBytes, tgaBytes, (size_t)tgaByteCount);
+    memcpy(stagingBytes, tgaBytes, (size_t)byteCount);
     vkUnmapMemory(device, stagingMemory);
     free(tgaBytes);
 
@@ -325,34 +322,6 @@ void createPresentFramebuffers(VkDevice device, VkExtent2D extent, VkRenderPass 
             throw std::runtime_error("failed to create framebuffer!");
         }
     }
-}
-
-std::vector<char> readFile(const std::string& filename) {
-    std::ifstream file(filename, std::ios::ate | std::ios::binary);
-    if (!file.is_open()) {
-        std::cout << "unable to open file: " << filename << std::endl;
-        return {};
-     }
-     std::vector<char> buffer(file.tellg());
-     file.seekg(0);
-     file.read(buffer.data(), buffer.size());
-     file.close();
-     return buffer;
-}
-
-VkShaderModule createShaderModule(VkDevice device, const std::vector<char>& code) {
-    VkShaderModuleCreateInfo module_info = {};
-    module_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    module_info.codeSize = code.size();
-    module_info.pCode = reinterpret_cast<const uint32_t*>(code.data());
-
-    VkShaderModule shaderModule = VK_NULL_HANDLE;
-
-    if (VK_SUCCESS != vkCreateShaderModule(device, &module_info, nullptr, &shaderModule)) {
-        throw std::runtime_error("failed to create shader module");
-    }
-
-    return shaderModule;
 }
 
 VkPipelineLayout createPipelineLayout(VkDevice device, VkDescriptorSetLayout descriptorSetLayout) {
@@ -510,11 +479,6 @@ VkPipeline createComputePipeline(VkDevice device, VkPipelineLayout pipelineLayou
     }
 
     return computePipeline;
-}
-
-VkShaderModule loadShaderModule(VkDevice device, const std::string& filename) {
-    std::vector<char> code = readFile(filename);
-    return createShaderModule(device, code);
 }
 
 std::tuple<VkBuffer, VkDeviceMemory> createUniformbuffer(VkPhysicalDevice gpu, VkDevice device) {
@@ -898,9 +862,9 @@ int main(int argc, char *argv[]) {
     VkQueue & graphicsQueue = context.graphicsQueue;
 
     // shader objects
-    VkShaderModule vertShader = loadShaderModule(device, "tri.vert.spv");
-    VkShaderModule fragShader = loadShaderModule(device, "tri.frag.spv");
-    VkShaderModule compShader = loadShaderModule(device, "vertices.comp.spv");
+    std::unique_ptr<ShaderModule> vertShaderModule = std::make_unique<ShaderModule>(ShaderBuilder(context).vertex().fromFile("tri.vert.spv"));
+    std::unique_ptr<ShaderModule> fragShaderModule = std::make_unique<ShaderModule>(ShaderBuilder(context).fragment().fromFile("tri.frag.spv"));
+    std::unique_ptr<ShaderModule> compShaderModule = std::make_unique<ShaderModule>(ShaderBuilder(context).compute().fromFile("vertices.comp.spv"));
 
     // image for sampling
     VkDeviceMemory textureImageMemory;
@@ -952,8 +916,8 @@ int main(int argc, char *argv[]) {
 
     // pipelines
     VkPipelineLayout pipelineLayout = createPipelineLayout(device, descriptorSetLayout);
-    VkPipeline graphicsPipeline = createGraphicsPipeline(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, pipelineLayout, renderPass, vertShader, fragShader);
-    VkPipeline computePipeline = createComputePipeline(device, pipelineLayout, compShader);
+    VkPipeline graphicsPipeline = createGraphicsPipeline(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, pipelineLayout, renderPass, *vertShaderModule, *fragShaderModule);
+    VkPipeline computePipeline = createComputePipeline(device, pipelineLayout, *compShaderModule);
 
     // vertex buffer for our vertices
     VkBuffer vertexBuffer;
@@ -1041,15 +1005,15 @@ int main(int argc, char *argv[]) {
     vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
     vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
     vkDestroyFence(device, fence, nullptr);
-    vkDestroyShaderModule(device, compShader, nullptr);
-    vkDestroyShaderModule(device, vertShader, nullptr);
-    vkDestroyShaderModule(device, fragShader, nullptr);
     vkDestroyPipeline(device, computePipeline, nullptr);
     vkDestroyPipeline(device, graphicsPipeline, nullptr);
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
     for (VkFramebuffer framebuffer : presentFramebuffers) {
         vkDestroyFramebuffer(device, framebuffer, nullptr);
     }
+    vertShaderModule.reset();
+    compShaderModule.reset();
+    fragShaderModule.reset();
     renderPassPtr.reset();
     contextPtr.reset();
     SDL_Quit();
