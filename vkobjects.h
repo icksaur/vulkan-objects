@@ -1029,7 +1029,7 @@ std::tuple<VkBuffer, VkDeviceMemory> createBuffer(VkPhysicalDevice gpu, VkDevice
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // Not shared across multiple queue families
 
     if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create vertex buffer!");
+        throw std::runtime_error("failed to create buffer");
     }
 
     VkMemoryRequirements memRequirements;
@@ -1041,7 +1041,7 @@ std::tuple<VkBuffer, VkDeviceMemory> createBuffer(VkPhysicalDevice gpu, VkDevice
     allocInfo.memoryTypeIndex = findMemoryType(gpu, memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
-        throw std::runtime_error("failed to allocate vertex buffer memory!");
+        throw std::runtime_error("failed to allocate buffer memory");
     }
 
     vkBindBufferMemory(device, buffer, memory, 0);
@@ -1387,14 +1387,41 @@ struct TextureSampler {
     }
 };
 
-struct UniformBuffer {
+struct BufferBuilder {
+    VkBufferUsageFlags usage;
+    size_t byteCount;
+
+    BufferBuilder(size_t byteCount) : usage(0), byteCount(byteCount) {}
+    BufferBuilder & vertex() {
+        usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        return *this;
+    }
+    BufferBuilder & index() {
+        usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        return *this;
+    }
+    BufferBuilder & uniform() {
+        usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        return *this;
+    }
+    BufferBuilder & storage() {
+        usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        return *this;
+    }
+    BufferBuilder & size(size_t byteCount) {
+        this->byteCount = byteCount;
+        return *this;
+    }
+};
+
+struct Buffer {
     VkBuffer buffer;
     VkDeviceMemory memory;
     size_t size;
     VulkanContext & context;
 
-    UniformBuffer(VulkanContext& context, size_t size) : context(context), buffer(VK_NULL_HANDLE), memory(VK_NULL_HANDLE), size(size) {
-        std::tie(buffer, memory) = createBuffer(context.physicalDevice, context.device, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, size);
+    Buffer(VulkanContext& context, BufferBuilder & builder) : context(context), buffer(VK_NULL_HANDLE), memory(VK_NULL_HANDLE), size(builder.byteCount) {
+        std::tie(buffer, memory) = createBuffer(context.physicalDevice, context.device, builder.usage, builder.byteCount);
     }
     void setData(void * bytes, size_t size) {
         if (size != this->size) {
@@ -1405,7 +1432,7 @@ struct UniformBuffer {
         memcpy(mapped, bytes, size);
         vkUnmapMemory(context.device, memory);           
     }
-    ~UniformBuffer() {
+    ~Buffer() {
         vkFreeMemory(context.device, memory, nullptr);
         vkDestroyBuffer(context.device, buffer, nullptr);
     }

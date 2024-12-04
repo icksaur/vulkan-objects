@@ -242,26 +242,6 @@ VkPipeline createComputePipeline(VkDevice device, VkPipelineLayout pipelineLayou
     return computePipeline;
 }
 
-std::tuple<VkBuffer, VkDeviceMemory> createUniformbuffer(VkPhysicalDevice gpu, VkDevice device) {
-    VkBuffer uniformBuffer;
-    VkDeviceMemory uniformBufferMemory;
-
-    Camera camera;
-    camera.perspective(0.5f*M_PI, windowWidth, windowHeight, 0.1f, 100.0f);
-    camera.moveTo(1.0f, 0.0f, -0.1f).lookAt(0.0f, 0.0f, 1.0f);
-    mat16f viewProjection = camera.getViewProjection();
-
-    size_t byteCount = sizeof(float)*16; // 4x4 matrix
-    std::tie(uniformBuffer, uniformBufferMemory) = createBuffer(gpu, device, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, byteCount);
-
-    void* data;
-    vkMapMemory(device, uniformBufferMemory, 0, byteCount, 0, &data);  // Map memory to CPU-accessible address
-    memcpy(data, viewProjection, (size_t)byteCount);                // Copy vertex data
-    vkUnmapMemory(device, uniformBufferMemory);                              // Unmap memory after copying
-
-    return std::make_tuple(uniformBuffer, uniformBufferMemory);
-}
-
 std::tuple<VkBuffer, VkDeviceMemory> createShaderStorageBuffer(VkPhysicalDevice gpu, VkDevice device) {
     VkBuffer buffer;
     VkDeviceMemory memory;
@@ -383,7 +363,6 @@ VkWriteDescriptorSet createBufferToDescriptorSetBinding(VkDevice device, VkDescr
     descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     descriptorWrite.dstSet = descriptorSet;
     descriptorWrite.dstBinding = 0; // match binding point in shader
-    descriptorWrite.dstArrayElement = 0;
     descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     descriptorWrite.descriptorCount = 1;
     descriptorWrite.pBufferInfo = &bufferInfo;
@@ -401,7 +380,6 @@ VkWriteDescriptorSet createSamplerToDescriptorSetBinding(VkDevice device, VkDesc
     descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     descriptorWrite.dstSet = descriptorSet;
     descriptorWrite.dstBinding = 1; // match binding point in shader
-    descriptorWrite.dstArrayElement = 0;
     descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     descriptorWrite.descriptorCount = 1;
     descriptorWrite.pImageInfo = &imageInfo;
@@ -419,7 +397,6 @@ VkWriteDescriptorSet createSsboToDescriptorSetBinding(VkDevice device, VkDescrip
     descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     descriptorWrite.dstSet = descriptorSet;
     descriptorWrite.dstBinding = 2; // match binding point in shader
-    descriptorWrite.dstArrayElement = 0;
     descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     descriptorWrite.descriptorCount = 1;
     descriptorWrite.pBufferInfo = &bufferInfo;
@@ -633,7 +610,7 @@ int main(int argc, char *argv[]) {
     std::unique_ptr<TextureSampler> textureSampler = std::make_unique<TextureSampler>(context);
 
     // uniform buffer for our view projection matrix
-    std::unique_ptr<UniformBuffer> uniformBuffer = std::make_unique<UniformBuffer>(context, sizeof(float) * 16);
+    std::unique_ptr<Buffer> uniformBuffer = std::make_unique<Buffer>(context, BufferBuilder(sizeof(float) * 16).uniform());
     Camera camera;
     camera.perspective(0.5f*M_PI, windowWidth, windowHeight, 0.1f, 100.0f);
     camera.moveTo(1.0f, 0.0f, -0.1f).lookAt(0.0f, 0.0f, 1.0f);
@@ -641,9 +618,7 @@ int main(int argc, char *argv[]) {
     uniformBuffer->setData(&viewProjection, sizeof(float) * 16);
 
     // shader storage buffer
-    VkBuffer shaderStorageBuffer;
-    VkDeviceMemory shaderStorageBufferMemory;
-    std::tie(shaderStorageBuffer, shaderStorageBufferMemory) = createShaderStorageBuffer(gpu, device);
+    std::unique_ptr<Buffer> shaderStorageBuffer = std::make_unique<Buffer>(context, BufferBuilder(sizeof(float) * 5 * 6 * quadCount).storage().vertex());
 
     // descriptor of uniforms, both uniform buffer and sampler
     VkDescriptorSetLayout descriptorSetLayout = createDescriptorSetLayout(device);
@@ -660,7 +635,7 @@ int main(int argc, char *argv[]) {
     std::vector<VkWriteDescriptorSet> descriptorWriteSets;
     descriptorWriteSets.push_back(createBufferToDescriptorSetBinding(device, descriptorSet, *uniformBuffer, uniformBufferInfo));
     descriptorWriteSets.push_back(createSamplerToDescriptorSetBinding(device, descriptorSet, *textureSampler, textureImage->imageView, imageInfo));
-    descriptorWriteSets.push_back(createSsboToDescriptorSetBinding(device, descriptorSet, shaderStorageBuffer, shaderStorageBufferInfo));
+    descriptorWriteSets.push_back(createSsboToDescriptorSetBinding(device, descriptorSet, *shaderStorageBuffer, shaderStorageBufferInfo));
 
     updateDescriptorSet(device, descriptorSet, descriptorWriteSets);
 
@@ -716,7 +691,7 @@ int main(int argc, char *argv[]) {
         }
 
 #ifdef COMPUTE_VERTICES
-        recordRenderPass(VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, computePipeline, graphicsPipeline, renderPass, presentFramebuffers[nextImage], commandBuffers[nextImage], shaderStorageBuffer, pipelineLayout, descriptorSet);
+        recordRenderPass(VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, computePipeline, graphicsPipeline, renderPass, presentFramebuffers[nextImage], commandBuffers[nextImage], *shaderStorageBuffer, pipelineLayout, descriptorSet);
 #else
         recordRenderPass(computePipeline, graphicsPipeline, renderPass, frameBuffers[nextImage], commandBuffers[nextImage], vertexBuffer, pipelineLayout, descriptorSet);
 #endif
@@ -748,13 +723,12 @@ int main(int argc, char *argv[]) {
     vkDestroyBuffer(device, vertexBuffer, nullptr);
     vkFreeMemory(device, deviceMemory, nullptr);
 
-    vkDestroyBuffer(device, shaderStorageBuffer, nullptr);
-    vkFreeMemory(device, shaderStorageBufferMemory, nullptr);
-
     // freeing each descriptor requires the pool have the "free" bit. Look online for use cases for individual free.
     vkResetDescriptorPool(device, descriptorPool, 0); // frees all the descriptors
     vkDestroyDescriptorPool(device, descriptorPool, nullptr);
     vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+
+    shaderStorageBuffer.reset();
 
     uniformBuffer.reset();
     textureSampler.reset();
