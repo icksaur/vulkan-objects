@@ -1386,3 +1386,30 @@ struct TextureSampler {
         return sampler;
     }
 };
+
+struct UniformBuffer {
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    size_t size;
+    VulkanContext & context;
+
+    UniformBuffer(VulkanContext& context, size_t size) : context(context), buffer(VK_NULL_HANDLE), memory(VK_NULL_HANDLE), size(size) {
+        std::tie(buffer, memory) = createBuffer(context.physicalDevice, context.device, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, size);
+    }
+    void setData(void * bytes, size_t size) {
+        if (size != this->size) {
+            throw std::runtime_error("Uniform buffer size mismatch");
+        }
+        void * mapped;
+        vkMapMemory(context.device, memory, 0, size, 0, &mapped);
+        memcpy(mapped, bytes, size);
+        vkUnmapMemory(context.device, memory);           
+    }
+    ~UniformBuffer() {
+        vkFreeMemory(context.device, memory, nullptr);
+        vkDestroyBuffer(context.device, buffer, nullptr);
+    }
+    operator VkBuffer() const {
+        return buffer;
+    }
+};

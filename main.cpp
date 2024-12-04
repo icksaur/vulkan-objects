@@ -633,9 +633,12 @@ int main(int argc, char *argv[]) {
     std::unique_ptr<TextureSampler> textureSampler = std::make_unique<TextureSampler>(context);
 
     // uniform buffer for our view projection matrix
-    VkBuffer uniformBuffer;
-    VkDeviceMemory uniformBufferMemory;
-    std::tie(uniformBuffer, uniformBufferMemory) = createUniformbuffer(gpu, device);
+    std::unique_ptr<UniformBuffer> uniformBuffer = std::make_unique<UniformBuffer>(context, sizeof(float) * 16);
+    Camera camera;
+    camera.perspective(0.5f*M_PI, windowWidth, windowHeight, 0.1f, 100.0f);
+    camera.moveTo(1.0f, 0.0f, -0.1f).lookAt(0.0f, 0.0f, 1.0f);
+    mat16f viewProjection = camera.getViewProjection();
+    uniformBuffer->setData(&viewProjection, sizeof(float) * 16);
 
     // shader storage buffer
     VkBuffer shaderStorageBuffer;
@@ -655,7 +658,7 @@ int main(int argc, char *argv[]) {
     VkDescriptorBufferInfo shaderStorageBufferInfo;
 
     std::vector<VkWriteDescriptorSet> descriptorWriteSets;
-    descriptorWriteSets.push_back(createBufferToDescriptorSetBinding(device, descriptorSet, uniformBuffer, uniformBufferInfo));
+    descriptorWriteSets.push_back(createBufferToDescriptorSetBinding(device, descriptorSet, *uniformBuffer, uniformBufferInfo));
     descriptorWriteSets.push_back(createSamplerToDescriptorSetBinding(device, descriptorSet, *textureSampler, textureImage->imageView, imageInfo));
     descriptorWriteSets.push_back(createSsboToDescriptorSetBinding(device, descriptorSet, shaderStorageBuffer, shaderStorageBufferInfo));
 
@@ -744,8 +747,6 @@ int main(int argc, char *argv[]) {
     }
     vkDestroyBuffer(device, vertexBuffer, nullptr);
     vkFreeMemory(device, deviceMemory, nullptr);
-    vkDestroyBuffer(device, uniformBuffer, nullptr);
-    vkFreeMemory(device, uniformBufferMemory,  nullptr);
 
     vkDestroyBuffer(device, shaderStorageBuffer, nullptr);
     vkFreeMemory(device, shaderStorageBufferMemory, nullptr);
@@ -755,6 +756,7 @@ int main(int argc, char *argv[]) {
     vkDestroyDescriptorPool(device, descriptorPool, nullptr);
     vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 
+    uniformBuffer.reset();
     textureSampler.reset();
     textureImage.reset();
 
