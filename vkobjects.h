@@ -1049,6 +1049,31 @@ std::tuple<VkBuffer, VkDeviceMemory> createBuffer(VkPhysicalDevice gpu, VkDevice
     return std::make_tuple(buffer, memory);
 }
 
+VkSampler createSampler(VkDevice device) {
+    VkSampler textureSampler;
+    VkSamplerCreateInfo samplerInfo = {};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.anisotropyEnable = VK_TRUE; // experiment with VK_FALSE to see blurring
+    samplerInfo.maxAnisotropy = 16;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.minLod = 0.0f; // we can sample at higher mip levels but the use cases are uncommon
+    samplerInfo.maxLod = 13.0f; // 4k textures will have no more than 13 mip levels, so this is plenty
+
+    if (vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create texture sampler");
+    }
+
+    return textureSampler;
+}
+
 void rebuildPresentationResources(VulkanContext & context) {
     vkDeviceWaitIdle(context.device);
     for (VkImageView view : context.swapchainImageViews) {
@@ -1347,5 +1372,17 @@ struct Image {
         vkDestroyImageView(context.device, imageView, nullptr);
         vkFreeMemory(context.device, memory, nullptr);
         vkDestroyImage(context.device, image, nullptr);
+    }
+};
+
+struct TextureSampler {
+    VkSampler sampler;
+    VulkanContext & context;
+    TextureSampler(VulkanContext& context) : context(context), sampler(createSampler(context.device)) {}
+    ~TextureSampler() {
+        vkDestroySampler(context.device, sampler, nullptr);
+    }
+    operator VkSampler() const {
+        return sampler;
     }
 };

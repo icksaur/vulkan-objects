@@ -66,31 +66,6 @@ std::unique_ptr<Image> createImageFromTGAFile(const char * filename, VulkanConte
     return image;
 }
 
-VkSampler createSampler(VkDevice device) {
-    VkSampler textureSampler;
-    VkSamplerCreateInfo samplerInfo = {};
-    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.anisotropyEnable = VK_TRUE; // experiment with VK_FALSE to see blurring
-    samplerInfo.maxAnisotropy = 16;
-    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-    samplerInfo.unnormalizedCoordinates = VK_FALSE;
-    samplerInfo.compareEnable = VK_FALSE;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    samplerInfo.minLod = 0.0f; // we can sample at higher mip levels but the use cases are uncommon
-    samplerInfo.maxLod = 13.0f; // 4k textures will have no more than 13 mip levels, so this is plenty
-
-    if (vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create texture sampler");
-    }
-
-    return textureSampler;
-}
-
 void createPresentFramebuffers(VkDevice device, VkExtent2D extent, VkRenderPass renderPass, std::vector<VkImageView> & chainImageViews, std::vector<VkFramebuffer> & frameBuffers, VkImageView depthImageView) {
     for (size_t i=0; i<chainImageViews.size(); i++) {
         VkImageView imageViews[] { chainImageViews[i], depthImageView };
@@ -655,7 +630,7 @@ int main(int argc, char *argv[]) {
     // image for sampling
     std::unique_ptr<Image> textureImage = createImageFromTGAFile("vulkan.tga", context);
 
-    VkSampler textureSampler = createSampler(device);
+    std::unique_ptr<TextureSampler> textureSampler = std::make_unique<TextureSampler>(context);
 
     // uniform buffer for our view projection matrix
     VkBuffer uniformBuffer;
@@ -681,7 +656,7 @@ int main(int argc, char *argv[]) {
 
     std::vector<VkWriteDescriptorSet> descriptorWriteSets;
     descriptorWriteSets.push_back(createBufferToDescriptorSetBinding(device, descriptorSet, uniformBuffer, uniformBufferInfo));
-    descriptorWriteSets.push_back(createSamplerToDescriptorSetBinding(device, descriptorSet, textureSampler, textureImage->imageView, imageInfo));
+    descriptorWriteSets.push_back(createSamplerToDescriptorSetBinding(device, descriptorSet, *textureSampler, textureImage->imageView, imageInfo));
     descriptorWriteSets.push_back(createSsboToDescriptorSetBinding(device, descriptorSet, shaderStorageBuffer, shaderStorageBufferInfo));
 
     updateDescriptorSet(device, descriptorSet, descriptorWriteSets);
@@ -780,7 +755,7 @@ int main(int argc, char *argv[]) {
     vkDestroyDescriptorPool(device, descriptorPool, nullptr);
     vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 
-    vkDestroySampler(device, textureSampler, nullptr);
+    textureSampler.reset();
     textureImage.reset();
 
     vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
