@@ -36,6 +36,7 @@ struct VulkanContext {
     VkImage depthImage;
     VkDeviceMemory depthMemory;
     VkCommandPool commandPool;
+    std::vector<VkCommandBuffer> commandBuffers;
     VkQueue graphicsQueue;
     VulkanContext(SDL_Window * window);
     ~VulkanContext();
@@ -85,7 +86,6 @@ struct ScopedCommandBuffer {
         vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
     }
 };
-
 
 void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& outExtensions) {
     // Figure out the amount of extensions vulkan needs to interface with the os windowing system
@@ -231,7 +231,6 @@ VkResult createDebugReportCallbackEXT(
         return VK_ERROR_EXTENSION_NOT_PRESENT;
     }
 }
-
 
 bool setupDebugCallback(VkInstance instance, VkDebugReportCallbackEXT& callback) {
     VkDebugReportCallbackCreateInfoEXT createInfo = {};
@@ -681,6 +680,22 @@ VkCommandPool createCommandPool(VkDevice device, uint32_t queueFamilyIndex) {
     return commandPool;
 }
 
+VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool) {
+    VkCommandBuffer commandBuffer;
+
+    VkCommandBufferAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.commandPool = commandPool;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; // primary can be submitted, secondary can be a sub-command of primaries
+    allocInfo.commandBufferCount = 1;  // Number of command buffers to allocate
+
+    if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate command buffer!");
+    }
+
+    return commandBuffer;
+}
+
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t memoryTypeBits, VkMemoryPropertyFlags properties) {
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
@@ -1004,6 +1019,10 @@ VulkanContext::VulkanContext(SDL_Window * window):window(window) {
     makeChainImageViews(this->device, this->swapchain, this->colorFormat, this->swapchainImages, this->swapchainImageViews);
 
     this->commandPool = createCommandPool(this->device, this->graphicsQueueIndex);
+    this->commandBuffers.resize(this->swapchainImages.size());
+    for (auto & commandBuffer : commandBuffers) {
+        commandBuffer = createCommandBuffer(device, commandPool);
+    }
 
     vkGetDeviceQueue(this->device, this->graphicsQueueIndex, 0, &this->graphicsQueue);
 
@@ -1095,6 +1114,9 @@ void rebuildPresentationResources(VulkanContext & context) {
 }
 
 VulkanContext::~VulkanContext() {
+    for (auto commandBuffer : commandBuffers) {
+        vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    }
     vkDestroyCommandPool(device, commandPool, nullptr);
     vkDestroyImageView(device, depthImageView, nullptr);
     vkDestroyImage(device, depthImage, nullptr);

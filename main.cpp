@@ -253,39 +253,6 @@ std::tuple<VkBuffer, VkDeviceMemory> createShaderStorageBuffer(VkPhysicalDevice 
     return std::make_tuple(buffer, memory);
 }
 
-std::tuple<VkBuffer, VkDeviceMemory> createVertexBuffer(VkPhysicalDevice gpu, VkDevice device) {
-    // Vulkan clip space has -1,-1 as the upper-left corner of the display and Y increases as you go down.
-    // This is similar to most window system conventions and file formats.
-    float vertices[] {
-        -0.5f, 0.5f, 0.0f, 0.0f, 0.0f,
-        0.5f, 0.5f, 0.0f, 1.0f, 0.0f,
-        -0.5f, -0.5f, 0.0f, 0.0f, 1.0f,
-        -0.5f, -0.5f, 0.0f, 0.0f, 1.0f,
-        0.5f, 0.5f, 0.0f, 1.0f, 0.0f,
-        0.5f, -0.5f, 0.0f, 1.0f, 1.0f,
-
-        -0.5f, 0.5f, 0.2f, 0.0f, 0.0f,
-        0.5f, 0.5f, 0.2f, 1.0f, 0.0f,
-        -0.5f, -0.5f, 0.2f, 0.0f, 1.0f,
-        -0.5f, -0.5f, 0.2f, 0.0f, 1.0f,
-        0.5f, 0.5f, 0.2f, 1.0f, 0.0f,
-        0.5f, -0.5f, 0.2f, 1.0f, 1.0f,
-    }; 
-
-    VkBuffer vertexBuffer;
-    VkDeviceMemory vertexBufferMemory;
-
-    size_t byteCount = sizeof(vertices);
-    std::tie(vertexBuffer, vertexBufferMemory) = createBuffer(gpu, device, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, byteCount);
-
-    void* data;
-    vkMapMemory(device, vertexBufferMemory, 0, byteCount, 0, &data);  // Map memory to CPU-accessible address
-    memcpy(data, vertices, (size_t)byteCount);                // Copy vertex data
-    vkUnmapMemory(device, vertexBufferMemory);                              // Unmap memory after copying
-
-    return std::make_tuple(vertexBuffer, vertexBufferMemory);
-}
-
 VkDescriptorSetLayout createDescriptorSetLayout(VkDevice device) {
     VkDescriptorSetLayoutBinding uboLayoutBinding = {};
     uboLayoutBinding.binding = 0; // match binding point in shader
@@ -406,22 +373,6 @@ VkWriteDescriptorSet createSsboToDescriptorSetBinding(VkDevice device, VkDescrip
 
 void updateDescriptorSet(VkDevice device, VkDescriptorSet descriptorSet, std::vector<VkWriteDescriptorSet> & writeDescrptorSets) {
     vkUpdateDescriptorSets(device, writeDescrptorSets.size(), writeDescrptorSets.data(), 0, nullptr);
-}
-
-VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool) {
-    VkCommandBuffer commandBuffer;
-
-    VkCommandBufferAllocateInfo allocInfo = {};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.commandPool = commandPool;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; // primary can be submitted, secondary can be a sub-command of primaries
-    allocInfo.commandBufferCount = 1;  // Number of command buffers to allocate
-
-    if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
-        throw std::runtime_error("failed to allocate command buffer!");
-    }
-
-    return commandBuffer;
 }
 
 VkSemaphore createSemaphore(VkDevice device) {
@@ -584,17 +535,12 @@ int main(int argc, char *argv[]) {
     std::unique_ptr<VulkanContext> contextPtr = std::make_unique<VulkanContext>(window);
     VulkanContext& context = *contextPtr;
 
-    VkInstance & instance = context.instance;
-    VkPhysicalDevice & gpu = context.physicalDevice;
     VkDevice & device = context.device;
-    unsigned & graphicsQueueIndex = context.graphicsQueueIndex;
-    VkSurfaceKHR & presentationSurface = context.presentationSurface;
     VkQueue & presentationQueue = context.presentationQueue;
     VkSwapchainKHR & swapchain = context.swapchain;
     std::vector<VkImage> & chainImages = context.swapchainImages;
     std::vector<VkImageView> & chainImageViews = context.swapchainImageViews;
-    VkImage & depthImage = context.depthImage;
-    VkDeviceMemory & depthMemory = context.depthMemory;
+    std::vector<VkCommandBuffer> & commandBuffers = context.commandBuffers;
     VkImageView & depthImageView = context.depthImageView;
     VkCommandPool & commandPool = context.commandPool;
     VkQueue & graphicsQueue = context.graphicsQueue;
@@ -611,14 +557,34 @@ int main(int argc, char *argv[]) {
 
     // uniform buffer for our view projection matrix
     std::unique_ptr<Buffer> uniformBuffer = std::make_unique<Buffer>(context, BufferBuilder(sizeof(float) * 16).uniform());
-    Camera camera;
-    camera.perspective(0.5f*M_PI, windowWidth, windowHeight, 0.1f, 100.0f);
-    camera.moveTo(1.0f, 0.0f, -0.1f).lookAt(0.0f, 0.0f, 1.0f);
-    mat16f viewProjection = camera.getViewProjection();
+    mat16f viewProjection = Camera()
+        .perspective(0.5f*M_PI, windowWidth, windowHeight, 0.1f, 100.0f)
+        .moveTo(1.0f, 0.0f, -0.1f)
+        .lookAt(0.0f, 0.0f, 1.0f)
+        .getViewProjection();
     uniformBuffer->setData(&viewProjection, sizeof(float) * 16);
 
     // shader storage buffer
     std::unique_ptr<Buffer> shaderStorageBuffer = std::make_unique<Buffer>(context, BufferBuilder(sizeof(float) * 5 * 6 * quadCount).storage().vertex());
+
+    float vertices[] {
+        -0.5f, 0.5f, 0.0f, 0.0f, 0.0f,
+        0.5f, 0.5f, 0.0f, 1.0f, 0.0f,
+        -0.5f, -0.5f, 0.0f, 0.0f, 1.0f,
+        -0.5f, -0.5f, 0.0f, 0.0f, 1.0f,
+        0.5f, 0.5f, 0.0f, 1.0f, 0.0f,
+        0.5f, -0.5f, 0.0f, 1.0f, 1.0f,
+
+        -0.5f, 0.5f, 0.2f, 0.0f, 0.0f,
+        0.5f, 0.5f, 0.2f, 1.0f, 0.0f,
+        -0.5f, -0.5f, 0.2f, 0.0f, 1.0f,
+        -0.5f, -0.5f, 0.2f, 0.0f, 1.0f,
+        0.5f, 0.5f, 0.2f, 1.0f, 0.0f,
+        0.5f, -0.5f, 0.2f, 1.0f, 1.0f,
+    };
+    // static vertex buffer
+    std::unique_ptr<Buffer> vertexBuffer = std::make_unique<Buffer>(context, BufferBuilder(sizeof(vertices)).vertex());
+    vertexBuffer->setData(vertices, sizeof(vertices));
 
     // descriptor of uniforms, both uniform buffer and sampler
     VkDescriptorSetLayout descriptorSetLayout = createDescriptorSetLayout(device);
@@ -655,17 +621,6 @@ int main(int argc, char *argv[]) {
     VkPipeline graphicsPipeline = createGraphicsPipeline(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, pipelineLayout, renderPass, *vertShaderModule, *fragShaderModule);
     VkPipeline computePipeline = createComputePipeline(device, pipelineLayout, *compShaderModule);
 
-    // vertex buffer for our vertices
-    VkBuffer vertexBuffer;
-    VkDeviceMemory deviceMemory;
-    std::tie(vertexBuffer, deviceMemory) = createVertexBuffer(gpu, device);
-
-    // command buffers for drawing
-    std::vector<VkCommandBuffer> commandBuffers(chainImages.size());
-    for (auto & commandBuffer : commandBuffers) {
-        commandBuffer = createCommandBuffer(device, commandPool);
-    }
-
     // sync primitives
     // It is a good idea to have a separate semaphore for each swapchain image, but for simplicity we use a single one.
     VkSemaphore imageAvailableSemaphore = createSemaphore(device);
@@ -693,8 +648,9 @@ int main(int argc, char *argv[]) {
 #ifdef COMPUTE_VERTICES
         recordRenderPass(VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, computePipeline, graphicsPipeline, renderPass, presentFramebuffers[nextImage], commandBuffers[nextImage], *shaderStorageBuffer, pipelineLayout, descriptorSet);
 #else
-        recordRenderPass(computePipeline, graphicsPipeline, renderPass, frameBuffers[nextImage], commandBuffers[nextImage], vertexBuffer, pipelineLayout, descriptorSet);
+        recordRenderPass(VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, computePipeline, graphicsPipeline, renderPass, presentFramebuffers[nextImage], commandBuffers[nextImage], *vertexBuffer, pipelineLayout, descriptorSet);
 #endif
+
         submitCommandBuffer(graphicsQueue, commandBuffers[nextImage], imageAvailableSemaphore, renderFinishedSemaphore);
         if (!presentQueue(presentationQueue, swapchain, renderFinishedSemaphore, nextImage)) {
             std::cout << "swap chain out of date, trying to remake" << std::endl;
@@ -717,19 +673,15 @@ int main(int argc, char *argv[]) {
 
     vkQueueWaitIdle(graphicsQueue); // wait until we're done or the render finished semaphore may be in use
 
-    for (auto commandBuffer : commandBuffers) {
-        vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-    }
-    vkDestroyBuffer(device, vertexBuffer, nullptr);
-    vkFreeMemory(device, deviceMemory, nullptr);
+
 
     // freeing each descriptor requires the pool have the "free" bit. Look online for use cases for individual free.
     vkResetDescriptorPool(device, descriptorPool, 0); // frees all the descriptors
     vkDestroyDescriptorPool(device, descriptorPool, nullptr);
     vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 
+    vertexBuffer.reset();
     shaderStorageBuffer.reset();
-
     uniformBuffer.reset();
     textureSampler.reset();
     textureImage.reset();
