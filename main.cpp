@@ -23,18 +23,6 @@ int windowHeight = 720;
 #define COMPUTE_VERTICES // comment out to try CPU uploaded vertex buffer
 size_t quadCount = 100;
 
-void getDeviceQueue(VkDevice device, int familyQueueIndex, VkQueue& outGraphicsQueue) {
-    vkGetDeviceQueue(device, familyQueueIndex, 0, &outGraphicsQueue);
-}
-
-bool getSurfaceProperties(VkPhysicalDevice device, VkSurfaceKHR surface, VkSurfaceCapabilitiesKHR& capabilities) {
-    if(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &capabilities) != VK_SUCCESS) {
-        std::cout << "unable to acquire surface capabilities\n";
-        return false;
-    }
-    return true;
-}
-
 std::unique_ptr<Image> createImageFromTGAFile(const char * filename, VulkanContext & context) {
     std::ifstream file(filename);
     std::vector<char> fileBytes = std::vector<char>(
@@ -259,21 +247,18 @@ VkDescriptorSetLayout createDescriptorSetLayout(VkDevice device) {
     uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     uboLayoutBinding.descriptorCount = 1;
     uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    uboLayoutBinding.pImmutableSamplers = nullptr;  // No sampler here
 
     VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
     samplerLayoutBinding.binding = 1; // match binding point in shader
     samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; // binds both VkImageView and VkSampler
     samplerLayoutBinding.descriptorCount = 1;
     samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    samplerLayoutBinding.pImmutableSamplers = nullptr; // no sampler here either?
 
     VkDescriptorSetLayoutBinding ssboLayoutBinding = {};
     ssboLayoutBinding.binding = 2, // match binding point in shader
     ssboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
     ssboLayoutBinding.descriptorCount = 1;
     ssboLayoutBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    ssboLayoutBinding.pImmutableSamplers = nullptr;
 
     VkDescriptorSetLayoutBinding bindings[] {uboLayoutBinding, samplerLayoutBinding, ssboLayoutBinding};
 
@@ -303,7 +288,7 @@ std::tuple<VkDescriptorPool, VkDescriptorSet> createDescriptorSet(VkDevice devic
     descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     descriptorPoolCreateInfo.poolSizeCount = 3;
     descriptorPoolCreateInfo.pPoolSizes = poolSizes;
-    descriptorPoolCreateInfo.maxSets = 3;
+    descriptorPoolCreateInfo.maxSets = 1;
 
     VkDescriptorPool descriptorPool;
     vkCreateDescriptorPool(device, &descriptorPoolCreateInfo, nullptr, &descriptorPool);
@@ -371,7 +356,7 @@ VkWriteDescriptorSet createSsboToDescriptorSetBinding(VkDevice device, VkDescrip
     return descriptorWrite;
 }
 
-void updateDescriptorSet(VkDevice device, VkDescriptorSet descriptorSet, std::vector<VkWriteDescriptorSet> & writeDescrptorSets) {
+void updateDescriptorSet(VkDevice device, std::vector<VkWriteDescriptorSet> & writeDescrptorSets) {
     vkUpdateDescriptorSets(device, writeDescrptorSets.size(), writeDescrptorSets.data(), 0, nullptr);
 }
 
@@ -542,7 +527,6 @@ int main(int argc, char *argv[]) {
     std::vector<VkImageView> & chainImageViews = context.swapchainImageViews;
     std::vector<VkCommandBuffer> & commandBuffers = context.commandBuffers;
     VkImageView & depthImageView = context.depthImageView;
-    VkCommandPool & commandPool = context.commandPool;
     VkQueue & graphicsQueue = context.graphicsQueue;
 
     // shader objects
@@ -550,9 +534,8 @@ int main(int argc, char *argv[]) {
     std::unique_ptr<ShaderModule> fragShaderModule = std::make_unique<ShaderModule>(ShaderBuilder(context).fragment().fromFile("tri.frag.spv"));
     std::unique_ptr<ShaderModule> compShaderModule = std::make_unique<ShaderModule>(ShaderBuilder(context).compute().fromFile("vertices.comp.spv"));
 
-    // image for sampling
+    // texture objects
     std::unique_ptr<Image> textureImage = createImageFromTGAFile("vulkan.tga", context);
-
     std::unique_ptr<TextureSampler> textureSampler = std::make_unique<TextureSampler>(context);
 
     // uniform buffer for our view projection matrix
@@ -564,9 +547,10 @@ int main(int argc, char *argv[]) {
         .getViewProjection();
     uniformBuffer->setData(&viewProjection, sizeof(float) * 16);
 
-    // shader storage buffer
+    // shader storage buffer for computed vertices
     std::unique_ptr<Buffer> shaderStorageBuffer = std::make_unique<Buffer>(context, BufferBuilder(sizeof(float) * 5 * 6 * quadCount).storage().vertex());
 
+    // static vertices
     float vertices[] {
         -0.5f, 0.5f, 0.0f, 0.0f, 0.0f,
         0.5f, 0.5f, 0.0f, 1.0f, 0.0f,
@@ -582,6 +566,7 @@ int main(int argc, char *argv[]) {
         0.5f, 0.5f, 0.2f, 1.0f, 0.0f,
         0.5f, -0.5f, 0.2f, 1.0f, 1.0f,
     };
+
     // static vertex buffer
     std::unique_ptr<Buffer> vertexBuffer = std::make_unique<Buffer>(context, BufferBuilder(sizeof(vertices)).vertex());
     vertexBuffer->setData(vertices, sizeof(vertices));
@@ -598,12 +583,13 @@ int main(int argc, char *argv[]) {
     VkDescriptorImageInfo imageInfo;
     VkDescriptorBufferInfo shaderStorageBufferInfo;
 
+    // note that each binding takes a descriptor set.
     std::vector<VkWriteDescriptorSet> descriptorWriteSets;
     descriptorWriteSets.push_back(createBufferToDescriptorSetBinding(device, descriptorSet, *uniformBuffer, uniformBufferInfo));
     descriptorWriteSets.push_back(createSamplerToDescriptorSetBinding(device, descriptorSet, *textureSampler, textureImage->imageView, imageInfo));
     descriptorWriteSets.push_back(createSsboToDescriptorSetBinding(device, descriptorSet, *shaderStorageBuffer, shaderStorageBufferInfo));
 
-    updateDescriptorSet(device, descriptorSet, descriptorWriteSets);
+    updateDescriptorSet(device, descriptorWriteSets); // note that bindings already have their descriptor set, so it is not passed in here
 
     // render pass and present buffers
     RenderpassBuilder renderpassBuilder(context);
@@ -672,8 +658,6 @@ int main(int argc, char *argv[]) {
     }
 
     vkQueueWaitIdle(graphicsQueue); // wait until we're done or the render finished semaphore may be in use
-
-
 
     // freeing each descriptor requires the pool have the "free" bit. Look online for use cases for individual free.
     vkResetDescriptorPool(device, descriptorPool, 0); // frees all the descriptors
