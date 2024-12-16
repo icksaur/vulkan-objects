@@ -37,9 +37,15 @@ struct VulkanContext {
     VkDeviceMemory depthMemory;
     VkCommandPool commandPool;
     std::vector<VkCommandBuffer> commandBuffers;
+    std::vector<VkSemaphore> semaphores;
+    std::vector<VkFence> fences;
     VkQueue graphicsQueue;
     VulkanContext(SDL_Window * window);
     ~VulkanContext();
+private:
+    VulkanContext & operator=(const VulkanContext & other) = delete;
+    VulkanContext(const VulkanContext & other) = delete;
+    VulkanContext(VulkanContext && other) = delete; 
 };
 
 // a helper to start and end a command buffer which can be submitted and waited
@@ -1114,6 +1120,12 @@ void rebuildPresentationResources(VulkanContext & context) {
 }
 
 VulkanContext::~VulkanContext() {
+    for (auto semaphore : semaphores) {
+        vkDestroySemaphore(device, semaphore, nullptr);
+    }
+    for (auto fence : fences) {
+        vkDestroyFence(device, fence, nullptr);
+    }
     for (auto commandBuffer : commandBuffers) {
         vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
     }
@@ -1462,3 +1474,209 @@ struct Buffer {
         return buffer;
     }
 };
+
+struct DescriptorLayoutBuilder {
+    VulkanContext & context;
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    std::set<VkDescriptorSetLayout> layouts;
+    DescriptorLayoutBuilder(VulkanContext& context):context(context) { }
+    DescriptorLayoutBuilder & addStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlagBits stages) {
+        VkDescriptorSetLayoutBinding desc = {};
+        desc.binding = binding,
+        desc.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        desc.descriptorCount = count,
+        desc.stageFlags = stages;
+        bindings.push_back(desc);
+        return *this;
+    }
+    DescriptorLayoutBuilder & addSampler(uint32_t binding, uint32_t count, VkShaderStageFlagBits stages) {
+        VkDescriptorSetLayoutBinding desc = {};
+        desc.binding = binding,
+        desc.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        desc.descriptorCount = count,
+        desc.stageFlags = stages;
+        bindings.push_back(desc);
+        return *this;
+    }
+    DescriptorLayoutBuilder & addUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlagBits stages) {
+        VkDescriptorSetLayoutBinding desc = {};
+        desc.binding = binding,
+        desc.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        desc.descriptorCount = count,
+        desc.stageFlags = stages;
+        bindings.push_back(desc);
+        return *this;
+    }
+    VkDescriptorSetLayout build() {
+        VkDescriptorSetLayoutCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        info.bindingCount = static_cast<uint32_t>(bindings.size());
+        VkDescriptorSetLayout layout;
+        if (vkCreateDescriptorSetLayout(context.device, &info, nullptr, &layout) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create descriptor set layout");
+        }
+        this->layouts.emplace(layout);
+        return layout;
+    }
+    void reset() {
+        bindings.clear();
+    }
+    ~DescriptorLayoutBuilder() {
+        for (auto& layout : layouts) {
+            vkDestroyDescriptorSetLayout(context.device, layout, nullptr);
+        }
+    }
+};
+
+struct DescriptorPoolBuilder {
+    std::vector<VkDescriptorPoolSize> sizes;
+    uint32_t _maxDescriptorSets;
+    DescriptorPoolBuilder():_maxDescriptorSets(1) {}
+    DescriptorPoolBuilder & addStorageBuffer(uint32_t count) {
+        sizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, count});
+        return *this;
+    }
+    DescriptorPoolBuilder & addSampler(uint32_t count) {
+        sizes.push_back({VK_DESCRIPTOR_TYPE_SAMPLER, count});
+        return *this;
+    }
+    DescriptorPoolBuilder & addUniformBuffer(uint32_t count) {
+        sizes.push_back({VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count});
+        return *this;
+    }
+    DescriptorPoolBuilder & maxSets(uint32_t count) {
+        _maxDescriptorSets = count;
+        return *this;
+    }
+};
+
+struct DescriptorPool {
+    VulkanContext & context;
+    VkDescriptorPool pool;
+    DescriptorPool(VulkanContext & context, DescriptorPoolBuilder & builder):context(context) {
+        if (builder.sizes.empty()) {
+            throw std::runtime_error("No sizes provided for Descriptor Pool");
+        }
+        VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {};
+        descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        descriptorPoolCreateInfo.poolSizeCount = builder.sizes.size();
+        descriptorPoolCreateInfo.pPoolSizes = builder.sizes.data();
+        descriptorPoolCreateInfo.maxSets = builder._maxDescriptorSets;
+
+        if (VK_SUCCESS != vkCreateDescriptorPool(context.device, &descriptorPoolCreateInfo, nullptr, &pool)) {
+            throw std::runtime_error("Failed to create descriptor pool");
+        }
+    }
+    void reset() {
+        vkResetDescriptorPool(context.device, pool, 0);
+    }
+    VkDescriptorSet allocate(VkDescriptorSetLayout layout) {
+        VkDescriptorSetAllocateInfo allocInfo = {};
+        allocInfo.sType  = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool  = pool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &layout;
+
+        VkDescriptorSet descriptorSet;
+        if (VK_SUCCESS != vkAllocateDescriptorSets(context.device, &allocInfo, &descriptorSet)) {
+            throw std::runtime_error("Failed to allocate descriptor set");
+        }
+        return descriptorSet;
+    }
+    ~DescriptorPool() {
+        reset();
+        vkDestroyDescriptorPool(context.device, pool, nullptr);
+    }
+};
+
+struct DescriptorSetBinder {
+    std::vector<VkWriteDescriptorSet> descriptorWriteSets;
+    VulkanContext& context;
+    std::vector<VkDescriptorImageInfo> imageInfos;
+    std::vector<VkDescriptorBufferInfo> bufferInfos;
+    DescriptorSetBinder(VulkanContext & context):context(context) {}
+    void bindSampler(VkDescriptorSet descriptorSet, uint32_t bindingIndex, TextureSampler & sampler, Image & image) {
+        VkDescriptorImageInfo imageInfo = {};
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.imageView = image.imageView;
+        imageInfo.sampler = sampler;
+
+        imageInfos.push_back(imageInfo);
+
+        VkWriteDescriptorSet descriptorWrite = {};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrite.dstSet = descriptorSet;
+        descriptorWrite.dstBinding = bindingIndex; // match binding point in shader
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorWrite.descriptorCount = 1;
+        descriptorWrite.pImageInfo = &imageInfos.back();
+
+        descriptorWriteSets.push_back(descriptorWrite);
+    }
+    void bindUniformBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, Buffer & buffer, uint64_t size) {
+        VkDescriptorBufferInfo bufferInfo = {};
+        bufferInfo.buffer = buffer;
+        bufferInfo.offset = 0;
+        bufferInfo.range = size;
+        bufferInfos.push_back(bufferInfo);
+
+        VkWriteDescriptorSet descriptorWrite = {};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrite.dstSet = descriptorSet;
+        descriptorWrite.dstBinding = 0; // match binding point in shader
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptorWrite.descriptorCount = 1;
+        descriptorWrite.pBufferInfo = &bufferInfos.back();
+
+        descriptorWriteSets.push_back(descriptorWrite);
+    }
+    void bindStorageBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, Buffer & buffer) {
+        VkDescriptorBufferInfo bufferInfo = {};
+        bufferInfo.buffer = buffer;
+        bufferInfo.offset = 0;
+        bufferInfo.range = VK_WHOLE_SIZE;
+        bufferInfos.push_back(bufferInfo);
+
+        VkWriteDescriptorSet descriptorWrite = {};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrite.dstSet = descriptorSet;
+        descriptorWrite.dstBinding = bindingIndex; // match binding point in shader
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        descriptorWrite.descriptorCount = 1;
+        descriptorWrite.pBufferInfo = &bufferInfos.back();
+
+        descriptorWriteSets.push_back(descriptorWrite);
+    }
+    void updateSets() {
+        vkUpdateDescriptorSets(context.device, descriptorWriteSets.size(), descriptorWriteSets.data(), 0, nullptr);
+        descriptorWriteSets.clear();
+        imageInfos.clear();
+        bufferInfos.clear();
+    }
+};
+
+VkSemaphore createSemaphore(VulkanContext & context) {
+    VkSemaphoreCreateInfo createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    VkSemaphore semaphore;
+    
+    if (vkCreateSemaphore(context.device, &createInfo, NULL, &semaphore) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create semaphore");
+    }
+
+    context.semaphores.push_back(semaphore);
+
+    return semaphore;
+}
+
+VkFence createFence(VulkanContext & context) {
+    VkFenceCreateInfo createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence fence;
+    if (VK_SUCCESS != vkCreateFence(context.device, &createInfo, nullptr, &fence)) {
+        throw std::runtime_error("failed to create fence");
+    }
+    context.fences.push_back(fence);
+    return fence;
+}

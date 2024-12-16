@@ -360,35 +360,6 @@ void updateDescriptorSet(VkDevice device, std::vector<VkWriteDescriptorSet> & wr
     vkUpdateDescriptorSets(device, writeDescrptorSets.size(), writeDescrptorSets.data(), 0, nullptr);
 }
 
-VkSemaphore createSemaphore(VkDevice device) {
-    VkSemaphoreCreateInfo createInfo = {};
-    createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    createInfo.flags = 0;
-    createInfo.pNext = nullptr;
-
-    VkSemaphore semaphore;
-    
-    if (vkCreateSemaphore(device, &createInfo, NULL, &semaphore) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create semaphore");
-    }
-
-    return semaphore;
-}
-
-VkFence createFence(VkDevice device) {
-    VkFenceCreateInfo createInfo = {};
-    createInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    createInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    createInfo.pNext = nullptr;
-
-    VkFence fence;
-    if (vkCreateFence(device, &createInfo, NULL, &fence) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create fence");
-    }
-
-    return fence;
-}
-
 void recordRenderPass(
     VkExtent2D extent,
     VkPipeline computePipeline,
@@ -609,9 +580,9 @@ int main(int argc, char *argv[]) {
 
     // sync primitives
     // It is a good idea to have a separate semaphore for each swapchain image, but for simplicity we use a single one.
-    VkSemaphore imageAvailableSemaphore = createSemaphore(device);
-    VkSemaphore renderFinishedSemaphore = createSemaphore(device);
-    VkFence fence = createFence(device);
+    VkSemaphore imageAvailableSemaphore = createSemaphore(context);
+    VkSemaphore renderFinishedSemaphore = createSemaphore(context);
+    VkFence fence = createFence(context);
     
     uint nextImage = 0;
 
@@ -670,9 +641,6 @@ int main(int argc, char *argv[]) {
     textureSampler.reset();
     textureImage.reset();
 
-    vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
-    vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
-    vkDestroyFence(device, fence, nullptr);
     vkDestroyPipeline(device, computePipeline, nullptr);
     vkDestroyPipeline(device, graphicsPipeline, nullptr);
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
@@ -686,5 +654,5 @@ int main(int argc, char *argv[]) {
     contextPtr.reset();
     SDL_Quit();
 
-    return 1;
+    return 0;
 }
