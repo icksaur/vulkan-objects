@@ -230,17 +230,6 @@ VkPipeline createComputePipeline(VkDevice device, VkPipelineLayout pipelineLayou
     return computePipeline;
 }
 
-std::tuple<VkBuffer, VkDeviceMemory> createShaderStorageBuffer(VkPhysicalDevice gpu, VkDevice device) {
-    VkBuffer buffer;
-    VkDeviceMemory memory;
-
-    size_t byteCount = sizeof(float) * 5 * 6 * quadCount; // 6 vertices of 5 floats each per quad
-
-    std::tie(buffer, memory) = createBuffer(gpu, device, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, byteCount);
-
-    return std::make_tuple(buffer, memory);
-}
-
 VkDescriptorSetLayout createDescriptorSetLayout(VkDevice device) {
     VkDescriptorSetLayoutBinding uboLayoutBinding = {};
     uboLayoutBinding.binding = 0; // match binding point in shader
@@ -273,36 +262,6 @@ VkDescriptorSetLayout createDescriptorSetLayout(VkDevice device) {
     }
 
     return descriptorSetLayout;
-}
-
-std::tuple<VkDescriptorPool, VkDescriptorSet> createDescriptorSet(VkDevice device, VkDescriptorSetLayout descriptorSetLayout) {
-    VkDescriptorPoolSize poolSizes[3];
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = 1;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; // binds both VkImageView and VkSampler
-    poolSizes[1].descriptorCount = 1;
-    poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; // compute shader storage buffer
-    poolSizes[2].descriptorCount = 1;
-
-    VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {};
-    descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    descriptorPoolCreateInfo.poolSizeCount = 3;
-    descriptorPoolCreateInfo.pPoolSizes = poolSizes;
-    descriptorPoolCreateInfo.maxSets = 1;
-
-    VkDescriptorPool descriptorPool;
-    vkCreateDescriptorPool(device, &descriptorPoolCreateInfo, nullptr, &descriptorPool);
-
-    VkDescriptorSetAllocateInfo allocInfo = {};
-    allocInfo.sType  = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool  = descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &descriptorSetLayout;
-
-    VkDescriptorSet descriptorSet;
-    vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet);
-
-    return std::make_tuple(descriptorPool, descriptorSet);
 }
 
 VkWriteDescriptorSet createBufferToDescriptorSetBinding(VkDevice device, VkDescriptorSet descriptorSet, VkBuffer uniformBuffer, VkDescriptorBufferInfo & bufferInfo) {
@@ -543,7 +502,9 @@ int main(int argc, char *argv[]) {
     vertexBuffer->setData(vertices, sizeof(vertices));
 
     // descriptor of uniforms, both uniform buffer and sampler
-    VkDescriptorSetLayout descriptorSetLayout = createDescriptorSetLayout(device);
+    std::unique_ptr<DescriptorLayoutBuilder> layoutBuilder = std::make_unique<DescriptorLayoutBuilder>(context);
+    layoutBuilder->addUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT).addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT).addStorageBuffer(2, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    VkDescriptorSetLayout descriptorSetLayout = layoutBuilder->build();
 
     DescriptorPoolBuilder poolBuilder;
     poolBuilder.addSampler(1).addStorageBuffer(1).addUniformBuffer(1).maxSets(1);
@@ -631,9 +592,8 @@ int main(int argc, char *argv[]) {
 
     vkQueueWaitIdle(graphicsQueue); // wait until we're done or the render finished semaphore may be in use
 
-    vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-
     descriptorPool.reset();
+    layoutBuilder.reset();
     vertexBuffer.reset();
     shaderStorageBuffer.reset();
     uniformBuffer.reset();

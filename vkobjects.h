@@ -1514,6 +1514,8 @@ struct DescriptorLayoutBuilder {
         VkDescriptorSetLayoutCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         info.bindingCount = static_cast<uint32_t>(bindings.size());
+        info.pBindings = bindings.data();
+        
         VkDescriptorSetLayout layout;
         if (vkCreateDescriptorSetLayout(context.device, &info, nullptr, &layout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create descriptor set layout");
