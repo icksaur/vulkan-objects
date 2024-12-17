@@ -1238,6 +1238,9 @@ struct RenderPass {
             throw std::runtime_error("failed to create render pass");
         }
     }
+    operator VkRenderPass() const {
+        return renderpass;
+    }
     ~RenderPass() {
         vkDestroyRenderPass(context.device, renderpass, nullptr);
     }
@@ -1537,7 +1540,7 @@ struct DescriptorPoolBuilder {
         return *this;
     }
     DescriptorPoolBuilder & addSampler(uint32_t count) {
-        sizes.push_back({VK_DESCRIPTOR_TYPE_SAMPLER, count});
+        sizes.push_back({VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count});
         return *this;
     }
     DescriptorPoolBuilder & addUniformBuffer(uint32_t count) {
@@ -1568,6 +1571,7 @@ struct DescriptorPool {
         }
     }
     void reset() {
+        // freeing each descriptor requires the pool have the "free" bit. Look online for use cases for individual free.
         vkResetDescriptorPool(context.device, pool, 0);
     }
     VkDescriptorSet allocate(VkDescriptorSetLayout layout) {

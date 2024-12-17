@@ -544,10 +544,11 @@ int main(int argc, char *argv[]) {
 
     // descriptor of uniforms, both uniform buffer and sampler
     VkDescriptorSetLayout descriptorSetLayout = createDescriptorSetLayout(device);
-    
-    VkDescriptorPool descriptorPool;
-    VkDescriptorSet descriptorSet;
-    std::tie(descriptorPool, descriptorSet) = createDescriptorSet(device, descriptorSetLayout);
+
+    DescriptorPoolBuilder poolBuilder;
+    poolBuilder.addSampler(1).addStorageBuffer(1).addUniformBuffer(1).maxSets(1);
+    std::unique_ptr<DescriptorPool> descriptorPool = std::make_unique<DescriptorPool>(context, poolBuilder);
+    VkDescriptorSet descriptorSet = descriptorPool->allocate(descriptorSetLayout);
 
     // memory for these have to survive until updateDescriptorSet below
     VkDescriptorBufferInfo uniformBufferInfo;
@@ -568,7 +569,7 @@ int main(int argc, char *argv[]) {
     renderpassBuilder.colorRef(0).depthRef(1);
 
     std::unique_ptr<RenderPass> renderPassPtr = std::make_unique<RenderPass>(renderpassBuilder);
-    VkRenderPass & renderPass = renderPassPtr->renderpass;
+    VkRenderPass renderPass = *renderPassPtr;
     
     std::vector<VkFramebuffer> presentFramebuffers(chainImages.size());
     createPresentFramebuffers(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, renderPass, chainImageViews, presentFramebuffers, depthImageView);
@@ -630,11 +631,9 @@ int main(int argc, char *argv[]) {
 
     vkQueueWaitIdle(graphicsQueue); // wait until we're done or the render finished semaphore may be in use
 
-    // freeing each descriptor requires the pool have the "free" bit. Look online for use cases for individual free.
-    vkResetDescriptorPool(device, descriptorPool, 0); // frees all the descriptors
-    vkDestroyDescriptorPool(device, descriptorPool, nullptr);
     vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 
+    descriptorPool.reset();
     vertexBuffer.reset();
     shaderStorageBuffer.reset();
     uniformBuffer.reset();
