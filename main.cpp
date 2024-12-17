@@ -230,95 +230,6 @@ VkPipeline createComputePipeline(VkDevice device, VkPipelineLayout pipelineLayou
     return computePipeline;
 }
 
-VkDescriptorSetLayout createDescriptorSetLayout(VkDevice device) {
-    VkDescriptorSetLayoutBinding uboLayoutBinding = {};
-    uboLayoutBinding.binding = 0; // match binding point in shader
-    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    uboLayoutBinding.descriptorCount = 1;
-    uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-
-    VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
-    samplerLayoutBinding.binding = 1; // match binding point in shader
-    samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; // binds both VkImageView and VkSampler
-    samplerLayoutBinding.descriptorCount = 1;
-    samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    VkDescriptorSetLayoutBinding ssboLayoutBinding = {};
-    ssboLayoutBinding.binding = 2, // match binding point in shader
-    ssboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-    ssboLayoutBinding.descriptorCount = 1;
-    ssboLayoutBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    VkDescriptorSetLayoutBinding bindings[] {uboLayoutBinding, samplerLayoutBinding, ssboLayoutBinding};
-
-    VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 3;
-    layoutInfo.pBindings = bindings;
-
-    VkDescriptorSetLayout descriptorSetLayout;
-    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create descriptor set layout");
-    }
-
-    return descriptorSetLayout;
-}
-
-VkWriteDescriptorSet createBufferToDescriptorSetBinding(VkDevice device, VkDescriptorSet descriptorSet, VkBuffer uniformBuffer, VkDescriptorBufferInfo & bufferInfo) {
-    bufferInfo = {};
-    bufferInfo.buffer = uniformBuffer;
-    bufferInfo.offset = 0;
-    bufferInfo.range = sizeof(float)*16;
-
-    VkWriteDescriptorSet descriptorWrite = {};
-    descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrite.dstSet = descriptorSet;
-    descriptorWrite.dstBinding = 0; // match binding point in shader
-    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    descriptorWrite.descriptorCount = 1;
-    descriptorWrite.pBufferInfo = &bufferInfo;
-
-    return descriptorWrite;
-}
-
-VkWriteDescriptorSet createSamplerToDescriptorSetBinding(VkDevice device, VkDescriptorSet descriptorSet, VkSampler sampler, VkImageView imageView, VkDescriptorImageInfo & imageInfo) {
-    imageInfo = {};
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfo.imageView = imageView;
-    imageInfo.sampler = sampler;
-
-    VkWriteDescriptorSet descriptorWrite = {};
-    descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrite.dstSet = descriptorSet;
-    descriptorWrite.dstBinding = 1; // match binding point in shader
-    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    descriptorWrite.descriptorCount = 1;
-    descriptorWrite.pImageInfo = &imageInfo;
-
-    return descriptorWrite;
-}
-
-VkWriteDescriptorSet createSsboToDescriptorSetBinding(VkDevice device, VkDescriptorSet descriptorSet, VkBuffer shaderStorageBuffer, VkDescriptorBufferInfo & bufferInfo) {
-    bufferInfo = {};
-    bufferInfo.buffer = shaderStorageBuffer;
-    bufferInfo.offset = 0;
-    bufferInfo.range = VK_WHOLE_SIZE;
-
-    VkWriteDescriptorSet descriptorWrite = {};
-    descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrite.dstSet = descriptorSet;
-    descriptorWrite.dstBinding = 2; // match binding point in shader
-    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    descriptorWrite.descriptorCount = 1;
-    descriptorWrite.pBufferInfo = &bufferInfo;
-
-    return descriptorWrite;
-}
-
-void updateDescriptorSet(VkDevice device, std::vector<VkWriteDescriptorSet> & writeDescrptorSets) {
-    vkUpdateDescriptorSets(device, writeDescrptorSets.size(), writeDescrptorSets.data(), 0, nullptr);
-}
-
 void recordRenderPass(
     VkExtent2D extent,
     VkPipeline computePipeline,
@@ -506,24 +417,19 @@ int main(int argc, char *argv[]) {
     layoutBuilder->addUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT).addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT).addStorageBuffer(2, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayout descriptorSetLayout = layoutBuilder->build();
 
+    // descriptor pool for allocating descriptors
     DescriptorPoolBuilder poolBuilder;
     poolBuilder.addSampler(1).addStorageBuffer(1).addUniformBuffer(1).maxSets(1);
     std::unique_ptr<DescriptorPool> descriptorPool = std::make_unique<DescriptorPool>(context, poolBuilder);
+    
+    // create a descriptor set and bind resources to it
     VkDescriptorSet descriptorSet = descriptorPool->allocate(descriptorSetLayout);
-
-    // memory for these have to survive until updateDescriptorSet below
-    VkDescriptorBufferInfo uniformBufferInfo;
-    VkDescriptorImageInfo imageInfo;
-    VkDescriptorBufferInfo shaderStorageBufferInfo;
-
-    // note that each binding takes a descriptor set.
-    std::vector<VkWriteDescriptorSet> descriptorWriteSets;
-    descriptorWriteSets.push_back(createBufferToDescriptorSetBinding(device, descriptorSet, *uniformBuffer, uniformBufferInfo));
-    descriptorWriteSets.push_back(createSamplerToDescriptorSetBinding(device, descriptorSet, *textureSampler, textureImage->imageView, imageInfo));
-    descriptorWriteSets.push_back(createSsboToDescriptorSetBinding(device, descriptorSet, *shaderStorageBuffer, shaderStorageBufferInfo));
-
-    updateDescriptorSet(device, descriptorWriteSets); // note that bindings already have their descriptor set, so it is not passed in here
-
+    DescriptorSetBinder binder(context);
+    binder.bindUniformBuffer(descriptorSet, 0, *uniformBuffer, sizeof(float)*16);
+    binder.bindSampler(descriptorSet, 1, *textureSampler, *textureImage);
+    binder.bindStorageBuffer(descriptorSet, 2, *shaderStorageBuffer);
+    binder.updateSets();
+    
     // render pass and present buffers
     RenderpassBuilder renderpassBuilder(context);
     renderpassBuilder.colorAttachment().depthAttachment();

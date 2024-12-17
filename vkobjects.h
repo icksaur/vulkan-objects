@@ -1515,7 +1515,7 @@ struct DescriptorLayoutBuilder {
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         info.bindingCount = static_cast<uint32_t>(bindings.size());
         info.pBindings = bindings.data();
-        
+
         VkDescriptorSetLayout layout;
         if (vkCreateDescriptorSetLayout(context.device, &info, nullptr, &layout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create descriptor set layout");
@@ -1615,7 +1615,9 @@ struct DescriptorSetBinder {
         descriptorWrite.dstBinding = bindingIndex; // match binding point in shader
         descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pImageInfo = &imageInfos.back();
+
+        // store index into info vector since pointer may become invalidated
+        descriptorWrite.pImageInfo = (VkDescriptorImageInfo*)(imageInfos.size()-1);
 
         descriptorWriteSets.push_back(descriptorWrite);
     }
@@ -1629,10 +1631,12 @@ struct DescriptorSetBinder {
         VkWriteDescriptorSet descriptorWrite = {};
         descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         descriptorWrite.dstSet = descriptorSet;
-        descriptorWrite.dstBinding = 0; // match binding point in shader
+        descriptorWrite.dstBinding = bindingIndex; // match binding point in shader
         descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pBufferInfo = &bufferInfos.back();
+
+        // store index into info vector since pointer may become invalidated
+        descriptorWrite.pBufferInfo = (VkDescriptorBufferInfo*)(bufferInfos.size()-1);
 
         descriptorWriteSets.push_back(descriptorWrite);
     }
@@ -1649,11 +1653,27 @@ struct DescriptorSetBinder {
         descriptorWrite.dstBinding = bindingIndex; // match binding point in shader
         descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pBufferInfo = &bufferInfos.back();
+
+        // store index into info vector since pointer may become invalidated
+        descriptorWrite.pBufferInfo = (VkDescriptorBufferInfo*)(bufferInfos.size()-1);
 
         descriptorWriteSets.push_back(descriptorWrite);
     }
     void updateSets() {
+        // we can't keep pointers into the vectors because vectors can resize
+        // convert indices into up-to-date pointers
+        for (auto& write : descriptorWriteSets) {
+            switch (write.descriptorType)
+            {
+                case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+                case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+                    write.pBufferInfo = &bufferInfos[(size_t)write.pBufferInfo];
+                    break;
+                case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+                    write.pImageInfo = &imageInfos[(size_t)write.pImageInfo];
+                    break;
+            }
+        }
         vkUpdateDescriptorSets(context.device, descriptorWriteSets.size(), descriptorWriteSets.data(), 0, nullptr);
         descriptorWriteSets.clear();
         imageInfos.clear();
