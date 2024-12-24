@@ -1335,7 +1335,6 @@ struct Image {
     VkImage image;
     VkDeviceMemory memory;
     VkImageView imageView;
-    Image & operator=(const Image & other) = delete;
     Image(Image && other):context(other.context) {
         image = other.image;
         memory = other.memory;
@@ -1437,6 +1436,7 @@ struct Image {
         imageView = createImageView(context.device, image, builder.format, aspectFlags, mipLevels);
     }
     ~Image() {
+        // these are all safe if they are already VK_NULL_HANDLE
         vkDestroyImageView(context.device, imageView, nullptr);
         vkFreeMemory(context.device, memory, nullptr);
         vkDestroyImage(context.device, image, nullptr);
@@ -1746,12 +1746,10 @@ enum ImageType {
 struct FramebufferBuilder {
     std::vector<ImageType> imageTypes;
     size_t swapchainIndex;
-    FramebufferBuilder & index(size_t index) {
-        swapchainIndex = index;
-        return *this;
-    }
-    FramebufferBuilder & present() {
+    FramebufferBuilder():swapchainIndex(0) { }
+    FramebufferBuilder & present(size_t swapchainIndex) {
         imageTypes.push_back(ImageType::Present);
+        this->swapchainIndex = swapchainIndex;
         return *this;
     }
     FramebufferBuilder & color() {
@@ -1768,24 +1766,32 @@ struct Framebuffer {
     std::vector<Image> images;
     VkFramebuffer framebuffer;
     VkRenderPass renderpass;
+    Framebuffer(Framebuffer && other):context(other.context),images(std::move(other.images)),framebuffer(other.framebuffer),renderpass(other.renderpass) {
+        other.framebuffer = VK_NULL_HANDLE;
+        other.renderpass = VK_NULL_HANDLE;
+    }
     Framebuffer(FramebufferBuilder & builder, VulkanContext & context, VkRenderPass renderpass):context(context),renderpass(renderpass) {
+        if (builder.imageTypes.empty()) {
+            throw std::runtime_error("Framebuffer builder must specify at least one image type");
+        }
         std::vector<VkImageView> imageViews;
         for (ImageType imageType : builder.imageTypes) {
-            VkFormat format;
             switch (imageType) {
                 case ImageType::Color:
-                    images.push_back(Image(ImageBuilder(context).forFramebuffer(VK_FORMAT_R8G8B8A8_UNORM)));
+                    images.emplace_back(ImageBuilder(context).forFramebuffer(VK_FORMAT_R8G8B8A8_UNORM));
                     imageViews.push_back(images.back().imageView);
                     break;
                 case ImageType::Depth:
-                    images.push_back(Image(ImageBuilder(context).forFramebuffer(VK_FORMAT_D32_SFLOAT)));
+                    images.emplace_back(ImageBuilder(context).forDepthBuffer());
                     imageViews.push_back(images.back().imageView);
                     break;
                 case ImageType::Present:
+                    if (builder.swapchainIndex >= context.swapchainImageCount) {
+                        throw std::runtime_error("builder swapchain index is greater than swapchain image count");
+                    }
                     imageViews.push_back(context.swapchainImageViews[builder.swapchainIndex]);
                     break;
             }
-            images.push_back(Image(ImageBuilder(context).forFramebuffer(format)));
         }
 
         VkFramebufferCreateInfo framebufferInfo = {};
@@ -1794,11 +1800,14 @@ struct Framebuffer {
         framebufferInfo.attachmentCount = imageViews.size();
         framebufferInfo.pAttachments = imageViews.data();
         framebufferInfo.width = context.windowWidth;
-        framebufferInfo.height = context.windowHeight;
+        framebufferInfo.height = context.windowHeight; 
         framebufferInfo.layers = 1;
 
         if (vkCreateFramebuffer(context.device, &framebufferInfo, nullptr, &framebuffer) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create framebuffer!");
+            throw std::runtime_error("failed to create framebuffer");
         }
+    }
+    ~Framebuffer() {
+        vkDestroyFramebuffer(context.device, framebuffer, nullptr); // safe if already VK_NULL_HANDLE
     }
 };

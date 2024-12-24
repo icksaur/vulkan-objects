@@ -369,9 +369,6 @@ int main(int argc, char *argv[]) {
     std::vector<VkCommandBuffer> & commandBuffers = context.commandBuffers;
     VkQueue & graphicsQueue = context.graphicsQueue;
 
-    std::unique_ptr<Image> depthImage = std::make_unique<Image>(ImageBuilder(context).forDepthBuffer());
-
-
     // shader objects
     std::unique_ptr<ShaderModule> vertShaderModule = std::make_unique<ShaderModule>(ShaderBuilder(context).vertex().fromFile("tri.vert.spv"));
     std::unique_ptr<ShaderModule> fragShaderModule = std::make_unique<ShaderModule>(ShaderBuilder(context).fragment().fromFile("tri.frag.spv"));
@@ -438,8 +435,12 @@ int main(int argc, char *argv[]) {
     renderpassBuilder.colorRef(0).depthRef(1);
     VkRenderPass renderPass = renderpassBuilder.build();
     
-    std::vector<VkFramebuffer> presentFramebuffers(chainImages.size());
-    createPresentFramebuffers(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, renderPass, chainImageViews, presentFramebuffers, depthImage->imageView);
+    std::vector<Framebuffer> presentFramebuffers;
+    presentFramebuffers.reserve(context.swapchainImageCount);
+    
+    for (size_t i = 0; i < context.swapchainImageCount; ++i) {
+        presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), context, renderPass);
+    }
 
     // pipelines
     VkPipelineLayout pipelineLayout = createPipelineLayout(device, descriptorSetLayout);
@@ -471,7 +472,7 @@ int main(int argc, char *argv[]) {
         }
 
 #ifdef COMPUTE_VERTICES
-        recordRenderPass(VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, computePipeline, graphicsPipeline, renderPass, presentFramebuffers[nextImage], commandBuffers[nextImage], *shaderStorageBuffer, pipelineLayout, descriptorSet);
+        recordRenderPass(VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, computePipeline, graphicsPipeline, renderPass, presentFramebuffers[nextImage].framebuffer, commandBuffers[nextImage], *shaderStorageBuffer, pipelineLayout, descriptorSet);
 #else
         recordRenderPass(VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, computePipeline, graphicsPipeline, renderPass, presentFramebuffers[nextImage], commandBuffers[nextImage], *vertexBuffer, pipelineLayout, descriptorSet);
 #endif
@@ -484,13 +485,11 @@ int main(int argc, char *argv[]) {
             // We need to remake our swap chain, image views, and framebuffers.
             vkDeviceWaitIdle(device);
             rebuildPresentationResources(context);
-    
-            depthImage = std::make_unique<Image>(ImageBuilder(context).forDepthBuffer());
 
-            for (VkFramebuffer framebuffer : presentFramebuffers) {
-                vkDestroyFramebuffer(device, framebuffer, nullptr);
+            presentFramebuffers.clear();
+            for (size_t i=0; i<chainImageViews.size(); ++i) {
+                presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), context, renderPass);
             }
-            createPresentFramebuffers(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, renderPass, chainImageViews, presentFramebuffers, depthImage->imageView);
         }
         SDL_Delay(100);
         
@@ -507,14 +506,11 @@ int main(int argc, char *argv[]) {
     uniformBuffer.reset();
     textureSampler.reset();
     textureImage.reset();
-    depthImage.reset();
 
     vkDestroyPipeline(device, computePipeline, nullptr);
     vkDestroyPipeline(device, graphicsPipeline, nullptr);
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-    for (VkFramebuffer framebuffer : presentFramebuffers) {
-        vkDestroyFramebuffer(device, framebuffer, nullptr);
-    }
+    presentFramebuffers.clear();
 
     vertShaderModule.reset();
     compShaderModule.reset();
