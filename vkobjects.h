@@ -1402,7 +1402,7 @@ struct Image {
         }
 
         // Vulkan spec says images MUST be created either undefined or preinitialized layout, so we can't jump straight to desired layout.
-        transitionImageLayout(context.device, context.commandPool, context.graphicsQueue, image, builder.format, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        transitionImageLayout(context.device, context.commandPool, context.graphicsQueue, image, builder.format, 1, VK_IMAGE_LAYOUT_UNDEFINED, desiredLayout);
 
         if (builder.byteCount > 0) { 
             VkBuffer stagingBuffer;
@@ -1427,7 +1427,14 @@ struct Image {
             // todo: transition the single image to the optimal layout for sampling
         }
 
-        imageView = createImageView(context.device, image, builder.format, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
+        VkImageAspectFlags aspectFlags;
+        if (builder.isDepthBuffer) {
+            aspectFlags = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        } else {
+            aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
+        }
+
+        imageView = createImageView(context.device, image, builder.format, aspectFlags, mipLevels);
     }
     ~Image() {
         vkDestroyImageView(context.device, imageView, nullptr);

@@ -369,11 +369,7 @@ int main(int argc, char *argv[]) {
     std::vector<VkCommandBuffer> & commandBuffers = context.commandBuffers;
     VkQueue & graphicsQueue = context.graphicsQueue;
 
-    //depth buffer
-    VkImageView depthImageView;
-    VkImage depthImage;
-    VkDeviceMemory depthImageMemory;
-    std::tie(depthImageView, depthImage, depthImageMemory) = createDepthBuffer(context.physicalDevice, device, context.commandPool, graphicsQueue, context.windowWidth, context.windowHeight);
+    std::unique_ptr<Image> depthImage = std::make_unique<Image>(ImageBuilder(context).forDepthBuffer());
 
 
     // shader objects
@@ -443,7 +439,7 @@ int main(int argc, char *argv[]) {
     VkRenderPass renderPass = renderpassBuilder.build();
     
     std::vector<VkFramebuffer> presentFramebuffers(chainImages.size());
-    createPresentFramebuffers(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, renderPass, chainImageViews, presentFramebuffers, depthImageView);
+    createPresentFramebuffers(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, renderPass, chainImageViews, presentFramebuffers, depthImage->imageView);
 
     // pipelines
     VkPipelineLayout pipelineLayout = createPipelineLayout(device, descriptorSetLayout);
@@ -489,17 +485,12 @@ int main(int argc, char *argv[]) {
             vkDeviceWaitIdle(device);
             rebuildPresentationResources(context);
     
-            // Recreate the depth buffer and framebuffers
-            vkDestroyImage(device, depthImage, nullptr);
-            vkFreeMemory(device, depthImageMemory, nullptr);
-            vkDestroyImageView(device, depthImageView, nullptr);
-
-            std::tie(depthImageView, depthImage, depthImageMemory) = createDepthBuffer(context.physicalDevice, device, context.commandPool, graphicsQueue, context.windowWidth, context.windowHeight);
+            depthImage = std::make_unique<Image>(ImageBuilder(context).forDepthBuffer());
 
             for (VkFramebuffer framebuffer : presentFramebuffers) {
                 vkDestroyFramebuffer(device, framebuffer, nullptr);
             }
-            createPresentFramebuffers(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, renderPass, chainImageViews, presentFramebuffers, depthImageView);
+            createPresentFramebuffers(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, renderPass, chainImageViews, presentFramebuffers, depthImage->imageView);
         }
         SDL_Delay(100);
         
@@ -516,6 +507,7 @@ int main(int argc, char *argv[]) {
     uniformBuffer.reset();
     textureSampler.reset();
     textureImage.reset();
+    depthImage.reset();
 
     vkDestroyPipeline(device, computePipeline, nullptr);
     vkDestroyPipeline(device, graphicsPipeline, nullptr);
@@ -523,10 +515,6 @@ int main(int argc, char *argv[]) {
     for (VkFramebuffer framebuffer : presentFramebuffers) {
         vkDestroyFramebuffer(device, framebuffer, nullptr);
     }
-
-    vkDestroyImage(device, depthImage, nullptr);
-    vkFreeMemory(device, depthImageMemory, nullptr);
-    vkDestroyImageView(device, depthImageView, nullptr);
 
     vertShaderModule.reset();
     compShaderModule.reset();
