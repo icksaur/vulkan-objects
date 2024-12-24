@@ -33,9 +33,6 @@ struct VulkanContext {
     size_t swapchainImageCount;
     std::vector<VkImage> swapchainImages;
     std::vector<VkImageView> swapchainImageViews;    // depth buffer
-    VkImageView depthImageView;
-    VkImage depthImage;
-    VkDeviceMemory depthMemory;
     VkCommandPool commandPool;
     std::vector<VkCommandBuffer> commandBuffers;
     std::vector<VkSemaphore> semaphores;
@@ -1036,9 +1033,6 @@ VulkanContext::VulkanContext(SDL_Window * window):window(window) {
     }
 
     vkGetDeviceQueue(this->device, this->graphicsQueueIndex, 0, &this->graphicsQueue);
-
-    std::tie(this->depthImageView, this->depthImage, this->depthMemory)
-        = createDepthBuffer(this->physicalDevice, this->device, this->commandPool, this->graphicsQueue, this->windowWidth, this->windowHeight);
 }
 
 void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator) {
@@ -1115,13 +1109,6 @@ void rebuildPresentationResources(VulkanContext & context) {
     createSwapChain(context, context.presentationSurface, context.physicalDevice, context.device, context.swapchain);
     getSwapChainImageHandles(context.device, context.swapchain, context.swapchainImages);
     makeChainImageViews(context.device, context.swapchain, context.colorFormat, context.swapchainImages, context.swapchainImageViews);
-
-    vkDestroyImageView(context.device, context.depthImageView, nullptr);
-    vkDestroyImage(context.device, context.depthImage, nullptr);
-    vkFreeMemory(context.device, context.depthMemory, nullptr);
-
-    std::tie(context.depthImageView, context.depthImage, context.depthMemory)
-        = createDepthBuffer(context.physicalDevice, context.device, context.commandPool, context.graphicsQueue, context.windowWidth, context.windowHeight);
 }
 
 VulkanContext::~VulkanContext() {
@@ -1135,9 +1122,6 @@ VulkanContext::~VulkanContext() {
         vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
     }
     vkDestroyCommandPool(device, commandPool, nullptr);
-    vkDestroyImageView(device, depthImageView, nullptr);
-    vkDestroyImage(device, depthImage, nullptr);
-    vkFreeMemory(device, depthMemory, nullptr);
 
     for (VkImageView view : swapchainImageViews) {
         vkDestroyImageView(device, view, nullptr);

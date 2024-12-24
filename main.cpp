@@ -367,8 +367,14 @@ int main(int argc, char *argv[]) {
     std::vector<VkImage> & chainImages = context.swapchainImages;
     std::vector<VkImageView> & chainImageViews = context.swapchainImageViews;
     std::vector<VkCommandBuffer> & commandBuffers = context.commandBuffers;
-    VkImageView & depthImageView = context.depthImageView;
     VkQueue & graphicsQueue = context.graphicsQueue;
+
+    //depth buffer
+    VkImageView depthImageView;
+    VkImage depthImage;
+    VkDeviceMemory depthImageMemory;
+    std::tie(depthImageView, depthImage, depthImageMemory) = createDepthBuffer(context.physicalDevice, device, context.commandPool, graphicsQueue, context.windowWidth, context.windowHeight);
+
 
     // shader objects
     std::unique_ptr<ShaderModule> vertShaderModule = std::make_unique<ShaderModule>(ShaderBuilder(context).vertex().fromFile("tri.vert.spv"));
@@ -482,6 +488,13 @@ int main(int argc, char *argv[]) {
             // We need to remake our swap chain, image views, and framebuffers.
             vkDeviceWaitIdle(device);
             rebuildPresentationResources(context);
+    
+            // Recreate the depth buffer and framebuffers
+            vkDestroyImage(device, depthImage, nullptr);
+            vkFreeMemory(device, depthImageMemory, nullptr);
+            vkDestroyImageView(device, depthImageView, nullptr);
+
+            std::tie(depthImageView, depthImage, depthImageMemory) = createDepthBuffer(context.physicalDevice, device, context.commandPool, graphicsQueue, context.windowWidth, context.windowHeight);
 
             for (VkFramebuffer framebuffer : presentFramebuffers) {
                 vkDestroyFramebuffer(device, framebuffer, nullptr);
@@ -510,6 +523,11 @@ int main(int argc, char *argv[]) {
     for (VkFramebuffer framebuffer : presentFramebuffers) {
         vkDestroyFramebuffer(device, framebuffer, nullptr);
     }
+
+    vkDestroyImage(device, depthImage, nullptr);
+    vkFreeMemory(device, depthImageMemory, nullptr);
+    vkDestroyImageView(device, depthImageView, nullptr);
+
     vertShaderModule.reset();
     compShaderModule.reset();
     fragShaderModule.reset();
