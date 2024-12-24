@@ -30,6 +30,7 @@ struct VulkanContext {
     VkQueue presentationQueue;
     VkSwapchainKHR swapchain;
     VkFormat colorFormat;
+    size_t swapchainImageCount;
     std::vector<VkImage> swapchainImages;
     std::vector<VkImageView> swapchainImageViews;    // depth buffer
     VkImageView depthImageView;
@@ -39,6 +40,7 @@ struct VulkanContext {
     std::vector<VkCommandBuffer> commandBuffers;
     std::vector<VkSemaphore> semaphores;
     std::vector<VkFence> fences;
+    std::vector<VkFramebuffer> presentFramebuffers;
     VkQueue graphicsQueue;
     VulkanContext(SDL_Window * window);
     ~VulkanContext();
@@ -1022,6 +1024,9 @@ VulkanContext::VulkanContext(SDL_Window * window):window(window) {
     this->swapchain = VK_NULL_HANDLE; // start null as createSwapChain recreates the chain if it exists
     createSwapChain(*this, this->presentationSurface, this->physicalDevice, this->device, this->swapchain);
     getSwapChainImageHandles(this->device, this->swapchain, this->swapchainImages);
+
+    // we have the image count now, this is used for every set of framebuffers we will need
+    this->swapchainImageCount = this->swapchainImages.size();
     makeChainImageViews(this->device, this->swapchain, this->colorFormat, this->swapchainImages, this->swapchainImageViews);
 
     this->commandPool = createCommandPool(this->device, this->graphicsQueueIndex);
@@ -1201,12 +1206,7 @@ struct RenderpassBuilder {
         depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         return *this;
     }
-};
-
-struct RenderPass {
-    VkRenderPass renderpass;
-    VulkanContext & context;
-    RenderPass(const RenderpassBuilder builder) : context(builder.context) {
+    VkRenderPass build() {
         VkSubpassDependency dependency = {};
         dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
         dependency.dstSubpass = 0;
@@ -1217,12 +1217,12 @@ struct RenderPass {
 
         VkSubpassDescription subpass = {};
         subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        if (builder.colorAttachmentRefs.size() > 0) {
-            subpass.colorAttachmentCount = builder.colorAttachmentRefs.size();
-            subpass.pColorAttachments = builder.colorAttachmentRefs.data();
+        if (this->colorAttachmentRefs.size() > 0) {
+            subpass.colorAttachmentCount = this->colorAttachmentRefs.size();
+            subpass.pColorAttachments = this->colorAttachmentRefs.data();
         }
-        if (builder.hasDepthRef) {
-            subpass.pDepthStencilAttachment = &builder.depthAttachmentRef;
+        if (this->hasDepthRef) {
+            subpass.pDepthStencilAttachment = &(this->depthAttachmentRef);
         }
 
         VkRenderPassCreateInfo renderPassInfo = {};
@@ -1231,18 +1231,15 @@ struct RenderPass {
         renderPassInfo.pSubpasses = &subpass;
         renderPassInfo.dependencyCount = 1;
         renderPassInfo.pDependencies = &dependency;
-        renderPassInfo.attachmentCount = builder.attachmentDescriptions.size();
-        renderPassInfo.pAttachments = builder.attachmentDescriptions.data();
+        renderPassInfo.attachmentCount = this->attachmentDescriptions.size();
+        renderPassInfo.pAttachments = this->attachmentDescriptions.data();
 
-        if (VK_SUCCESS != vkCreateRenderPass(builder.context.device, &renderPassInfo, nullptr, &renderpass)) {
+        VkRenderPass renderPass;
+        if (VK_SUCCESS != vkCreateRenderPass(this->context.device, &renderPassInfo, nullptr, &renderPass)) {
             throw std::runtime_error("failed to create render pass");
         }
-    }
-    operator VkRenderPass() const {
-        return renderpass;
-    }
-    ~RenderPass() {
-        vkDestroyRenderPass(context.device, renderpass, nullptr);
+
+        return renderPass;
     }
 };
 
@@ -1311,9 +1308,31 @@ struct ImageBuilder {
     int byteCount;
     VkFormat format;
     VkExtent2D extent; // width and height
-    ImageBuilder(VulkanContext & context) : context(context), buildMipmaps(true), bytes(nullptr) {}
+    bool isDepthBuffer;
+    ImageBuilder(VulkanContext & context)
+        :context(context), buildMipmaps(true), bytes(nullptr), isDepthBuffer(false) {}
     ImageBuilder & createMipmaps(bool buildMipmaps) {
         this->buildMipmaps = buildMipmaps;
+        return *this;
+    }
+    ImageBuilder & forDepthBuffer() {
+        bytes = nullptr;
+        byteCount = 0;
+        buildMipmaps = false;
+        extent.width = context.windowWidth;
+        extent.height = context.windowHeight;
+        this->format = depthFormat;
+        isDepthBuffer = true;
+        return *this;
+    }
+    ImageBuilder & forFramebuffer(VkFormat format) {
+        bytes = nullptr;
+        byteCount = 0;
+        buildMipmaps = false;
+        extent.width = context.windowWidth;
+        extent.height = context.windowHeight;
+        this->format = format;
+        isDepthBuffer = false;
         return *this;
     }
     ImageBuilder & fromBytes(void * bytes, int byteCount, int width, int height, VkFormat format) {
@@ -1322,6 +1341,7 @@ struct ImageBuilder {
         extent.width = width;
         extent.height = height;
         this->format = format;
+        isDepthBuffer = false;
         return *this;
     }
 };
@@ -1331,20 +1351,16 @@ struct Image {
     VkImage image;
     VkDeviceMemory memory;
     VkImageView imageView;
-
+    Image & operator=(const Image & other) = delete;
+    Image(Image && other):context(other.context) {
+        image = other.image;
+        memory = other.memory;
+        imageView = other.imageView;
+        other.image = VK_NULL_HANDLE;
+        other.memory = VK_NULL_HANDLE;
+        other.imageView = VK_NULL_HANDLE;
+    }
     Image(ImageBuilder & builder) : context(builder.context) {
-        // put the image bytes into a buffer for transitioning
-        VkBuffer stagingBuffer;
-        VkDeviceMemory stagingMemory;
-        std::tie(stagingBuffer, stagingMemory) = createBuffer(context.physicalDevice, context.device, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, builder.byteCount);
-
-        void * stagingBytes;
-        vkMapMemory(context.device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &stagingBytes);
-        memcpy(stagingBytes, builder.bytes, (size_t)builder.byteCount);
-        vkUnmapMemory(context.device, stagingMemory);
-        
-        // bytes belong to caller, so don't free them here
-
         size_t mipLevels;
         if (builder.buildMipmaps) {
             mipLevels = std::floor(log2(std::max(builder.extent.width, builder.extent.height))) + 1;
@@ -1364,9 +1380,13 @@ struct Image {
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // we must "transition" this image to a device-optimal format
 
-        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT // copy bytes from image into mip levels
-            | VK_IMAGE_USAGE_TRANSFER_DST_BIT // copy bytes into image
-            | VK_IMAGE_USAGE_SAMPLED_BIT; // read by sampler in shader
+        if (builder.isDepthBuffer) {
+            imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        } else {
+            imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT // copy bytes from image into mip levels
+                | VK_IMAGE_USAGE_TRANSFER_DST_BIT // copy bytes into image
+                | VK_IMAGE_USAGE_SAMPLED_BIT; // read by sampler in shader
+        }
 
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -1383,25 +1403,45 @@ struct Image {
         allocateInfo.allocationSize = memoryRequirements.size;
         allocateInfo.memoryTypeIndex = findMemoryType(context.physicalDevice, memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-        if (vkAllocateMemory(context.device, &allocateInfo, nullptr, &memory) != VK_SUCCESS) {
+        if (VK_SUCCESS != vkAllocateMemory(context.device, &allocateInfo, nullptr, &memory)) {
             throw std::runtime_error("failed to allocate image memory");
         }
-        vkBindImageMemory(context.device, image, memory, 0);
+        if (VK_SUCCESS != vkBindImageMemory(context.device, image, memory, 0)) {
+            throw std::runtime_error("failed to bind memory to image");
+        }
 
-        // Vulkan spec says images MUST be created either undefined or preinitialized layout, so we can't jump straight to DST_OPTIMAL.
+        VkImageLayout desiredLayout;
+        if (builder.isDepthBuffer) {
+            desiredLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        } else {
+            desiredLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        }
+
+        // Vulkan spec says images MUST be created either undefined or preinitialized layout, so we can't jump straight to desired layout.
         transitionImageLayout(context.device, context.commandPool, context.graphicsQueue, image, builder.format, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-        // Now the image is in DST_OPTIMAL layout and we can copy the image data to it.
-        copyBufferToImage(context.device, context.commandPool, context.graphicsQueue, stagingBuffer, image, builder.extent.width, builder.extent.height);
+        if (builder.byteCount > 0) { 
+            VkBuffer stagingBuffer;
+            VkDeviceMemory stagingMemory;
+
+            // put the image bytes into a buffer for transitioning
+            std::tie(stagingBuffer, stagingMemory) = createBuffer(context.physicalDevice, context.device, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, builder.byteCount);
+            void * stagingBytes;
+            vkMapMemory(context.device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &stagingBytes);
+            memcpy(stagingBytes, builder.bytes, (size_t)builder.byteCount);
+            vkUnmapMemory(context.device, stagingMemory);
+
+            // Now the image is in DST_OPTIMAL layout and we can copy the image data to it.
+            copyBufferToImage(context.device, context.commandPool, context.graphicsQueue, stagingBuffer, image, builder.extent.width, builder.extent.height);
+            vkFreeMemory(context.device, stagingMemory, nullptr);
+            vkDestroyBuffer(context.device, stagingBuffer, nullptr);
+        }
 
         if (builder.buildMipmaps) {
             generateMipmaps(context.device, image, context.commandPool, context.graphicsQueue, builder.extent.width, builder.extent.height, mipLevels);
         } else {
             // todo: transition the single image to the optimal layout for sampling
         }
-
-        vkFreeMemory(context.device, stagingMemory, nullptr);
-        vkDestroyBuffer(context.device, stagingBuffer, nullptr);
 
         imageView = createImageView(context.device, image, builder.format, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
     }
@@ -1706,3 +1746,68 @@ VkFence createFence(VulkanContext & context) {
     context.fences.push_back(fence);
     return fence;
 }
+enum ImageType {
+    None = 0,
+    Present = 1,
+    Color = 2,
+    Depth = 3
+};
+struct FramebufferBuilder {
+    std::vector<ImageType> imageTypes;
+    size_t swapchainIndex;
+    FramebufferBuilder & index(size_t index) {
+        swapchainIndex = index;
+        return *this;
+    }
+    FramebufferBuilder & present() {
+        imageTypes.push_back(ImageType::Present);
+        return *this;
+    }
+    FramebufferBuilder & color() {
+        imageTypes.push_back(ImageType::Color);
+        return *this;
+    }
+    FramebufferBuilder & depth() {
+        imageTypes.push_back(ImageType::Depth);
+        return *this;
+    }
+};
+struct Framebuffer {
+    VulkanContext & context;
+    std::vector<Image> images;
+    VkFramebuffer framebuffer;
+    VkRenderPass renderpass;
+    Framebuffer(FramebufferBuilder & builder, VulkanContext & context, VkRenderPass renderpass):context(context),renderpass(renderpass) {
+        std::vector<VkImageView> imageViews;
+        for (ImageType imageType : builder.imageTypes) {
+            VkFormat format;
+            switch (imageType) {
+                case ImageType::Color:
+                    images.push_back(Image(ImageBuilder(context).forFramebuffer(VK_FORMAT_R8G8B8A8_UNORM)));
+                    imageViews.push_back(images.back().imageView);
+                    break;
+                case ImageType::Depth:
+                    images.push_back(Image(ImageBuilder(context).forFramebuffer(VK_FORMAT_D32_SFLOAT)));
+                    imageViews.push_back(images.back().imageView);
+                    break;
+                case ImageType::Present:
+                    imageViews.push_back(context.swapchainImageViews[builder.swapchainIndex]);
+                    break;
+            }
+            images.push_back(Image(ImageBuilder(context).forFramebuffer(format)));
+        }
+
+        VkFramebufferCreateInfo framebufferInfo = {};
+        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebufferInfo.renderPass = renderpass;
+        framebufferInfo.attachmentCount = imageViews.size();
+        framebufferInfo.pAttachments = imageViews.data();
+        framebufferInfo.width = context.windowWidth;
+        framebufferInfo.height = context.windowHeight;
+        framebufferInfo.layers = 1;
+
+        if (vkCreateFramebuffer(context.device, &framebufferInfo, nullptr, &framebuffer) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create framebuffer!");
+        }
+    }
+};

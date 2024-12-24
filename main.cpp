@@ -61,7 +61,7 @@ void createPresentFramebuffers(VkDevice device, VkExtent2D extent, VkRenderPass 
         VkFramebufferCreateInfo framebufferInfo = {};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         framebufferInfo.renderPass = renderPass;
-        framebufferInfo.attachmentCount = 2;  // We are using only a color attachment
+        framebufferInfo.attachmentCount = 2;  // color and depth attachment
         framebufferInfo.pAttachments = imageViews;  // Image view as color attachment
         framebufferInfo.width = extent.width;
         framebufferInfo.height = extent.height;
@@ -249,6 +249,11 @@ void recordRenderPass(
         throw std::runtime_error("failed to begin command buffer");
     }
 
+    // bind and dispatch compute
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+    vkCmdDispatch(commandBuffer, 1, 1, 1);
+
     VkRenderPassBeginInfo renderPassBeginInfo = {};
     renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassBeginInfo.renderPass = renderPass;  // Your created render pass
@@ -265,11 +270,6 @@ void recordRenderPass(
 
     renderPassBeginInfo.clearValueCount = 2;                 // Two clear values (color and depth)
     renderPassBeginInfo.pClearValues = clearValues;
-
-    // bind and dispatch compute
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
-    vkCmdDispatch(commandBuffer, 1, 1, 1);
 
     // begin recording the render pass
     vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -325,11 +325,11 @@ void submitCommandBuffer(VkQueue graphicsQueue, VkCommandBuffer commandBuffer, V
 
 bool presentQueue(VkQueue presentQueue, VkSwapchainKHR & swapchain, VkSemaphore renderFinishedSemaphore, uint nextImage) {
     // Present the image to the screen, waiting for renderFinishedSemaphore
+    VkSwapchainKHR swapChains[] = {swapchain};
     VkPresentInfoKHR presentInfo = {};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     presentInfo.waitSemaphoreCount = 1;
     presentInfo.pWaitSemaphores = &renderFinishedSemaphore; // waits for this
-    VkSwapchainKHR swapChains[] = {swapchain};
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = swapChains;
     presentInfo.pImageIndices = &nextImage;
@@ -434,9 +434,7 @@ int main(int argc, char *argv[]) {
     RenderpassBuilder renderpassBuilder(context);
     renderpassBuilder.colorAttachment().depthAttachment();
     renderpassBuilder.colorRef(0).depthRef(1);
-
-    std::unique_ptr<RenderPass> renderPassPtr = std::make_unique<RenderPass>(renderpassBuilder);
-    VkRenderPass renderPass = *renderPassPtr;
+    VkRenderPass renderPass = renderpassBuilder.build();
     
     std::vector<VkFramebuffer> presentFramebuffers(chainImages.size());
     createPresentFramebuffers(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, renderPass, chainImageViews, presentFramebuffers, depthImageView);
@@ -515,7 +513,7 @@ int main(int argc, char *argv[]) {
     vertShaderModule.reset();
     compShaderModule.reset();
     fragShaderModule.reset();
-    renderPassPtr.reset();
+    vkDestroyRenderPass(device, renderPass, nullptr);
     contextPtr.reset();
     SDL_Quit();
 
