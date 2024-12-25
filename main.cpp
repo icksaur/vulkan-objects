@@ -21,7 +21,27 @@ int windowHeight = 720;
 #define COMPUTE_VERTICES // comment out to try CPU uploaded vertex buffer
 size_t quadCount = 100;
 
-std::unique_ptr<Image> createImageFromTGAFile(const char * filename) {
+struct SDLWindow {
+    SDL_Window *window;
+    SDLWindow(const char * title, int w, int h) {
+        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
+            throw std::runtime_error("Failed to initialize SDL");
+        }
+        window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h, SDL_WINDOW_VULKAN);
+        if (window == nullptr) {
+            throw std::runtime_error("Failed to create SDL window");
+        }
+    }
+    ~SDLWindow() {
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+    }
+    operator SDL_Window*() {
+        return window;
+    }
+};
+
+Image createImageFromTGAFile(const char * filename) {
     std::ifstream file(filename);
     std::vector<char> fileBytes = std::vector<char>(
         std::istreambuf_iterator<char>(file),
@@ -47,23 +67,9 @@ std::unique_ptr<Image> createImageFromTGAFile(const char * filename) {
     ImageBuilder builder;
     builder.fromBytes(bytes, byteCount, width, height, format);
 
-    std::unique_ptr<Image> image = std::make_unique<Image>(builder);
+    Image image(builder);
     free(bytes);
     return image;
-}
-
-VkPipelineLayout createPipelineLayout(VkDevice device, VkDescriptorSetLayout descriptorSetLayout) {
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
-    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;  
-    pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
-
-    VkPipelineLayout pipelineLayout;
-    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create pipeline layout!");
-    }
-
-    return pipelineLayout;
 }
 
 VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D extent, VkPipelineLayout pipelineLayout, VkRenderPass renderPass, VkShaderModule vertexShaderModule, VkShaderModule fragmentShaderModule) {
@@ -326,50 +332,34 @@ bool presentQueue(VkQueue presentQueue, VkSwapchainKHR & swapchain, VkSemaphore 
 }
 
 int main(int argc, char *argv[]) {
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
-        return -1;
-    }
+    SDLWindow window(appName, windowWidth, windowHeight);
+    VulkanContext context(window);
 
-    // Create vulkan compatible window
-    SDL_Window* window = SDL_CreateWindow(appName, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, windowWidth, windowHeight, SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN);
-    if (window == nullptr) {
-        SDL_Quit();
-        return -1;
-    }
-
-    std::unique_ptr<VulkanContext> contextPtr = std::make_unique<VulkanContext>(window);
-    VulkanContext& context = *contextPtr;
-
-    VkDevice & device = context.device;
-    VkQueue & presentationQueue = context.presentationQueue;
-    VkSwapchainKHR & swapchain = context.swapchain;
-    std::vector<VkImage> & chainImages = context.swapchainImages;
-    std::vector<VkImageView> & chainImageViews = context.swapchainImageViews;
     std::vector<VkCommandBuffer> & commandBuffers = context.commandBuffers;
-    VkQueue & graphicsQueue = context.graphicsQueue;
 
     // shader objects
-    std::unique_ptr<ShaderModule> vertShaderModule = std::make_unique<ShaderModule>(ShaderBuilder().vertex().fromFile("tri.vert.spv"));
-    std::unique_ptr<ShaderModule> fragShaderModule = std::make_unique<ShaderModule>(ShaderBuilder().fragment().fromFile("tri.frag.spv"));
-    std::unique_ptr<ShaderModule> compShaderModule = std::make_unique<ShaderModule>(ShaderBuilder().compute().fromFile("vertices.comp.spv"));
+    ShaderModule fragShaderModule(ShaderBuilder().fragment().fromFile("tri.frag.spv"));
+    ShaderModule vertShaderModule(ShaderBuilder().vertex().fromFile("tri.vert.spv"));
+    ShaderModule compShaderModule(ShaderBuilder().compute().fromFile("vertices.comp.spv"));
 
     // texture objects
-    std::unique_ptr<Image> textureImage = createImageFromTGAFile("vulkan.tga");
-    std::unique_ptr<TextureSampler> textureSampler = std::make_unique<TextureSampler>();
+    Image textureImage = createImageFromTGAFile("vulkan.tga");
+    TextureSampler textureSampler;
  
     // uniform buffer for our view projection matrix
-    std::unique_ptr<Buffer> uniformBuffer = std::make_unique<Buffer>(BufferBuilder(sizeof(float) * 16).uniform());
+    Buffer uniformBuffer(BufferBuilder(sizeof(float) * 16).uniform());
     mat16f viewProjection = Camera()
         .perspective(0.5f*M_PI, windowWidth, windowHeight, 0.1f, 100.0f)
         .moveTo(1.0f, 0.0f, -0.1f)
         .lookAt(0.0f, 0.0f, 1.0f)
         .getViewProjection();
-    uniformBuffer->setData(&viewProjection, sizeof(float) * 16);
+    uniformBuffer.setData(&viewProjection, sizeof(float) * 16);
 
     // shader storage buffer for computed vertices
-    std::unique_ptr<Buffer> shaderStorageBuffer = std::make_unique<Buffer>(BufferBuilder(sizeof(float) * 5 * 6 * quadCount).storage().vertex());
+   Buffer shaderStorageBuffer(BufferBuilder(sizeof(float) * 5 * 6 * quadCount).storage().vertex());
 
-    // static vertices
+#ifndef COMPUTE_VERTICES
+    // static vertices and buffer
     float vertices[] {
         -0.5f, 0.5f, 0.0f, 0.0f, 0.0f,
         0.5f, 0.5f, 0.0f, 1.0f, 0.0f,
@@ -386,9 +376,9 @@ int main(int argc, char *argv[]) {
         0.5f, -0.5f, 0.2f, 1.0f, 1.0f,
     };
 
-    // static vertex buffer
-    std::unique_ptr<Buffer> vertexBuffer = std::make_unique<Buffer>(BufferBuilder(sizeof(vertices)).vertex());
-    vertexBuffer->setData(vertices, sizeof(vertices));
+    Buffer vertexBuffer(BufferBuilder(sizeof(vertices)).vertex());
+    vertexBuffer.setData(vertices, sizeof(vertices));
+#endif
 
     // descriptor of uniforms in our pipeline
     DescriptorLayoutBuilder layoutBuilder;
@@ -398,14 +388,14 @@ int main(int argc, char *argv[]) {
     // descriptor pool for allocating descriptors
     DescriptorPoolBuilder poolBuilder;
     poolBuilder.addSampler(1).addStorageBuffer(1).addUniformBuffer(1).maxSets(1);
-    std::unique_ptr<DescriptorPool> descriptorPool = std::make_unique<DescriptorPool>(poolBuilder);
+    DescriptorPool descriptorPool(poolBuilder);
     
     // create a descriptor set and bind resources to it
-    VkDescriptorSet descriptorSet = descriptorPool->allocate(descriptorSetLayout);
+    VkDescriptorSet descriptorSet = descriptorPool.allocate(descriptorSetLayout);
     DescriptorSetBinder binder;
-    binder.bindUniformBuffer(descriptorSet, 0, *uniformBuffer, sizeof(float)*16);
-    binder.bindSampler(descriptorSet, 1, *textureSampler, *textureImage);
-    binder.bindStorageBuffer(descriptorSet, 2, *shaderStorageBuffer);
+    binder.bindUniformBuffer(descriptorSet, 0, uniformBuffer, sizeof(float)*16);
+    binder.bindSampler(descriptorSet, 1, textureSampler, textureImage);
+    binder.bindStorageBuffer(descriptorSet, 2, shaderStorageBuffer);
     binder.updateSets();
     
     // render pass and present buffers
@@ -422,9 +412,9 @@ int main(int argc, char *argv[]) {
     }
 
     // pipelines
-    VkPipelineLayout pipelineLayout = createPipelineLayout(device, descriptorSetLayout);
-    VkPipeline graphicsPipeline = createGraphicsPipeline(device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, pipelineLayout, renderPass, *vertShaderModule, *fragShaderModule);
-    VkPipeline computePipeline = createComputePipeline(device, pipelineLayout, *compShaderModule);
+    VkPipelineLayout pipelineLayout = createPipelineLayout({descriptorSetLayout});
+    VkPipeline graphicsPipeline = createGraphicsPipeline(context.device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, pipelineLayout, renderPass, vertShaderModule, fragShaderModule);
+    VkPipeline computePipeline = createComputePipeline(context.device, pipelineLayout, compShaderModule);
 
     // sync primitives
     // It is a good idea to have a separate semaphore for each swapchain image, but for simplicity we use a single one.
@@ -434,17 +424,17 @@ int main(int argc, char *argv[]) {
     
     uint nextImage = 0;
 
-    SDL_Event event;
     bool done = false;
     while (!done) {
+        SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 done = true;
             }
         }
-        vkResetFences(device, 1, &fence);
+        vkResetFences(context.device, 1, &fence);
 
-        VkResult nextImageResult = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphore, fence, &nextImage);
+        VkResult nextImageResult = vkAcquireNextImageKHR(context.device, context.swapchain, UINT64_MAX, imageAvailableSemaphore, fence, &nextImage);
         if (nextImageResult != VK_SUCCESS) {
             std::cout << nextImageResult << std::endl;
             throw std::runtime_error("vkAcquireNextImageKHR failed");
@@ -458,53 +448,40 @@ int main(int argc, char *argv[]) {
             renderPass,
             presentFramebuffers[nextImage].framebuffer,
             commandBuffers[nextImage],
-            *shaderStorageBuffer,
+            shaderStorageBuffer,
             pipelineLayout,
             descriptorSet);
 #else
-        recordRenderPass(VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, computePipeline, graphicsPipeline, renderPass, presentFramebuffers[nextImage], commandBuffers[nextImage], *vertexBuffer, pipelineLayout, descriptorSet);
+        recordRenderPass(VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, computePipeline, graphicsPipeline, renderPass, presentFramebuffers[nextImage], commandBuffers[nextImage], vertexBuffer, pipelineLayout, descriptorSet);
 #endif
 
-        submitCommandBuffer(graphicsQueue, commandBuffers[nextImage], imageAvailableSemaphore, renderFinishedSemaphore);
-        if (!presentQueue(presentationQueue, swapchain, renderFinishedSemaphore, nextImage)) {
+        submitCommandBuffer(context.graphicsQueue, commandBuffers[nextImage], imageAvailableSemaphore, renderFinishedSemaphore);
+        if (!presentQueue(context.presentationQueue, context.swapchain, renderFinishedSemaphore, nextImage)) {
             std::cout << "swap chain out of date, trying to remake" << std::endl;
 
             // This is a common Vulkan situation handled automatically by OpenGL.
             // We need to remake our swap chain, image views, and framebuffers.
-            vkDeviceWaitIdle(device);
             rebuildPresentationResources(context);
 
             presentFramebuffers.clear();
-            for (size_t i=0; i<chainImageViews.size(); ++i) {
+            for (size_t i=0; i<context.swapchainImageCount; ++i) {
                 presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), renderPass);
             }
         }
         SDL_Delay(100);
         
-        vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+        vkWaitForFences(context.device, 1, &fence, VK_TRUE, UINT64_MAX);
         vkResetCommandBuffer(commandBuffers[nextImage], 0); // manually reset, otherwise implicit reset causes warnings
     }
 
-    vkQueueWaitIdle(graphicsQueue); // wait until we're done or the render finished semaphore may be in use
+    vkQueueWaitIdle(context.graphicsQueue); // wait until we're done or the render finished semaphore may be in use
 
-    descriptorPool.reset();
-    vertexBuffer.reset();
-    shaderStorageBuffer.reset();
-    uniformBuffer.reset();
-    textureSampler.reset();
-    textureImage.reset();
+    vkDestroyPipeline(context.device, computePipeline, nullptr);
+    vkDestroyPipeline(context.device, graphicsPipeline, nullptr);
+    vkDestroyPipelineLayout(context.device, pipelineLayout, nullptr);
 
-    vkDestroyPipeline(device, computePipeline, nullptr);
-    vkDestroyPipeline(device, graphicsPipeline, nullptr);
-    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
     presentFramebuffers.clear();
-
-    vertShaderModule.reset();
-    compShaderModule.reset();
-    fragShaderModule.reset();
-    vkDestroyRenderPass(device, renderPass, nullptr);
-    contextPtr.reset();
-    SDL_Quit();
+    vkDestroyRenderPass(context.device, renderPass, nullptr);
 
     return 0;
 }

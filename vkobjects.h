@@ -35,7 +35,7 @@ struct VulkanContext {
     VkFormat colorFormat;
     size_t swapchainImageCount;
     std::vector<VkImage> swapchainImages;
-    std::vector<VkImageView> swapchainImageViews;    // depth buffer
+    std::vector<VkImageView> swapchainImageViews;
     VkCommandPool commandPool;
     std::vector<VkCommandBuffer> commandBuffers;
     std::vector<VkSemaphore> semaphores;
@@ -115,15 +115,15 @@ void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& 
         throw std::runtime_error("Unable to query the number of Vulkan instance extension names");
     }
 
-    std::cout << "found " << extensionCount << " Vulkan instance extensions:\n";
+    // std::cout << "found " << extensionCount << " Vulkan instance extensions:\n";
     for (unsigned int i = 0; i < extensionCount; i++) {
-        std::cout << i << ": " << ext_names[i] << std::endl;
+        //std::cout << i << ": " << ext_names[i] << std::endl;
         outExtensions.emplace_back(ext_names[i]);
     }
 
     // Add debug display extension, we need this to relay debug messages
     outExtensions.emplace_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
-    std::cout << std::endl;
+    //std::cout << std::endl;
 }
 
 void getAvailableVulkanLayers(std::vector<std::string>& outLayers) {
@@ -139,25 +139,27 @@ void getAvailableVulkanLayers(std::vector<std::string>& outLayers) {
         throw std::runtime_error("unable to retrieve vulkan instance layer names");
     }
 
-    std::cout << "found " << instanceLayerCount << " instance layers:\n";
+    std::cout << "found " << instanceLayerCount << " instance layers\n";
 
     std::set<std::string> requestedLayers({"VK_LAYER_KHRONOS_validation"});
 
     int count = 0;
     outLayers.clear();
     for (const auto& name : instance_layer_names) {
-        std::cout << count << ": " << name.layerName << ": " << name.description << std::endl;
+        // std::cout << count << ": " << name.layerName << ": " << name.description << std::endl;
         auto it = requestedLayers.find(std::string(name.layerName));
         if (it != requestedLayers.end())
             outLayers.emplace_back(name.layerName);
         count++;
     }
 
+#if 0
     // Print the ones we're enabling
     std::cout << std::endl;
     for (const auto& layer : outLayers) {
         std::cout << "applying layer: " << layer.c_str() << std::endl;
     }
+#endif
 }
 
 const std::set<std::string>& getRequestedLayerNames() {
@@ -354,7 +356,7 @@ VkDevice createLogicalDevice(VkPhysicalDevice& physicalDevice, unsigned int queu
     const std::set<std::string> requiredExtensionNames{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     int count = 0;
     for (const auto& extensionProperty : extensionProperties) {
-        std::cout << count << ": " << extensionProperty.extensionName << std::endl;
+        // std::cout << count << ": " << extensionProperty.extensionName << std::endl;
         auto it = requiredExtensionNames.find(std::string(extensionProperty.extensionName));
         if (it != requiredExtensionNames.end()) {
             devicePropertyNames.emplace_back(extensionProperty.extensionName);
@@ -914,6 +916,7 @@ void transitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue g
         throw std::invalid_argument("unsupported layout transition!");
     }
 
+    // it would be nice to print descriptive strings instead of integers here
     std::cout << "transitioning image from " << oldLayout << " to " << newLayout << std::endl;
 
     vkCmdPipelineBarrier(
@@ -1804,3 +1807,20 @@ struct Framebuffer {
         vkDestroyFramebuffer($context().device, framebuffer, nullptr); // safe if already VK_NULL_HANDLE
     }
 };
+
+VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> & descriptorSetLayouts) {
+    if (descriptorSetLayouts.empty()) {
+        throw std::runtime_error("builder reqires at least one pipeline layout to build");
+    }
+    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
+    pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutCreateInfo.setLayoutCount = descriptorSetLayouts.size();  
+    pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
+
+    VkPipelineLayout layout;
+    if (VK_SUCCESS != vkCreatePipelineLayout($context().device, &pipelineLayoutCreateInfo, nullptr, &layout)) {
+        throw std::runtime_error("failed to create pipeline layout");
+    }
+
+    return layout;
+}
