@@ -121,7 +121,7 @@ void recordRenderPass(
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
 
     VkDeviceSize offsets[] = { 0 };
-    vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, offsets);  // Bind the vertex buffer
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, offsets);  // bind the vertex buffer
 
 #ifdef COMPUTE_VERTICES
     size_t vertexCount = 6 * quadCount;
@@ -239,11 +239,17 @@ int main(int argc, char *argv[]) {
 
     // descriptor of uniforms in our pipeline
     DescriptorLayoutBuilder desriptorLayoutBuilder;
+
+    // we're going to use a single descriptor set layout that is used by by both pipelines
+    // normally you would probably want to use two, one for graphics pipeline and another for compute
     desriptorLayoutBuilder.addUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT).addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT).addStorageBuffer(2, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayout descriptorSetLayout = desriptorLayoutBuilder.build();
 
     // descriptor pool for allocating descriptor sets
     DescriptorPoolBuilder poolBuilder;
+
+    // we've only got one pool here that can build the combined descriptor set above
+    // you might want to have two pools if you have different sizes of descriptor sets
     poolBuilder.addSampler(1).addStorageBuffer(1).addUniformBuffer(1).maxSets(1);
     DescriptorPool descriptorPool(poolBuilder);
     
@@ -257,8 +263,9 @@ int main(int argc, char *argv[]) {
     
     // render pass and present buffers
     RenderpassBuilder renderpassBuilder;
-    renderpassBuilder.colorAttachment().depthAttachment();
-    renderpassBuilder.colorRef(0).depthRef(1);
+    renderpassBuilder
+        .colorAttachment().depthAttachment()
+        .colorRef(0).depthRef(1);
     VkRenderPass renderPass = renderpassBuilder.build(); // context-owned
     
     std::vector<Framebuffer> presentFramebuffers; // auto cleaned up by vector destructor
@@ -270,15 +277,22 @@ int main(int argc, char *argv[]) {
     // pipelines
     VkPipelineLayout pipelineLayout = createPipelineLayout({descriptorSetLayout}); // context-owned
 
+    const size_t binding0 = 0; // we only use one vertex binding
+
     GraphicsPipelineBuilder graphicsPipelineBuilder(pipelineLayout, renderPass);
-    graphicsPipelineBuilder.addVertexShader(vertShaderModule).addFragmentShader(fragShaderModule);
+    graphicsPipelineBuilder.addVertexShader(vertShaderModule).addFragmentShader(fragShaderModule)
+        .vertexBinding(binding0, sizeof(float)*5) // vec3 location and vec2 UV
+        .vertexFloats(binding0, 0, 3, 0) // location 0: position vec3
+        .vertexFloats(binding0, 1, 2, sizeof(float)*3); // location 1: UV vec2, offset by the previous position vec3
+
     VkPipeline graphicsPipeline = graphicsPipelineBuilder.build(); // context-owned
+
     VkPipeline computePipeline = createComputePipeline(pipelineLayout, compShaderModule); // context-owned
 
     // sync primitives
     // It is a good idea to have a separate semaphore for each swapchain image, but for simplicity we use a single one.
     VkSemaphore imageAvailableSemaphore = createSemaphore(); // context-owned
-    VkSemaphore renderFinishedSemaphore = createSemaphore();
+    VkSemaphore renderFinishedSemaphore = createSemaphore(); // context-owned
     VkFence fence = createFence(); // context-owned
     
     uint nextImage = 0;
@@ -320,7 +334,7 @@ int main(int argc, char *argv[]) {
             // We need to remake our swap chain, image views, and framebuffers.
 
             std::cout << "swap chain out of date, trying to remake" << std::endl;
-            rebuildPresentationResources(context);
+            rebuildPresentationResources();
             presentFramebuffers.clear();
             for (size_t i=0; i<context.swapchainImageCount; ++i) {
                 presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), renderPass);
@@ -331,8 +345,6 @@ int main(int argc, char *argv[]) {
         vkWaitForFences(context.device, 1, &fence, VK_TRUE, UINT64_MAX);
         vkResetCommandBuffer(commandBuffers[nextImage], 0); // manually reset, otherwise implicit reset causes warnings
     }
-
-    vkQueueWaitIdle(context.graphicsQueue); // wait until we're done or the render finished semaphore may be in use
 
     return 0;
 

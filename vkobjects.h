@@ -1118,7 +1118,8 @@ VkSampler createSampler(VkDevice device) {
     return textureSampler;
 }
 
-void rebuildPresentationResources(VulkanContext & context) {
+void rebuildPresentationResources() {
+    VulkanContext & context = $context();
     vkDeviceWaitIdle(context.device);
     for (VkImageView view : context.swapchainImageViews) {
         vkDestroyImageView(context.device, view, nullptr);
@@ -1132,6 +1133,8 @@ void rebuildPresentationResources(VulkanContext & context) {
 }
 
 VulkanContext::~VulkanContext() {
+    vkQueueWaitIdle(graphicsQueue); // wait until we're done or render semaphores may be in use
+
     // clean up managed resource collections
     for (auto semaphore : semaphores) {
         vkDestroySemaphore(device, semaphore, nullptr);
@@ -1854,6 +1857,8 @@ VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> &
 struct GraphicsPipelineBuilder {
     VkPipelineLayout pipelineLayout;
     VkRenderPass renderPass;
+    std::vector<VkVertexInputBindingDescription> bindingDescriptions;
+    std::vector<VkVertexInputAttributeDescription> vertexAttributeDescriptions;
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
     GraphicsPipelineBuilder(VkPipelineLayout layout, VkRenderPass renderPass) : pipelineLayout(layout), renderPass(renderPass) {}
     GraphicsPipelineBuilder & addVertexShader(ShaderModule & vertexShaderModule, const char * entryPoint = "main") {
@@ -1874,36 +1879,48 @@ struct GraphicsPipelineBuilder {
         shaderStages.push_back(fragShaderStageInfo);
         return *this;
     }
-    VkPipeline build() {
-        // Binding description (one vec2 per vertex)
+    GraphicsPipelineBuilder & vertexBinding(size_t bindingIndex, size_t stride) {
         VkVertexInputBindingDescription bindingDescription = {};
-        bindingDescription.binding = 0;
-        bindingDescription.stride = sizeof(float) * 5; // vec3 pos and vec2 uv
+        bindingDescription.binding = bindingIndex;
+        bindingDescription.stride = stride;
         bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-        // Attribute description (vec3 -> location 0 in the shader)
-        VkVertexInputAttributeDescription attributeDescriptions[2];
-        attributeDescriptions[0] = {};
-        attributeDescriptions[0].binding = 0;
-        attributeDescriptions[0].location = 0;
-        attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attributeDescriptions[0].offset = 0;
-
-        // Attribute description (vec2 -> location 1 in the shader)
+        bindingDescriptions.push_back(bindingDescription);
+        return *this;
+    }
+    GraphicsPipelineBuilder & instanceVertexBinding(size_t bindingIndex, size_t stride) {
+        VkVertexInputBindingDescription bindingDescription = {};
+        bindingDescription.binding = bindingIndex;
+        bindingDescription.stride = stride;
+        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+        bindingDescriptions.push_back(bindingDescription);
+        return *this;
+    }
+    GraphicsPipelineBuilder & vertexFloats(size_t bindingIndex, size_t location, size_t floatCount, size_t offset) {
         VkVertexInputAttributeDescription attributeDescription = {};
-        attributeDescriptions[1] = {};
-        attributeDescriptions[1].binding = 0;
-        attributeDescriptions[1].location = 1;
-        attributeDescriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
-        attributeDescriptions[1].offset = sizeof(float) * 3;
-
+        attributeDescription.binding = bindingIndex;
+        attributeDescription.location = location;
+        attributeDescription.offset = offset;
+        switch(floatCount) {
+            case 3:
+                attributeDescription.format = VK_FORMAT_R32G32B32_SFLOAT;
+                break;
+            case 2:
+                attributeDescription.format = VK_FORMAT_R32G32_SFLOAT;
+                break;
+            default:
+                throw std::invalid_argument("unsupported float count");
+        }
+        vertexAttributeDescriptions.push_back(attributeDescription);
+        return *this;
+    }
+    VkPipeline build() {
         // Pipeline vertex input state
         VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
         vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vertexInputInfo.vertexBindingDescriptionCount = 1;
-        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-        vertexInputInfo.vertexAttributeDescriptionCount = 2;
-        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
+        vertexInputInfo.vertexBindingDescriptionCount = bindingDescriptions.size();
+        vertexInputInfo.pVertexBindingDescriptions = bindingDescriptions.data();
+        vertexInputInfo.vertexAttributeDescriptionCount = vertexAttributeDescriptions.size();
+        vertexInputInfo.pVertexAttributeDescriptions = vertexAttributeDescriptions.data();
 
         VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
         inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
