@@ -1169,6 +1169,8 @@ VulkanContext::~VulkanContext() {
     vkDestroyDevice(device, nullptr);
     destroyDebugReportCallbackEXT(instance, callback, nullptr);
     vkDestroyInstance(instance, nullptr);
+
+    $context.contextInstance = nullptr;
 }
 
 struct RenderpassBuilder {

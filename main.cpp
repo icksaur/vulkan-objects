@@ -123,11 +123,8 @@ void recordRenderPass(
     VkDeviceSize offsets[] = { 0 };
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, offsets);  // bind the vertex buffer
 
-#ifdef COMPUTE_VERTICES
     size_t vertexCount = 6 * quadCount;
-#else 
-    size_t vertexCount = 6 * 2;
-#endif
+
     vkCmdDraw(commandBuffer, vertexCount, 1, 0, 0);
 
     vkCmdEndRenderPass(commandBuffer);
@@ -189,67 +186,44 @@ bool presentQueue(VkQueue presentQueue, VkSwapchainKHR & swapchain, VkSemaphore 
 }
 
 int main(int argc, char *argv[]) {
+    // these are destroyed in opposite order of creation, cleaning up things in the right order
     SDLWindow window(appName, windowWidth, windowHeight);
     VulkanContext context(window);
 
     std::vector<VkCommandBuffer> & commandBuffers = context.commandBuffers;
 
-    // shader objects
+    // shaders
     ShaderModule fragShaderModule(ShaderBuilder().fragment().fromFile("tri.frag.spv"));
     ShaderModule vertShaderModule(ShaderBuilder().vertex().fromFile("tri.vert.spv"));
     ShaderModule compShaderModule(ShaderBuilder().compute().fromFile("vertices.comp.spv"));
 
-    // texture objects
+    // texture and sampler
     Image textureImage = createImageFromTGAFile("vulkan.tga");
     TextureSampler textureSampler;
  
     // uniform buffer for our view projection matrix
-    Buffer uniformBuffer(BufferBuilder(sizeof(float) * 16).uniform());
     mat16f viewProjection = Camera()
         .perspective(0.5f*M_PI, windowWidth, windowHeight, 0.1f, 100.0f)
         .moveTo(1.0f, 0.0f, -0.1f)
         .lookAt(0.0f, 0.0f, 1.0f)
         .getViewProjection();
+    Buffer uniformBuffer(BufferBuilder(sizeof(float) * 16).uniform());
     uniformBuffer.setData(&viewProjection, sizeof(float) * 16);
 
     // shader storage buffer for computed vertices
-   Buffer shaderStorageBuffer(BufferBuilder(sizeof(float) * 5 * 6 * quadCount).storage().vertex());
+    Buffer shaderStorageBuffer(BufferBuilder(sizeof(float) * 5 * 6 * quadCount).storage().vertex());
 
-#ifndef COMPUTE_VERTICES
-    // static vertices and buffer
-    float vertices[] {
-        -0.5f, 0.5f, 0.0f, 0.0f, 0.0f,
-        0.5f, 0.5f, 0.0f, 1.0f, 0.0f,
-        -0.5f, -0.5f, 0.0f, 0.0f, 1.0f,
-        -0.5f, -0.5f, 0.0f, 0.0f, 1.0f,
-        0.5f, 0.5f, 0.0f, 1.0f, 0.0f,
-        0.5f, -0.5f, 0.0f, 1.0f, 1.0f,
-
-        -0.5f, 0.5f, 0.2f, 0.0f, 0.0f,
-        0.5f, 0.5f, 0.2f, 1.0f, 0.0f,
-        -0.5f, -0.5f, 0.2f, 0.0f, 1.0f,
-        -0.5f, -0.5f, 0.2f, 0.0f, 1.0f,
-        0.5f, 0.5f, 0.2f, 1.0f, 0.0f,
-        0.5f, -0.5f, 0.2f, 1.0f, 1.0f,
-    };
-
-    Buffer vertexBuffer(BufferBuilder(sizeof(vertices)).vertex());
-    vertexBuffer.setData(vertices, sizeof(vertices));
-#endif
-
-    // descriptor of uniforms in our pipeline
-    DescriptorLayoutBuilder desriptorLayoutBuilder;
-
+    // descriptor layout of uniforms in our pipeline
     // we're going to use a single descriptor set layout that is used by by both pipelines
     // normally you would probably want to use two, one for graphics pipeline and another for compute
+    DescriptorLayoutBuilder desriptorLayoutBuilder;
     desriptorLayoutBuilder.addUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT).addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT).addStorageBuffer(2, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayout descriptorSetLayout = desriptorLayoutBuilder.build();
 
     // descriptor pool for allocating descriptor sets
-    DescriptorPoolBuilder poolBuilder;
-
     // we've only got one pool here that can build the combined descriptor set above
     // you might want to have two pools if you have different sizes of descriptor sets
+    DescriptorPoolBuilder poolBuilder;
     poolBuilder.addSampler(1).addStorageBuffer(1).addUniformBuffer(1).maxSets(1);
     DescriptorPool descriptorPool(poolBuilder);
     
@@ -276,9 +250,11 @@ int main(int argc, char *argv[]) {
 
     // pipelines
     VkPipelineLayout pipelineLayout = createPipelineLayout({descriptorSetLayout}); // context-owned
-
-    const size_t binding0 = 0; // we only use one vertex binding
-
+    
+    // vertex pipeline setup
+    // you can have multiple vertex bindings for different use cases, and step through per vertex or per instance
+    // we only have one in this example.  See how we use vec3 position and vec2 UV in tri.vert
+    const size_t binding0 = 0;
     GraphicsPipelineBuilder graphicsPipelineBuilder(pipelineLayout, renderPass);
     graphicsPipelineBuilder.addVertexShader(vertShaderModule).addFragmentShader(fragShaderModule)
         .vertexBinding(binding0, sizeof(float)*5) // vec3 location and vec2 UV
@@ -313,7 +289,6 @@ int main(int argc, char *argv[]) {
             throw std::runtime_error("vkAcquireNextImageKHR failed");
         }
 
-#ifdef COMPUTE_VERTICES
         recordRenderPass(
             VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight},
             computePipeline,
@@ -324,9 +299,6 @@ int main(int argc, char *argv[]) {
             shaderStorageBuffer,
             pipelineLayout,
             descriptorSet);
-#else
-        recordRenderPass(VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, computePipeline, graphicsPipeline, renderPass, presentFramebuffers[nextImage], commandBuffers[nextImage], vertexBuffer, pipelineLayout, descriptorSet);
-#endif
 
         submitCommandBuffer(context.graphicsQueue, commandBuffers[nextImage], imageAvailableSemaphore, renderFinishedSemaphore);
         if (!presentQueue(context.presentationQueue, context.swapchain, renderFinishedSemaphore, nextImage)) {
@@ -347,7 +319,4 @@ int main(int argc, char *argv[]) {
     }
 
     return 0;
-
-    // look at the VulkanContext destructor to see how everything is cleaned up automatically
-    // SDL will be automatically cleaned up after that
 }
