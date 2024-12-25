@@ -1,15 +1,13 @@
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_vulkan.h>
-#include <vulkan/vulkan.h>
 #include <iostream>
 #include <istream>
 #include <fstream>
-#include <vulkan/vulkan_core.h>
 #include <vector>
 #include <set>
 #include <assert.h>
 #include <memory>
 
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_vulkan.h>
 #include "vkobjects.h"
 
 #include "tga.h"
@@ -23,7 +21,7 @@ int windowHeight = 720;
 #define COMPUTE_VERTICES // comment out to try CPU uploaded vertex buffer
 size_t quadCount = 100;
 
-std::unique_ptr<Image> createImageFromTGAFile(const char * filename, VulkanContext & context) {
+std::unique_ptr<Image> createImageFromTGAFile(const char * filename) {
     std::ifstream file(filename);
     std::vector<char> fileBytes = std::vector<char>(
         std::istreambuf_iterator<char>(file),
@@ -46,31 +44,12 @@ std::unique_ptr<Image> createImageFromTGAFile(const char * filename, VulkanConte
     // Read more by looking up sRGB to linear Vulkan conversions.
     VkFormat format = (bpp == 32) ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8_SRGB;
 
-    ImageBuilder builder(context);
+    ImageBuilder builder;
     builder.fromBytes(bytes, byteCount, width, height, format);
 
     std::unique_ptr<Image> image = std::make_unique<Image>(builder);
     free(bytes);
     return image;
-}
-
-void createPresentFramebuffers(VkDevice device, VkExtent2D extent, VkRenderPass renderPass, std::vector<VkImageView> & chainImageViews, std::vector<VkFramebuffer> & frameBuffers, VkImageView depthImageView) {
-    for (size_t i=0; i<chainImageViews.size(); i++) {
-        VkImageView imageViews[] { chainImageViews[i], depthImageView };
-
-        VkFramebufferCreateInfo framebufferInfo = {};
-        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        framebufferInfo.renderPass = renderPass;
-        framebufferInfo.attachmentCount = 2;  // color and depth attachment
-        framebufferInfo.pAttachments = imageViews;  // Image view as color attachment
-        framebufferInfo.width = extent.width;
-        framebufferInfo.height = extent.height;
-        framebufferInfo.layers = 1;
-
-        if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &frameBuffers[i]) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create framebuffer!");
-        }
-    }
 }
 
 VkPipelineLayout createPipelineLayout(VkDevice device, VkDescriptorSetLayout descriptorSetLayout) {
@@ -370,16 +349,16 @@ int main(int argc, char *argv[]) {
     VkQueue & graphicsQueue = context.graphicsQueue;
 
     // shader objects
-    std::unique_ptr<ShaderModule> vertShaderModule = std::make_unique<ShaderModule>(ShaderBuilder(context).vertex().fromFile("tri.vert.spv"));
-    std::unique_ptr<ShaderModule> fragShaderModule = std::make_unique<ShaderModule>(ShaderBuilder(context).fragment().fromFile("tri.frag.spv"));
-    std::unique_ptr<ShaderModule> compShaderModule = std::make_unique<ShaderModule>(ShaderBuilder(context).compute().fromFile("vertices.comp.spv"));
+    std::unique_ptr<ShaderModule> vertShaderModule = std::make_unique<ShaderModule>(ShaderBuilder().vertex().fromFile("tri.vert.spv"));
+    std::unique_ptr<ShaderModule> fragShaderModule = std::make_unique<ShaderModule>(ShaderBuilder().fragment().fromFile("tri.frag.spv"));
+    std::unique_ptr<ShaderModule> compShaderModule = std::make_unique<ShaderModule>(ShaderBuilder().compute().fromFile("vertices.comp.spv"));
 
     // texture objects
-    std::unique_ptr<Image> textureImage = createImageFromTGAFile("vulkan.tga", context);
-    std::unique_ptr<TextureSampler> textureSampler = std::make_unique<TextureSampler>(context);
-
+    std::unique_ptr<Image> textureImage = createImageFromTGAFile("vulkan.tga");
+    std::unique_ptr<TextureSampler> textureSampler = std::make_unique<TextureSampler>();
+ 
     // uniform buffer for our view projection matrix
-    std::unique_ptr<Buffer> uniformBuffer = std::make_unique<Buffer>(context, BufferBuilder(sizeof(float) * 16).uniform());
+    std::unique_ptr<Buffer> uniformBuffer = std::make_unique<Buffer>(BufferBuilder(sizeof(float) * 16).uniform());
     mat16f viewProjection = Camera()
         .perspective(0.5f*M_PI, windowWidth, windowHeight, 0.1f, 100.0f)
         .moveTo(1.0f, 0.0f, -0.1f)
@@ -388,7 +367,7 @@ int main(int argc, char *argv[]) {
     uniformBuffer->setData(&viewProjection, sizeof(float) * 16);
 
     // shader storage buffer for computed vertices
-    std::unique_ptr<Buffer> shaderStorageBuffer = std::make_unique<Buffer>(context, BufferBuilder(sizeof(float) * 5 * 6 * quadCount).storage().vertex());
+    std::unique_ptr<Buffer> shaderStorageBuffer = std::make_unique<Buffer>(BufferBuilder(sizeof(float) * 5 * 6 * quadCount).storage().vertex());
 
     // static vertices
     float vertices[] {
@@ -408,38 +387,38 @@ int main(int argc, char *argv[]) {
     };
 
     // static vertex buffer
-    std::unique_ptr<Buffer> vertexBuffer = std::make_unique<Buffer>(context, BufferBuilder(sizeof(vertices)).vertex());
+    std::unique_ptr<Buffer> vertexBuffer = std::make_unique<Buffer>(BufferBuilder(sizeof(vertices)).vertex());
     vertexBuffer->setData(vertices, sizeof(vertices));
 
-    // descriptor of uniforms, both uniform buffer and sampler
-    std::unique_ptr<DescriptorLayoutBuilder> layoutBuilder = std::make_unique<DescriptorLayoutBuilder>(context);
-    layoutBuilder->addUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT).addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT).addStorageBuffer(2, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    VkDescriptorSetLayout descriptorSetLayout = layoutBuilder->build();
+    // descriptor of uniforms in our pipeline
+    DescriptorLayoutBuilder layoutBuilder;
+    layoutBuilder.addUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT).addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT).addStorageBuffer(2, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    VkDescriptorSetLayout descriptorSetLayout = layoutBuilder.build();
 
     // descriptor pool for allocating descriptors
     DescriptorPoolBuilder poolBuilder;
     poolBuilder.addSampler(1).addStorageBuffer(1).addUniformBuffer(1).maxSets(1);
-    std::unique_ptr<DescriptorPool> descriptorPool = std::make_unique<DescriptorPool>(context, poolBuilder);
+    std::unique_ptr<DescriptorPool> descriptorPool = std::make_unique<DescriptorPool>(poolBuilder);
     
     // create a descriptor set and bind resources to it
     VkDescriptorSet descriptorSet = descriptorPool->allocate(descriptorSetLayout);
-    DescriptorSetBinder binder(context);
+    DescriptorSetBinder binder;
     binder.bindUniformBuffer(descriptorSet, 0, *uniformBuffer, sizeof(float)*16);
     binder.bindSampler(descriptorSet, 1, *textureSampler, *textureImage);
     binder.bindStorageBuffer(descriptorSet, 2, *shaderStorageBuffer);
     binder.updateSets();
     
     // render pass and present buffers
-    RenderpassBuilder renderpassBuilder(context);
+    RenderpassBuilder renderpassBuilder;
     renderpassBuilder.colorAttachment().depthAttachment();
     renderpassBuilder.colorRef(0).depthRef(1);
     VkRenderPass renderPass = renderpassBuilder.build();
     
     std::vector<Framebuffer> presentFramebuffers;
-    presentFramebuffers.reserve(context.swapchainImageCount);
+    presentFramebuffers.reserve(context.swapchainImageCount); 
     
     for (size_t i = 0; i < context.swapchainImageCount; ++i) {
-        presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), context, renderPass);
+        presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), renderPass);
     }
 
     // pipelines
@@ -449,9 +428,9 @@ int main(int argc, char *argv[]) {
 
     // sync primitives
     // It is a good idea to have a separate semaphore for each swapchain image, but for simplicity we use a single one.
-    VkSemaphore imageAvailableSemaphore = createSemaphore(context);
-    VkSemaphore renderFinishedSemaphore = createSemaphore(context);
-    VkFence fence = createFence(context);
+    VkSemaphore imageAvailableSemaphore = createSemaphore();
+    VkSemaphore renderFinishedSemaphore = createSemaphore();
+    VkFence fence = createFence();
     
     uint nextImage = 0;
 
@@ -472,7 +451,16 @@ int main(int argc, char *argv[]) {
         }
 
 #ifdef COMPUTE_VERTICES
-        recordRenderPass(VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, computePipeline, graphicsPipeline, renderPass, presentFramebuffers[nextImage].framebuffer, commandBuffers[nextImage], *shaderStorageBuffer, pipelineLayout, descriptorSet);
+        recordRenderPass(
+            VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight},
+            computePipeline,
+            graphicsPipeline,
+            renderPass,
+            presentFramebuffers[nextImage].framebuffer,
+            commandBuffers[nextImage],
+            *shaderStorageBuffer,
+            pipelineLayout,
+            descriptorSet);
 #else
         recordRenderPass(VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, computePipeline, graphicsPipeline, renderPass, presentFramebuffers[nextImage], commandBuffers[nextImage], *vertexBuffer, pipelineLayout, descriptorSet);
 #endif
@@ -488,7 +476,7 @@ int main(int argc, char *argv[]) {
 
             presentFramebuffers.clear();
             for (size_t i=0; i<chainImageViews.size(); ++i) {
-                presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), context, renderPass);
+                presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), renderPass);
             }
         }
         SDL_Delay(100);
@@ -500,7 +488,6 @@ int main(int argc, char *argv[]) {
     vkQueueWaitIdle(graphicsQueue); // wait until we're done or the render finished semaphore may be in use
 
     descriptorPool.reset();
-    layoutBuilder.reset();
     vertexBuffer.reset();
     shaderStorageBuffer.reset();
     uniformBuffer.reset();

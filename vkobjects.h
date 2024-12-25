@@ -1,11 +1,15 @@
+#pragma once
+
 #include <vector>
 #include <set>
 #include <iostream>
 #include <stdexcept>
-
+#include <iostream>
+#include <fstream>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
 
 const char * appName = "VulkanExample";
 const char * engineName = "VulkanExampleEngine";
@@ -17,7 +21,6 @@ VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 VkFormat depthFormat = VK_FORMAT_D24_UNORM_S8_UINT; // some options are VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT
 
 struct VulkanContext {
-    bool initialized;
     SDL_Window * window;
     size_t windowWidth;
     size_t windowHeight;
@@ -37,6 +40,7 @@ struct VulkanContext {
     std::vector<VkCommandBuffer> commandBuffers;
     std::vector<VkSemaphore> semaphores;
     std::vector<VkFence> fences;
+    std::set<VkDescriptorSetLayout> layouts;
     std::vector<VkFramebuffer> presentFramebuffers;
     VkQueue graphicsQueue;
     VulkanContext(SDL_Window * window);
@@ -46,6 +50,11 @@ private:
     VulkanContext(const VulkanContext & other) = delete;
     VulkanContext(VulkanContext && other) = delete; 
 };
+
+struct VulkanContextSingleton {
+    VulkanContext * contextInstance;
+    VulkanContext& operator()() { return *contextInstance; }
+} $context;
 
 // a helper to start and end a command buffer which can be submitted and waited
 struct ScopedCommandBuffer {
@@ -979,9 +988,9 @@ std::tuple<VkImageView, VkImage, VkDeviceMemory> createDepthBuffer(VkPhysicalDev
 }
 
 VulkanContext::VulkanContext(SDL_Window * window):window(window) {
-    int windowWidht, windowHeight;
-    SDL_GetWindowSize(window, &windowWidht, &windowHeight);
-    this->windowWidth = windowWidht;
+    int windowWidth, windowHeight;
+    SDL_GetWindowSize(window, &windowWidth, &windowHeight);
+    this->windowWidth = windowWidth;
     this->windowHeight = windowHeight;
 
    // Get available vulkan extensions, necessary for interfacing with native window
@@ -1033,6 +1042,8 @@ VulkanContext::VulkanContext(SDL_Window * window):window(window) {
     }
 
     vkGetDeviceQueue(this->device, this->graphicsQueueIndex, 0, &this->graphicsQueue);
+
+    $context.contextInstance = this;
 }
 
 void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator) {
@@ -1126,6 +1137,9 @@ VulkanContext::~VulkanContext() {
     for (VkImageView view : swapchainImageViews) {
         vkDestroyImageView(device, view, nullptr);
     }
+    for (VkDescriptorSetLayout layout : layouts) {
+        vkDestroyDescriptorSetLayout(device, layout, nullptr);
+    }
     vkDestroySwapchainKHR(device, swapchain, nullptr);
     vkDestroySurfaceKHR(instance, presentationSurface, nullptr);
     vkDestroyDevice(device, nullptr);
@@ -1134,14 +1148,13 @@ VulkanContext::~VulkanContext() {
 }
 
 struct RenderpassBuilder {
-    VulkanContext & context;
     std::vector<VkAttachmentDescription> attachmentDescriptions;
     std::vector<VkSubpassDescription> subpassDescriptions;
     std::vector<VkSubpassDependency> dependencies;
     std::vector<VkAttachmentReference> colorAttachmentRefs;
     VkAttachmentReference depthAttachmentRef;
     bool hasDepthRef;
-    RenderpassBuilder(VulkanContext & context):context(context) {
+    RenderpassBuilder() {
         attachmentDescriptions.reserve(2);
         subpassDescriptions.reserve(1);
         dependencies.reserve(1);
@@ -1150,7 +1163,7 @@ struct RenderpassBuilder {
     }
     RenderpassBuilder& colorAttachment() {
         VkAttachmentDescription colorAttachment = {};
-        colorAttachment.format = context.colorFormat;
+        colorAttachment.format = $context().colorFormat;
         colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
         colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1219,7 +1232,7 @@ struct RenderpassBuilder {
         renderPassInfo.pAttachments = this->attachmentDescriptions.data();
 
         VkRenderPass renderPass;
-        if (VK_SUCCESS != vkCreateRenderPass(this->context.device, &renderPassInfo, nullptr, &renderPass)) {
+        if (VK_SUCCESS != vkCreateRenderPass($context().device, &renderPassInfo, nullptr, &renderPass)) {
             throw std::runtime_error("failed to create render pass");
         }
 
@@ -1228,11 +1241,10 @@ struct RenderpassBuilder {
 };
 
 struct ShaderBuilder {
-    VulkanContext & context;
     VkShaderStageFlagBits stage;
     std::vector<char> code;
 
-    ShaderBuilder(VulkanContext & context) : context(context), stage(VK_SHADER_STAGE_VERTEX_BIT) {}
+    ShaderBuilder() : stage(VK_SHADER_STAGE_VERTEX_BIT) {}
     ShaderBuilder& vertex() {
         stage = VK_SHADER_STAGE_VERTEX_BIT;
         return *this;
@@ -1267,34 +1279,31 @@ struct ShaderBuilder {
 };
 
 struct ShaderModule {
-    VulkanContext & context;
     VkShaderModule module;
-    ShaderModule(ShaderBuilder & builder):context(builder.context) {
+    ShaderModule(ShaderBuilder & builder) {
         VkShaderModuleCreateInfo createInfo = {};
         createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         createInfo.codeSize = builder.code.size();
         createInfo.pCode = (uint32_t*)builder.code.data();
 
-        if (VK_SUCCESS != vkCreateShaderModule(builder.context.device, &createInfo, nullptr, &module)) {
+        if (VK_SUCCESS != vkCreateShaderModule($context().device, &createInfo, nullptr, &module)) {
             throw std::runtime_error("failed to create shader module");
         }
     }
     ~ShaderModule() {
-        vkDestroyShaderModule(context.device, module, nullptr);
+        vkDestroyShaderModule($context().device, module, nullptr);
     }
     operator VkShaderModule() const { return module; }
 };
 
 struct ImageBuilder {
-    VulkanContext & context;
     bool buildMipmaps;
     void * bytes;
     int byteCount;
     VkFormat format;
     VkExtent2D extent; // width and height
     bool isDepthBuffer;
-    ImageBuilder(VulkanContext & context)
-        :context(context), buildMipmaps(true), bytes(nullptr), isDepthBuffer(false) {}
+    ImageBuilder() : buildMipmaps(true), bytes(nullptr), isDepthBuffer(false) {}
     ImageBuilder & createMipmaps(bool buildMipmaps) {
         this->buildMipmaps = buildMipmaps;
         return *this;
@@ -1303,8 +1312,8 @@ struct ImageBuilder {
         bytes = nullptr;
         byteCount = 0;
         buildMipmaps = false;
-        extent.width = context.windowWidth;
-        extent.height = context.windowHeight;
+        extent.width = $context().windowWidth;
+        extent.height = $context().windowHeight;
         this->format = depthFormat;
         isDepthBuffer = true;
         return *this;
@@ -1313,8 +1322,8 @@ struct ImageBuilder {
         bytes = nullptr;
         byteCount = 0;
         buildMipmaps = false;
-        extent.width = context.windowWidth;
-        extent.height = context.windowHeight;
+        extent.width = $context().windowWidth;
+        extent.height = $context().windowHeight;
         this->format = format;
         isDepthBuffer = false;
         return *this;
@@ -1331,19 +1340,15 @@ struct ImageBuilder {
 };
 
 struct Image {
-    VulkanContext & context;
     VkImage image;
     VkDeviceMemory memory;
     VkImageView imageView;
-    Image(Image && other):context(other.context) {
-        image = other.image;
-        memory = other.memory;
-        imageView = other.imageView;
+    Image(Image && other) : image(other.image), memory(other.memory), imageView(other.imageView) {
         other.image = VK_NULL_HANDLE;
         other.memory = VK_NULL_HANDLE;
         other.imageView = VK_NULL_HANDLE;
     }
-    Image(ImageBuilder & builder) : context(builder.context) {
+    Image(ImageBuilder & builder) {
         size_t mipLevels;
         if (builder.buildMipmaps) {
             mipLevels = std::floor(log2(std::max(builder.extent.width, builder.extent.height))) + 1;
@@ -1374,22 +1379,22 @@ struct Image {
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        if (vkCreateImage(context.device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
+        if (vkCreateImage($context().device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
             throw std::runtime_error("failed to create Vulkan image");
         }
 
         VkMemoryRequirements memoryRequirements = {};
-        vkGetImageMemoryRequirements(context.device, image, &memoryRequirements);
+        vkGetImageMemoryRequirements($context().device, image, &memoryRequirements);
 
         VkMemoryAllocateInfo allocateInfo = {};
         allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocateInfo.allocationSize = memoryRequirements.size;
-        allocateInfo.memoryTypeIndex = findMemoryType(context.physicalDevice, memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        allocateInfo.memoryTypeIndex = findMemoryType($context().physicalDevice, memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-        if (VK_SUCCESS != vkAllocateMemory(context.device, &allocateInfo, nullptr, &memory)) {
+        if (VK_SUCCESS != vkAllocateMemory($context().device, &allocateInfo, nullptr, &memory)) {
             throw std::runtime_error("failed to allocate image memory");
         }
-        if (VK_SUCCESS != vkBindImageMemory(context.device, image, memory, 0)) {
+        if (VK_SUCCESS != vkBindImageMemory($context().device, image, memory, 0)) {
             throw std::runtime_error("failed to bind memory to image");
         }
 
@@ -1401,27 +1406,27 @@ struct Image {
         }
 
         // Vulkan spec says images MUST be created either undefined or preinitialized layout, so we can't jump straight to desired layout.
-        transitionImageLayout(context.device, context.commandPool, context.graphicsQueue, image, builder.format, 1, VK_IMAGE_LAYOUT_UNDEFINED, desiredLayout);
+        transitionImageLayout($context().device, $context().commandPool, $context().graphicsQueue, image, builder.format, 1, VK_IMAGE_LAYOUT_UNDEFINED, desiredLayout);
 
         if (builder.byteCount > 0) { 
             VkBuffer stagingBuffer;
             VkDeviceMemory stagingMemory;
 
             // put the image bytes into a buffer for transitioning
-            std::tie(stagingBuffer, stagingMemory) = createBuffer(context.physicalDevice, context.device, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, builder.byteCount);
+            std::tie(stagingBuffer, stagingMemory) = createBuffer($context().physicalDevice, $context().device, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, builder.byteCount);
             void * stagingBytes;
-            vkMapMemory(context.device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &stagingBytes);
+            vkMapMemory($context().device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &stagingBytes);
             memcpy(stagingBytes, builder.bytes, (size_t)builder.byteCount);
-            vkUnmapMemory(context.device, stagingMemory);
+            vkUnmapMemory($context().device, stagingMemory);
 
             // Now the image is in DST_OPTIMAL layout and we can copy the image data to it.
-            copyBufferToImage(context.device, context.commandPool, context.graphicsQueue, stagingBuffer, image, builder.extent.width, builder.extent.height);
-            vkFreeMemory(context.device, stagingMemory, nullptr);
-            vkDestroyBuffer(context.device, stagingBuffer, nullptr);
+            copyBufferToImage($context().device, $context().commandPool, $context().graphicsQueue, stagingBuffer, image, builder.extent.width, builder.extent.height);
+            vkFreeMemory($context().device, stagingMemory, nullptr);
+            vkDestroyBuffer($context().device, stagingBuffer, nullptr);
         }
 
         if (builder.buildMipmaps) {
-            generateMipmaps(context.device, image, context.commandPool, context.graphicsQueue, builder.extent.width, builder.extent.height, mipLevels);
+            generateMipmaps($context().device, image, $context().commandPool, $context().graphicsQueue, builder.extent.width, builder.extent.height, mipLevels);
         } else {
             // todo: transition the single image to the optimal layout for sampling
         }
@@ -1433,22 +1438,21 @@ struct Image {
             aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
         }
 
-        imageView = createImageView(context.device, image, builder.format, aspectFlags, mipLevels);
+        imageView = createImageView($context().device, image, builder.format, aspectFlags, mipLevels);
     }
     ~Image() {
         // these are all safe if they are already VK_NULL_HANDLE
-        vkDestroyImageView(context.device, imageView, nullptr);
-        vkFreeMemory(context.device, memory, nullptr);
-        vkDestroyImage(context.device, image, nullptr);
+        vkDestroyImageView($context().device, imageView, nullptr);
+        vkFreeMemory($context().device, memory, nullptr);
+        vkDestroyImage($context().device, image, nullptr);
     }
 };
 
 struct TextureSampler {
     VkSampler sampler;
-    VulkanContext & context;
-    TextureSampler(VulkanContext& context) : context(context), sampler(createSampler(context.device)) {}
+    TextureSampler() : sampler(createSampler($context().device)) {}
     ~TextureSampler() {
-        vkDestroySampler(context.device, sampler, nullptr);
+        vkDestroySampler($context().device, sampler, nullptr);
     }
     operator VkSampler() const {
         return sampler;
@@ -1486,23 +1490,22 @@ struct Buffer {
     VkBuffer buffer;
     VkDeviceMemory memory;
     size_t size;
-    VulkanContext & context;
 
-    Buffer(VulkanContext& context, BufferBuilder & builder) : context(context), buffer(VK_NULL_HANDLE), memory(VK_NULL_HANDLE), size(builder.byteCount) {
-        std::tie(buffer, memory) = createBuffer(context.physicalDevice, context.device, builder.usage, builder.byteCount);
+    Buffer(BufferBuilder & builder) : buffer(VK_NULL_HANDLE), memory(VK_NULL_HANDLE), size(builder.byteCount) {
+        std::tie(buffer, memory) = createBuffer($context().physicalDevice, $context().device, builder.usage, builder.byteCount);
     }
     void setData(void * bytes, size_t size) {
         if (size != this->size) {
             throw std::runtime_error("Uniform buffer size mismatch");
         }
         void * mapped;
-        vkMapMemory(context.device, memory, 0, size, 0, &mapped);
+        vkMapMemory($context().device, memory, 0, size, 0, &mapped);
         memcpy(mapped, bytes, size);
-        vkUnmapMemory(context.device, memory);           
+        vkUnmapMemory($context().device, memory);           
     }
     ~Buffer() {
-        vkFreeMemory(context.device, memory, nullptr);
-        vkDestroyBuffer(context.device, buffer, nullptr);
+        vkFreeMemory($context().device, memory, nullptr);
+        vkDestroyBuffer($context().device, buffer, nullptr);
     }
     operator VkBuffer() const {
         return buffer;
@@ -1510,10 +1513,8 @@ struct Buffer {
 };
 
 struct DescriptorLayoutBuilder {
-    VulkanContext & context;
     std::vector<VkDescriptorSetLayoutBinding> bindings;
-    std::set<VkDescriptorSetLayout> layouts;
-    DescriptorLayoutBuilder(VulkanContext& context):context(context) { }
+    DescriptorLayoutBuilder() { }
     DescriptorLayoutBuilder & addStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlagBits stages) {
         VkDescriptorSetLayoutBinding desc = {};
         desc.binding = binding,
@@ -1548,19 +1549,14 @@ struct DescriptorLayoutBuilder {
         info.pBindings = bindings.data();
 
         VkDescriptorSetLayout layout;
-        if (vkCreateDescriptorSetLayout(context.device, &info, nullptr, &layout) != VK_SUCCESS) {
+        if (vkCreateDescriptorSetLayout($context().device, &info, nullptr, &layout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create descriptor set layout");
         }
-        this->layouts.emplace(layout);
+        $context().layouts.emplace(layout);
         return layout;
     }
     void reset() {
         bindings.clear();
-    }
-    ~DescriptorLayoutBuilder() {
-        for (auto& layout : layouts) {
-            vkDestroyDescriptorSetLayout(context.device, layout, nullptr);
-        }
     }
 };
 
@@ -1587,9 +1583,8 @@ struct DescriptorPoolBuilder {
 };
 
 struct DescriptorPool {
-    VulkanContext & context;
     VkDescriptorPool pool;
-    DescriptorPool(VulkanContext & context, DescriptorPoolBuilder & builder):context(context) {
+    DescriptorPool(DescriptorPoolBuilder & builder) {
         if (builder.sizes.empty()) {
             throw std::runtime_error("No sizes provided for Descriptor Pool");
         }
@@ -1599,13 +1594,13 @@ struct DescriptorPool {
         descriptorPoolCreateInfo.pPoolSizes = builder.sizes.data();
         descriptorPoolCreateInfo.maxSets = builder._maxDescriptorSets;
 
-        if (VK_SUCCESS != vkCreateDescriptorPool(context.device, &descriptorPoolCreateInfo, nullptr, &pool)) {
+        if (VK_SUCCESS != vkCreateDescriptorPool($context().device, &descriptorPoolCreateInfo, nullptr, &pool)) {
             throw std::runtime_error("Failed to create descriptor pool");
         }
     }
     void reset() {
-        // freeing each descriptor requires the pool have the "free" bit. Look online for use cases for individual free.
-        vkResetDescriptorPool(context.device, pool, 0);
+        // freeing each descriptor individually requires the pool have the "free" bit. Look online for use cases for individual free.
+        vkResetDescriptorPool($context().device, pool, 0);
     }
     VkDescriptorSet allocate(VkDescriptorSetLayout layout) {
         VkDescriptorSetAllocateInfo allocInfo = {};
@@ -1615,23 +1610,22 @@ struct DescriptorPool {
         allocInfo.pSetLayouts = &layout;
 
         VkDescriptorSet descriptorSet;
-        if (VK_SUCCESS != vkAllocateDescriptorSets(context.device, &allocInfo, &descriptorSet)) {
+        if (VK_SUCCESS != vkAllocateDescriptorSets($context().device, &allocInfo, &descriptorSet)) {
             throw std::runtime_error("Failed to allocate descriptor set");
         }
         return descriptorSet;
     }
     ~DescriptorPool() {
         reset();
-        vkDestroyDescriptorPool(context.device, pool, nullptr);
+        vkDestroyDescriptorPool($context().device, pool, nullptr);
     }
 };
 
 struct DescriptorSetBinder {
     std::vector<VkWriteDescriptorSet> descriptorWriteSets;
-    VulkanContext& context;
     std::vector<VkDescriptorImageInfo> imageInfos;
     std::vector<VkDescriptorBufferInfo> bufferInfos;
-    DescriptorSetBinder(VulkanContext & context):context(context) {}
+    DescriptorSetBinder() {}
     void bindSampler(VkDescriptorSet descriptorSet, uint32_t bindingIndex, TextureSampler & sampler, Image & image) {
         VkDescriptorImageInfo imageInfo = {};
         imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1705,36 +1699,36 @@ struct DescriptorSetBinder {
                     break;
             }
         }
-        vkUpdateDescriptorSets(context.device, descriptorWriteSets.size(), descriptorWriteSets.data(), 0, nullptr);
+        vkUpdateDescriptorSets($context().device, descriptorWriteSets.size(), descriptorWriteSets.data(), 0, nullptr);
         descriptorWriteSets.clear();
         imageInfos.clear();
         bufferInfos.clear();
     }
 };
 
-VkSemaphore createSemaphore(VulkanContext & context) {
+VkSemaphore createSemaphore() {
     VkSemaphoreCreateInfo createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
     VkSemaphore semaphore;
     
-    if (vkCreateSemaphore(context.device, &createInfo, NULL, &semaphore) != VK_SUCCESS) {
+    if (vkCreateSemaphore($context().device, &createInfo, NULL, &semaphore) != VK_SUCCESS) {
         throw std::runtime_error("failed to create semaphore");
     }
 
-    context.semaphores.push_back(semaphore);
+    $context().semaphores.push_back(semaphore);
 
     return semaphore;
 }
 
-VkFence createFence(VulkanContext & context) {
+VkFence createFence() {
     VkFenceCreateInfo createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     VkFence fence;
-    if (VK_SUCCESS != vkCreateFence(context.device, &createInfo, nullptr, &fence)) {
+    if (VK_SUCCESS != vkCreateFence($context().device, &createInfo, nullptr, &fence)) {
         throw std::runtime_error("failed to create fence");
     }
-    context.fences.push_back(fence);
+    $context().fences.push_back(fence);
     return fence;
 }
 enum ImageType {
@@ -1762,15 +1756,14 @@ struct FramebufferBuilder {
     }
 };
 struct Framebuffer {
-    VulkanContext & context;
     std::vector<Image> images;
     VkFramebuffer framebuffer;
     VkRenderPass renderpass;
-    Framebuffer(Framebuffer && other):context(other.context),images(std::move(other.images)),framebuffer(other.framebuffer),renderpass(other.renderpass) {
+    Framebuffer(Framebuffer && other):images(std::move(other.images)),framebuffer(other.framebuffer),renderpass(other.renderpass) {
         other.framebuffer = VK_NULL_HANDLE;
         other.renderpass = VK_NULL_HANDLE;
     }
-    Framebuffer(FramebufferBuilder & builder, VulkanContext & context, VkRenderPass renderpass):context(context),renderpass(renderpass) {
+    Framebuffer(FramebufferBuilder & builder, VkRenderPass renderpass):renderpass(renderpass) {
         if (builder.imageTypes.empty()) {
             throw std::runtime_error("Framebuffer builder must specify at least one image type");
         }
@@ -1778,18 +1771,18 @@ struct Framebuffer {
         for (ImageType imageType : builder.imageTypes) {
             switch (imageType) {
                 case ImageType::Color:
-                    images.emplace_back(ImageBuilder(context).forFramebuffer(VK_FORMAT_R8G8B8A8_UNORM));
+                    images.emplace_back(ImageBuilder().forFramebuffer(VK_FORMAT_R8G8B8A8_UNORM));
                     imageViews.push_back(images.back().imageView);
                     break;
                 case ImageType::Depth:
-                    images.emplace_back(ImageBuilder(context).forDepthBuffer());
+                    images.emplace_back(ImageBuilder().forDepthBuffer());
                     imageViews.push_back(images.back().imageView);
                     break;
                 case ImageType::Present:
-                    if (builder.swapchainIndex >= context.swapchainImageCount) {
+                    if (builder.swapchainIndex >= $context().swapchainImageCount) {
                         throw std::runtime_error("builder swapchain index is greater than swapchain image count");
                     }
-                    imageViews.push_back(context.swapchainImageViews[builder.swapchainIndex]);
+                    imageViews.push_back($context().swapchainImageViews[builder.swapchainIndex]);
                     break;
             }
         }
@@ -1799,15 +1792,15 @@ struct Framebuffer {
         framebufferInfo.renderPass = renderpass;
         framebufferInfo.attachmentCount = imageViews.size();
         framebufferInfo.pAttachments = imageViews.data();
-        framebufferInfo.width = context.windowWidth;
-        framebufferInfo.height = context.windowHeight; 
+        framebufferInfo.width = $context().windowWidth;
+        framebufferInfo.height = $context().windowHeight; 
         framebufferInfo.layers = 1;
 
-        if (vkCreateFramebuffer(context.device, &framebufferInfo, nullptr, &framebuffer) != VK_SUCCESS) {
+        if (vkCreateFramebuffer($context().device, &framebufferInfo, nullptr, &framebuffer) != VK_SUCCESS) {
             throw std::runtime_error("failed to create framebuffer");
         }
     }
     ~Framebuffer() {
-        vkDestroyFramebuffer(context.device, framebuffer, nullptr); // safe if already VK_NULL_HANDLE
+        vkDestroyFramebuffer($context().device, framebuffer, nullptr); // safe if already VK_NULL_HANDLE
     }
 };
