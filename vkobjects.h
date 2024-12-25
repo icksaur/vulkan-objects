@@ -37,10 +37,16 @@ struct VulkanContext {
     std::vector<VkImage> swapchainImages;
     std::vector<VkImageView> swapchainImageViews;
     VkCommandPool commandPool;
+
+    // managed resource collections that will be auto-cleaned when VulkanContext is destroyed
     std::vector<VkCommandBuffer> commandBuffers;
     std::vector<VkSemaphore> semaphores;
     std::vector<VkFence> fences;
     std::set<VkDescriptorSetLayout> layouts;
+    std::set<VkPipelineLayout> pipelineLayouts;
+    std::set<VkPipeline> pipelines;
+    std::set<VkRenderPass> renderPasses;
+
     std::vector<VkFramebuffer> presentFramebuffers;
     VkQueue graphicsQueue;
     VulkanContext(SDL_Window * window);
@@ -1126,6 +1132,7 @@ void rebuildPresentationResources(VulkanContext & context) {
 }
 
 VulkanContext::~VulkanContext() {
+    // clean up managed resource collections
     for (auto semaphore : semaphores) {
         vkDestroySemaphore(device, semaphore, nullptr);
     }
@@ -1135,14 +1142,25 @@ VulkanContext::~VulkanContext() {
     for (auto commandBuffer : commandBuffers) {
         vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
     }
-    vkDestroyCommandPool(device, commandPool, nullptr);
-
-    for (VkImageView view : swapchainImageViews) {
-        vkDestroyImageView(device, view, nullptr);
-    }
     for (VkDescriptorSetLayout layout : layouts) {
         vkDestroyDescriptorSetLayout(device, layout, nullptr);
     }
+    for (VkPipelineLayout layout : pipelineLayouts) {
+        vkDestroyPipelineLayout(device, layout, nullptr);
+    }
+    for (VkPipeline pipeline : pipelines) {
+        vkDestroyPipeline(device, pipeline, nullptr);
+    }
+    for (VkRenderPass renderPass : renderPasses) {
+        vkDestroyRenderPass(device, renderPass, nullptr);
+    }
+
+    // clean up other global resources
+    vkDestroyCommandPool(device, commandPool, nullptr);
+    for (VkImageView view : swapchainImageViews) {
+        vkDestroyImageView(device, view, nullptr);
+    }
+
     vkDestroySwapchainKHR(device, swapchain, nullptr);
     vkDestroySurfaceKHR(instance, presentationSurface, nullptr);
     vkDestroyDevice(device, nullptr);
@@ -1238,6 +1256,8 @@ struct RenderpassBuilder {
         if (VK_SUCCESS != vkCreateRenderPass($context().device, &renderPassInfo, nullptr, &renderPass)) {
             throw std::runtime_error("failed to create render pass");
         }
+
+        $context().renderPasses.emplace(renderPass);
 
         return renderPass;
     }
@@ -1734,17 +1754,22 @@ VkFence createFence() {
     $context().fences.push_back(fence);
     return fence;
 }
+
 enum ImageType {
     None = 0,
     Present = 1,
     Color = 2,
     Depth = 3
 };
+
 struct FramebufferBuilder {
     std::vector<ImageType> imageTypes;
     size_t swapchainIndex;
     FramebufferBuilder():swapchainIndex(0) { }
     FramebufferBuilder & present(size_t swapchainIndex) {
+        if (swapchainIndex >= $context().swapchainImageCount) {
+            throw std::runtime_error("Invalid swapchain index");
+        }
         imageTypes.push_back(ImageType::Present);
         this->swapchainIndex = swapchainIndex;
         return *this;
@@ -1758,6 +1783,7 @@ struct FramebufferBuilder {
         return *this;
     }
 };
+
 struct Framebuffer {
     std::vector<Image> images;
     VkFramebuffer framebuffer;
@@ -1821,6 +1847,161 @@ VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> &
     if (VK_SUCCESS != vkCreatePipelineLayout($context().device, &pipelineLayoutCreateInfo, nullptr, &layout)) {
         throw std::runtime_error("failed to create pipeline layout");
     }
-
+    $context().pipelineLayouts.emplace(layout);
     return layout;
+}
+
+struct GraphicsPipelineBuilder {
+    VkPipelineLayout pipelineLayout;
+    VkRenderPass renderPass;
+    std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
+    GraphicsPipelineBuilder(VkPipelineLayout layout, VkRenderPass renderPass) : pipelineLayout(layout), renderPass(renderPass) {}
+    GraphicsPipelineBuilder & addVertexShader(ShaderModule & vertexShaderModule, const char * entryPoint = "main") {
+        VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
+        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageInfo.module = vertexShaderModule.module;
+        vertShaderStageInfo.pName = entryPoint;
+        shaderStages.push_back(vertShaderStageInfo);
+        return *this;
+    }
+    GraphicsPipelineBuilder & addFragmentShader(ShaderModule & fragmentShaderModule, const char *entryPoint = "main") {
+        VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
+        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageInfo.module = fragmentShaderModule.module;
+        fragShaderStageInfo.pName = entryPoint;
+        shaderStages.push_back(fragShaderStageInfo);
+        return *this;
+    }
+    VkPipeline build() {
+        // Binding description (one vec2 per vertex)
+        VkVertexInputBindingDescription bindingDescription = {};
+        bindingDescription.binding = 0;
+        bindingDescription.stride = sizeof(float) * 5; // vec3 pos and vec2 uv
+        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+        // Attribute description (vec3 -> location 0 in the shader)
+        VkVertexInputAttributeDescription attributeDescriptions[2];
+        attributeDescriptions[0] = {};
+        attributeDescriptions[0].binding = 0;
+        attributeDescriptions[0].location = 0;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[0].offset = 0;
+
+        // Attribute description (vec2 -> location 1 in the shader)
+        VkVertexInputAttributeDescription attributeDescription = {};
+        attributeDescriptions[1] = {};
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[1].offset = sizeof(float) * 3;
+
+        // Pipeline vertex input state
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
+        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount = 2;
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+        VkViewport viewport = {};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = $context().windowWidth;
+        viewport.height = $context().windowHeight;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor = {};
+        scissor.offset = {0, 0};
+        scissor.extent = VkExtent2D{(unsigned int)$context().windowWidth, (unsigned int)$context().windowHeight};
+
+        VkPipelineViewportStateCreateInfo viewportState = {};
+        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.pViewports = &viewport;
+        viewportState.scissorCount = 1;
+        viewportState.pScissors = &scissor;
+
+        VkPipelineRasterizationStateCreateInfo rasterizer = {};
+        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizer.depthClampEnable = VK_FALSE;
+        rasterizer.rasterizerDiscardEnable = VK_FALSE;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;  // Fill the triangles
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE;    // may cull backfacing faces, etc
+        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE; // Counter-clockwise vertices are front
+        rasterizer.depthBiasEnable = VK_FALSE;
+
+        VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.blendEnable = VK_FALSE;
+
+        VkPipelineColorBlendStateCreateInfo colorBlending = {};
+        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlending.logicOpEnable = VK_FALSE;
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &colorBlendAttachment;
+
+        VkPipelineMultisampleStateCreateInfo multisampling = {};
+        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampling.sampleShadingEnable = VK_FALSE;
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo depthStencil = {};
+        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depthStencil.depthTestEnable = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_TRUE;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+        depthStencil.depthBoundsTestEnable = VK_FALSE;
+        depthStencil.stencilTestEnable = VK_FALSE;
+
+        VkPipeline pipeline;
+        VkGraphicsPipelineCreateInfo pipelineCreateInfo = {};
+        pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineCreateInfo.stageCount = shaderStages.size();
+        pipelineCreateInfo.pStages = shaderStages.data();
+        pipelineCreateInfo.pVertexInputState = &vertexInputInfo;
+        pipelineCreateInfo.pInputAssemblyState = &inputAssembly;
+        pipelineCreateInfo.pViewportState = &viewportState;
+        pipelineCreateInfo.pRasterizationState = &rasterizer;
+        pipelineCreateInfo.pMultisampleState = &multisampling;
+        pipelineCreateInfo.pColorBlendState = &colorBlending;
+        pipelineCreateInfo.layout = pipelineLayout;  // Pipeline layout created earlier
+        pipelineCreateInfo.renderPass = renderPass;
+        pipelineCreateInfo.subpass = 0;  // Index of the subpass where this pipeline will be used
+        pipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;  // Not deriving from another pipeline
+        pipelineCreateInfo.pDepthStencilState = &depthStencil;
+        
+        if (vkCreateGraphicsPipelines($context().device,  VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create graphics pipeline");
+        }
+        
+        $context().pipelines.emplace(pipeline);
+        return pipeline;
+    }
+};
+
+VkPipeline createComputePipeline(VkPipelineLayout pipelineLayout, VkShaderModule computeShaderModule, const char * entryPoint = "main") {
+    VkComputePipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    pipelineInfo.stage.module = computeShaderModule;
+    pipelineInfo.stage.pName = entryPoint;
+    pipelineInfo.layout = pipelineLayout;
+
+    VkPipeline computePipeline;
+    if (VK_SUCCESS != vkCreateComputePipelines($context().device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline)) {
+        throw std::runtime_error("failed to create compute pipeline");
+    }
+
+    $context().pipelines.emplace(computePipeline);
+    return computePipeline;
 }

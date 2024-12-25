@@ -72,149 +72,6 @@ Image createImageFromTGAFile(const char * filename) {
     return image;
 }
 
-VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D extent, VkPipelineLayout pipelineLayout, VkRenderPass renderPass, VkShaderModule vertexShaderModule, VkShaderModule fragmentShaderModule) {
-    VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
-    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vertShaderStageInfo.module = vertexShaderModule;
-    vertShaderStageInfo.pName = "main";
-
-    VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
-    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragShaderStageInfo.module = fragmentShaderModule;
-    fragShaderStageInfo.pName = "main";
-
-    VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
-
-    // Binding description (one vec2 per vertex)
-    VkVertexInputBindingDescription bindingDescription = {};
-    bindingDescription.binding = 0;
-    bindingDescription.stride = sizeof(float) * 5; // vec3 pos and vec2 uv
-    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-    // Attribute description (vec3 -> location 0 in the shader)
-    VkVertexInputAttributeDescription attributeDescriptions[2];
-    attributeDescriptions[0] = {};
-    attributeDescriptions[0].binding = 0;
-    attributeDescriptions[0].location = 0;
-    attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attributeDescriptions[0].offset = 0;
-
-    // Attribute description (vec2 -> location 1 in the shader)
-    VkVertexInputAttributeDescription attributeDescription = {};
-    attributeDescriptions[1] = {};
-    attributeDescriptions[1].binding = 0;
-    attributeDescriptions[1].location = 1;
-    attributeDescriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
-    attributeDescriptions[1].offset = sizeof(float) * 3;
-
-    // Pipeline vertex input state
-    VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
-    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount = 1;
-    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-    vertexInputInfo.vertexAttributeDescriptionCount = 2;
-    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
-
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
-    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    inputAssembly.primitiveRestartEnable = VK_FALSE;
-
-    VkViewport viewport = {};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = extent.width;
-    viewport.height = extent.height;
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-
-    VkRect2D scissor = {};
-    scissor.offset = {0, 0};
-    scissor.extent = extent;
-
-    VkPipelineViewportStateCreateInfo viewportState = {};
-    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.pViewports = &viewport;
-    viewportState.scissorCount = 1;
-    viewportState.pScissors = &scissor;
-
-    VkPipelineRasterizationStateCreateInfo rasterizer = {};
-    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer.depthClampEnable = VK_FALSE;
-    rasterizer.rasterizerDiscardEnable = VK_FALSE;
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;  // Fill the triangles
-    rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_NONE;    // may cull backfacing faces, etc
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE; // Counter-clockwise vertices are front
-    rasterizer.depthBiasEnable = VK_FALSE;
-
-    VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
-    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    colorBlendAttachment.blendEnable = VK_FALSE;
-
-    VkPipelineColorBlendStateCreateInfo colorBlending = {};
-    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlending.logicOpEnable = VK_FALSE;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
-
-    VkPipelineMultisampleStateCreateInfo multisampling = {};
-    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.sampleShadingEnable = VK_FALSE;
-    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-    VkPipelineDepthStencilStateCreateInfo depthStencil = {};
-    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = VK_TRUE;
-    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
-    depthStencil.depthBoundsTestEnable = VK_FALSE;
-    depthStencil.stencilTestEnable = VK_FALSE;
-
-    VkPipeline pipeline;
-    VkGraphicsPipelineCreateInfo pipelineCreateInfo = {};
-    pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineCreateInfo.stageCount = 2;
-    pipelineCreateInfo.pStages = shaderStages;  // Vertex and fragment shaders
-    pipelineCreateInfo.pVertexInputState = &vertexInputInfo;
-    pipelineCreateInfo.pInputAssemblyState = &inputAssembly;
-    pipelineCreateInfo.pViewportState = &viewportState;
-    pipelineCreateInfo.pRasterizationState = &rasterizer;
-    pipelineCreateInfo.pMultisampleState = &multisampling;
-    pipelineCreateInfo.pColorBlendState = &colorBlending;
-    pipelineCreateInfo.layout = pipelineLayout;  // Pipeline layout created earlier
-    pipelineCreateInfo.renderPass = renderPass;  // Render pass created earlier
-    pipelineCreateInfo.subpass = 0;  // Index of the subpass where this pipeline will be used
-    pipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;  // Not deriving from another pipeline
-    pipelineCreateInfo.pDepthStencilState = &depthStencil;
-    
-    if (vkCreateGraphicsPipelines(device,  VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create graphics pipeline!");
-    }
-    
-    return pipeline;
-}
-
-VkPipeline createComputePipeline(VkDevice device, VkPipelineLayout pipelineLayout, VkShaderModule computeShaderModule) {
-    VkComputePipelineCreateInfo pipelineInfo = {};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    pipelineInfo.stage.module = computeShaderModule;
-    pipelineInfo.stage.pName = "main";
-    pipelineInfo.layout = pipelineLayout;
-
-    VkPipeline computePipeline;
-    if (VK_SUCCESS != vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline)) {
-        throw std::runtime_error("failed to create compute pipeline!");
-    }
-
-    return computePipeline;
-}
-
 void recordRenderPass(
     VkExtent2D extent,
     VkPipeline computePipeline,
@@ -381,17 +238,17 @@ int main(int argc, char *argv[]) {
 #endif
 
     // descriptor of uniforms in our pipeline
-    DescriptorLayoutBuilder layoutBuilder;
-    layoutBuilder.addUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT).addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT).addStorageBuffer(2, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    VkDescriptorSetLayout descriptorSetLayout = layoutBuilder.build();
+    DescriptorLayoutBuilder desriptorLayoutBuilder;
+    desriptorLayoutBuilder.addUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT).addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT).addStorageBuffer(2, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    VkDescriptorSetLayout descriptorSetLayout = desriptorLayoutBuilder.build();
 
-    // descriptor pool for allocating descriptors
+    // descriptor pool for allocating descriptor sets
     DescriptorPoolBuilder poolBuilder;
     poolBuilder.addSampler(1).addStorageBuffer(1).addUniformBuffer(1).maxSets(1);
     DescriptorPool descriptorPool(poolBuilder);
     
     // create a descriptor set and bind resources to it
-    VkDescriptorSet descriptorSet = descriptorPool.allocate(descriptorSetLayout);
+    VkDescriptorSet descriptorSet = descriptorPool.allocate(descriptorSetLayout); // pool-owned
     DescriptorSetBinder binder;
     binder.bindUniformBuffer(descriptorSet, 0, uniformBuffer, sizeof(float)*16);
     binder.bindSampler(descriptorSet, 1, textureSampler, textureImage);
@@ -402,25 +259,27 @@ int main(int argc, char *argv[]) {
     RenderpassBuilder renderpassBuilder;
     renderpassBuilder.colorAttachment().depthAttachment();
     renderpassBuilder.colorRef(0).depthRef(1);
-    VkRenderPass renderPass = renderpassBuilder.build();
+    VkRenderPass renderPass = renderpassBuilder.build(); // context-owned
     
-    std::vector<Framebuffer> presentFramebuffers;
+    std::vector<Framebuffer> presentFramebuffers; // auto cleaned up by vector destructor
     presentFramebuffers.reserve(context.swapchainImageCount); 
-    
     for (size_t i = 0; i < context.swapchainImageCount; ++i) {
         presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), renderPass);
     }
 
     // pipelines
-    VkPipelineLayout pipelineLayout = createPipelineLayout({descriptorSetLayout});
-    VkPipeline graphicsPipeline = createGraphicsPipeline(context.device, VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight}, pipelineLayout, renderPass, vertShaderModule, fragShaderModule);
-    VkPipeline computePipeline = createComputePipeline(context.device, pipelineLayout, compShaderModule);
+    VkPipelineLayout pipelineLayout = createPipelineLayout({descriptorSetLayout}); // context-owned
+
+    GraphicsPipelineBuilder graphicsPipelineBuilder(pipelineLayout, renderPass);
+    graphicsPipelineBuilder.addVertexShader(vertShaderModule).addFragmentShader(fragShaderModule);
+    VkPipeline graphicsPipeline = graphicsPipelineBuilder.build(); // context-owned
+    VkPipeline computePipeline = createComputePipeline(pipelineLayout, compShaderModule); // context-owned
 
     // sync primitives
     // It is a good idea to have a separate semaphore for each swapchain image, but for simplicity we use a single one.
-    VkSemaphore imageAvailableSemaphore = createSemaphore();
+    VkSemaphore imageAvailableSemaphore = createSemaphore(); // context-owned
     VkSemaphore renderFinishedSemaphore = createSemaphore();
-    VkFence fence = createFence();
+    VkFence fence = createFence(); // context-owned
     
     uint nextImage = 0;
 
@@ -457,12 +316,11 @@ int main(int argc, char *argv[]) {
 
         submitCommandBuffer(context.graphicsQueue, commandBuffers[nextImage], imageAvailableSemaphore, renderFinishedSemaphore);
         if (!presentQueue(context.presentationQueue, context.swapchain, renderFinishedSemaphore, nextImage)) {
-            std::cout << "swap chain out of date, trying to remake" << std::endl;
-
             // This is a common Vulkan situation handled automatically by OpenGL.
             // We need to remake our swap chain, image views, and framebuffers.
-            rebuildPresentationResources(context);
 
+            std::cout << "swap chain out of date, trying to remake" << std::endl;
+            rebuildPresentationResources(context);
             presentFramebuffers.clear();
             for (size_t i=0; i<context.swapchainImageCount; ++i) {
                 presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), renderPass);
@@ -476,12 +334,8 @@ int main(int argc, char *argv[]) {
 
     vkQueueWaitIdle(context.graphicsQueue); // wait until we're done or the render finished semaphore may be in use
 
-    vkDestroyPipeline(context.device, computePipeline, nullptr);
-    vkDestroyPipeline(context.device, graphicsPipeline, nullptr);
-    vkDestroyPipelineLayout(context.device, pipelineLayout, nullptr);
-
-    presentFramebuffers.clear();
-    vkDestroyRenderPass(context.device, renderPass, nullptr);
-
     return 0;
+
+    // look at the VulkanContext destructor to see how everything is cleaned up automatically
+    // SDL will be automatically cleaned up after that
 }
