@@ -17,9 +17,11 @@
 // Global Settings
 int windowWidth = 1280;
 int windowHeight = 720;
+size_t computedQuadCount = 100;
 
-#define COMPUTE_VERTICES // comment out to try CPU uploaded vertex buffer
-size_t quadCount = 100;
+// You can have multiple vertex bindings in your vertex stage.  
+// A single binding is common.  They are zero-indexed so zero here.
+const size_t vertexBindingIndex = 0; 
 
 struct SDLWindow {
     SDL_Window *window;
@@ -121,9 +123,9 @@ void recordRenderPass(
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
 
     VkDeviceSize offsets[] = { 0 };
-    vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, offsets);  // bind the vertex buffer
+    vkCmdBindVertexBuffers(commandBuffer, vertexBindingIndex, 1, &vertexBuffer, offsets);  // bind the vertex buffer
 
-    size_t vertexCount = 6 * quadCount;
+    size_t vertexCount = 6 * computedQuadCount;
 
     vkCmdDraw(commandBuffer, vertexCount, 1, 0, 0);
 
@@ -197,11 +199,12 @@ int main(int argc, char *argv[]) {
     ShaderModule vertShaderModule(ShaderBuilder().vertex().fromFile("tri.vert.spv"));
     ShaderModule compShaderModule(ShaderBuilder().compute().fromFile("vertices.comp.spv"));
 
-    // texture and sampler
+    // Image and sampler.  The image class encapsulates the image, memory, and imageview.
     Image textureImage = createImageFromTGAFile("vulkan.tga");
     TextureSampler textureSampler;
  
     // uniform buffer for our view projection matrix
+    // In our program it's a static buffer, but if it were dynamic, we'd prefer to have one for each swapchain image.
     mat16f viewProjection = Camera()
         .perspective(0.5f*M_PI, windowWidth, windowHeight, 0.1f, 100.0f)
         .moveTo(1.0f, 0.0f, -0.1f)
@@ -211,7 +214,9 @@ int main(int argc, char *argv[]) {
     uniformBuffer.setData(&viewProjection, sizeof(float) * 16);
 
     // shader storage buffer for computed vertices
-    Buffer shaderStorageBuffer(BufferBuilder(sizeof(float) * 5 * 6 * quadCount).storage().vertex());
+    // This is a dynamic buffer, and to fully use all four swapchain images we need to allocate one buffer per image.
+    // Again, just for simplicity, we're sticking with one buffer and one fence.
+    Buffer shaderStorageBuffer(BufferBuilder(sizeof(float) * 5 * 6 * computedQuadCount).storage().vertex());
 
     // descriptor layout of uniforms in our pipeline
     // we're going to use a single descriptor set layout that is used by by both pipelines
@@ -235,13 +240,19 @@ int main(int argc, char *argv[]) {
     binder.bindStorageBuffer(descriptorSet, 2, shaderStorageBuffer);
     binder.updateSets();
     
-    // render pass and present buffers
+    // render pass
+    // VkRenderPass is a key object in building a Vulkan application.
+    // It defines the layout of the framebuffer attachments and how they are used in the rendering process.
+    // Each framebuffer must be related to a render pass.
+    // Each pipeline must must be related to a rander pass.
     RenderpassBuilder renderpassBuilder;
     renderpassBuilder
         .colorAttachment().depthAttachment()
         .colorRef(0).depthRef(1);
     VkRenderPass renderPass = renderpassBuilder.build(); // context-owned
     
+    // Framebuffers are used to store the results of rendering, including color and depth buffers, and other deep buffers for multi-pass uses.
+    // The last framebuffer used in a frame is the swapchain framebuffer, which contains images owned by the Vulkan device that can present to your screen.
     std::vector<Framebuffer> presentFramebuffers; // auto cleaned up by vector destructor
     presentFramebuffers.reserve(context.swapchainImageCount); 
     for (size_t i = 0; i < context.swapchainImageCount; ++i) {
@@ -249,28 +260,34 @@ int main(int argc, char *argv[]) {
     }
 
     // pipelines
+    // Pipelines represent the configurable pipeline stages that define what shaders are used and how their results are combined.
+    // Take a look at the build() function to see all the options that are necessary and configurable.
     VkPipelineLayout pipelineLayout = createPipelineLayout({descriptorSetLayout}); // context-owned
     
-    // vertex pipeline setup
-    // you can have multiple vertex bindings for different use cases, and step through per vertex or per instance
-    // we only have one in this example.  See how we use vec3 position and vec2 UV in tri.vert
-    const size_t binding0 = 0;
+    // vertex stage pipeline setup
+    // You can have multiple vertex bindings for different use cases, and step through per vertex or per instance.
+    // We only have one in this example.  See how we use vec3 position and vec2 UV in tri.vert
+    // Locations have to be unique across the vertex shader in a pipeline.
     GraphicsPipelineBuilder graphicsPipelineBuilder(pipelineLayout, renderPass);
-    graphicsPipelineBuilder.addVertexShader(vertShaderModule).addFragmentShader(fragShaderModule)
-        .vertexBinding(binding0, sizeof(float)*5) // vec3 location and vec2 UV
-        .vertexFloats(binding0, 0, 3, 0) // location 0: position vec3
-        .vertexFloats(binding0, 1, 2, sizeof(float)*3); // location 1: UV vec2, offset by the previous position vec3
+    graphicsPipelineBuilder
+        .addVertexShader(vertShaderModule)
+        .addFragmentShader(fragShaderModule)
+        .vertexBinding(vertexBindingIndex, sizeof(float)*5) // vec3 location and vec2 UV is 5 floats
+        .vertexFloats(vertexBindingIndex, 0, 3, 0) // location 0: position vec3
+        .vertexFloats(vertexBindingIndex, 1, 2, sizeof(float)*3); // location 1: UV vec2, offset by the previous position vec3
 
     VkPipeline graphicsPipeline = graphicsPipelineBuilder.build(); // context-owned
 
     VkPipeline computePipeline = createComputePipeline(pipelineLayout, compShaderModule); // context-owned
 
     // sync primitives
-    // It is a good idea to have a separate semaphore for each swapchain image, but for simplicity we use a single one.
-    VkSemaphore imageAvailableSemaphore = createSemaphore(); // context-owned
-    VkSemaphore renderFinishedSemaphore = createSemaphore(); // context-owned
+    // Having one fence means we only work on one frame at a time.  This is suboptimal for multi-frame rendering.
+    // In our program, the vertex buffer is dynamically computed every frame.  We would need four vertex buffers.
+    // Then we can use four fences and rotate the vertex buffers every frame.
+    // For now, we will use one fence and one vertex buffer.
     VkFence fence = createFence(); // context-owned
     
+    // index of the swapchain resources to use for the next frame
     uint nextImage = 0;
 
     bool done = false;
@@ -283,12 +300,15 @@ int main(int argc, char *argv[]) {
         }
         vkResetFences(context.device, 1, &fence);
 
-        VkResult nextImageResult = vkAcquireNextImageKHR(context.device, context.swapchain, UINT64_MAX, imageAvailableSemaphore, fence, &nextImage);
-        if (nextImageResult != VK_SUCCESS) {
-            std::cout << nextImageResult << std::endl;
-            throw std::runtime_error("vkAcquireNextImageKHR failed");
+        VkSemaphore imageAvailableSemaphore = $context().imageAvailableSemaphores[nextImage];
+        VkSemaphore renderFinishedSemaphore = $context().renderFinishedSemaphores[nextImage];
+
+        if (VK_SUCCESS != vkAcquireNextImageKHR(context.device, context.swapchain, UINT64_MAX, imageAvailableSemaphore, fence, &nextImage)) {
+            throw std::runtime_error("failed to acquire next swapchain image index");
         }
 
+        // This program has no dynamic data content, but we record in
+        // the loop as an example of how you'd typically record a frame.
         recordRenderPass(
             VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight},
             computePipeline,
@@ -299,8 +319,10 @@ int main(int argc, char *argv[]) {
             shaderStorageBuffer,
             pipelineLayout,
             descriptorSet);
-
+            
+        // Submit the command buffer to the graphics queue
         submitCommandBuffer(context.graphicsQueue, commandBuffers[nextImage], imageAvailableSemaphore, renderFinishedSemaphore);
+
         if (!presentQueue(context.presentationQueue, context.swapchain, renderFinishedSemaphore, nextImage)) {
             // This is a common Vulkan situation handled automatically by OpenGL.
             // We need to remake our swap chain, image views, and framebuffers.

@@ -6,11 +6,13 @@
 #include <stdexcept>
 #include <iostream>
 #include <fstream>
+#include <ranges>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
 
+// useful defaults
 const char * appName = "VulkanExample";
 const char * engineName = "VulkanExampleEngine";
 VkPresentModeKHR preferredPresentationMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
@@ -21,6 +23,7 @@ VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 VkFormat depthFormat = VK_FORMAT_D24_UNORM_S8_UINT; // some options are VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT
 
 struct VulkanContext {
+    // things that will not change during the context lifetime
     SDL_Window * window;
     size_t windowWidth;
     size_t windowHeight;
@@ -34,11 +37,20 @@ struct VulkanContext {
     VkSwapchainKHR swapchain;
     VkFormat colorFormat;
     size_t swapchainImageCount;
+    VkCommandPool commandPool;
+    VkQueue graphicsQueue;
+
+    // presentation loop sync primitives
+    std::vector<VkSemaphore> imageAvailableSemaphores;
+    std::vector<VkSemaphore> renderFinishedSemaphores;
+
+    // presentation loop resources that may need to be rebuilt
     std::vector<VkImage> swapchainImages;
     std::vector<VkImageView> swapchainImageViews;
-    VkCommandPool commandPool;
+    std::vector<VkFramebuffer> presentFramebuffers;
+    size_t currentFrame = 0;
 
-    // managed resource collections that will be auto-cleaned when VulkanContext is destroyed
+    // managed resource collections that will be auto-cleaned when the context is destroyed
     std::vector<VkCommandBuffer> commandBuffers;
     std::vector<VkSemaphore> semaphores;
     std::vector<VkFence> fences;
@@ -47,11 +59,8 @@ struct VulkanContext {
     std::set<VkPipeline> pipelines;
     std::set<VkRenderPass> renderPasses;
 
-    std::vector<VkFramebuffer> presentFramebuffers;
-    VkQueue graphicsQueue;
     VulkanContext(SDL_Window * window);
     ~VulkanContext();
-private:
     VulkanContext & operator=(const VulkanContext & other) = delete;
     VulkanContext(const VulkanContext & other) = delete;
     VulkanContext(VulkanContext && other) = delete; 
@@ -996,6 +1005,21 @@ std::tuple<VkImageView, VkImage, VkDeviceMemory> createDepthBuffer(VkPhysicalDev
     return std::make_tuple(imageView, image, memory);
 }
 
+VkSemaphore createSemaphore() {
+    VkSemaphoreCreateInfo createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    VkSemaphore semaphore;
+    
+    if (vkCreateSemaphore($context().device, &createInfo, NULL, &semaphore) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create semaphore");
+    }
+
+    $context().semaphores.push_back(semaphore);
+
+    return semaphore;
+}
+
 VulkanContext::VulkanContext(SDL_Window * window):window(window) {
     int windowWidth, windowHeight;
     SDL_GetWindowSize(window, &windowWidth, &windowHeight);
@@ -1053,6 +1077,11 @@ VulkanContext::VulkanContext(SDL_Window * window):window(window) {
     vkGetDeviceQueue(this->device, this->graphicsQueueIndex, 0, &this->graphicsQueue);
 
     $context.contextInstance = this;
+
+    for (size_t i=0; i<swapchainImageCount; i++) {
+        imageAvailableSemaphores.push_back(createSemaphore());
+        renderFinishedSemaphores.push_back(createSemaphore());
+    } 
 }
 
 void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator) {
@@ -1733,21 +1762,6 @@ struct DescriptorSetBinder {
         bufferInfos.clear();
     }
 };
-
-VkSemaphore createSemaphore() {
-    VkSemaphoreCreateInfo createInfo = {};
-    createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-
-    VkSemaphore semaphore;
-    
-    if (vkCreateSemaphore($context().device, &createInfo, NULL, &semaphore) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create semaphore");
-    }
-
-    $context().semaphores.push_back(semaphore);
-
-    return semaphore;
-}
 
 VkFence createFence() {
     VkFenceCreateInfo createInfo = {};
