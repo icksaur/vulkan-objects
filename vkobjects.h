@@ -69,7 +69,7 @@ struct VulkanContext {
 struct VulkanContextSingleton {
     VulkanContext * contextInstance;
     VulkanContext& operator()() { return *contextInstance; }
-} $context;
+} $context; // this global is guaranteed to null-initialize by C++ initialization rules
 
 // a helper to start and end a command buffer which can be submitted and waited
 struct ScopedCommandBuffer {
@@ -1021,6 +1021,10 @@ VkSemaphore createSemaphore() {
 }
 
 VulkanContext::VulkanContext(SDL_Window * window):window(window) {
+    if ($context.contextInstance != nullptr) {
+        throw std::runtime_error("VulkanContext already exists");
+    }
+
     int windowWidth, windowHeight;
     SDL_GetWindowSize(window, &windowWidth, &windowHeight);
     this->windowWidth = windowWidth;
@@ -1766,6 +1770,7 @@ struct DescriptorSetBinder {
 VkFence createFence() {
     VkFenceCreateInfo createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    createInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     VkFence fence;
     if (VK_SUCCESS != vkCreateFence($context().device, &createInfo, nullptr, &fence)) {
         throw std::runtime_error("failed to create fence");

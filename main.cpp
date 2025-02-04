@@ -190,6 +190,8 @@ bool presentQueue(VkQueue presentQueue, VkSwapchainKHR & swapchain, VkSemaphore 
 int main(int argc, char *argv[]) {
     // these are destroyed in opposite order of creation, cleaning up things in the right order
     SDLWindow window(appName, windowWidth, windowHeight);
+
+    // There can only be one context, and creating it is required for other objects to construct.
     VulkanContext context(window);
 
     std::vector<VkCommandBuffer> & commandBuffers = context.commandBuffers;
@@ -204,7 +206,7 @@ int main(int argc, char *argv[]) {
     TextureSampler textureSampler;
  
     // uniform buffer for our view projection matrix
-    // In our program it's a static buffer, but if it were dynamic, we'd prefer to have one for each swapchain image.
+    // In our program it's a static buffer, but if it were dynamic, we'd need to have one for each swapchain image.
     mat16f viewProjection = Camera()
         .perspective(0.5f*M_PI, windowWidth, windowHeight, 0.1f, 100.0f)
         .moveTo(1.0f, 0.0f, -0.1f)
@@ -214,8 +216,8 @@ int main(int argc, char *argv[]) {
     uniformBuffer.setData(&viewProjection, sizeof(float) * 16);
 
     // shader storage buffer for computed vertices
-    // This is a dynamic buffer, and to fully use all four swapchain images we need to allocate one buffer per image.
-    // Again, just for simplicity, we're sticking with one buffer and one fence.
+    // For simplicity, we're sticking with one buffer and one fence.
+    // For a fully dynamic buffer, we'd need one per swapchain image.
     Buffer shaderStorageBuffer(BufferBuilder(sizeof(float) * 5 * 6 * computedQuadCount).storage().vertex());
 
     // descriptor layout of uniforms in our pipeline
@@ -281,11 +283,9 @@ int main(int argc, char *argv[]) {
     VkPipeline computePipeline = createComputePipeline(pipelineLayout, compShaderModule); // context-owned
 
     // sync primitives
-    // Having one fence means we only work on one frame at a time.  This is suboptimal for multi-frame rendering.
-    // In our program, the vertex buffer is dynamically computed every frame.  We would need four vertex buffers.
-    // Then we can use four fences and rotate the vertex buffers every frame.
-    // For now, we will use one fence and one vertex buffer.
-    VkFence fence = createFence(); // context-owned
+    // A fence does GPU-CPU syncing.  vkAcquireNextImageKHR requires either a fence or semaphore. We have both for an example.
+    // Most render loops are single-threaded.  A typical Vulkan app will have one fence because it will only be using one thread at a time.
+    VkFence imageReadyFence = createFence(); // context-owned
     
     // index of the swapchain resources to use for the next frame
     uint nextImage = 0;
@@ -298,14 +298,17 @@ int main(int argc, char *argv[]) {
                 done = true;
             }
         }
-        vkResetFences(context.device, 1, &fence);
+
+        vkResetFences(context.device, 1, &imageReadyFence);
 
         VkSemaphore imageAvailableSemaphore = $context().imageAvailableSemaphores[nextImage];
         VkSemaphore renderFinishedSemaphore = $context().renderFinishedSemaphores[nextImage];
 
-        if (VK_SUCCESS != vkAcquireNextImageKHR(context.device, context.swapchain, UINT64_MAX, imageAvailableSemaphore, fence, &nextImage)) {
+        if (VK_SUCCESS != vkAcquireNextImageKHR(context.device, context.swapchain, UINT64_MAX, imageAvailableSemaphore, imageReadyFence, &nextImage)) {
             throw std::runtime_error("failed to acquire next swapchain image index");
         }
+
+        vkResetCommandBuffer(commandBuffers[nextImage], 0); // manually reset, otherwise implicit reset causes warnings
 
         // This program has no dynamic data content, but we record in
         // the loop as an example of how you'd typically record a frame.
@@ -323,9 +326,15 @@ int main(int argc, char *argv[]) {
         // Submit the command buffer to the graphics queue
         submitCommandBuffer(context.graphicsQueue, commandBuffers[nextImage], imageAvailableSemaphore, renderFinishedSemaphore);
 
+        // We don't really need a fence in this example.  The semaphore is enough.  If we wanted to modify a resource that could be used by the frame,
+        // we would want to wait for the fence like so before doing that modification.
+        vkWaitForFences(context.device, 1, &imageReadyFence, VK_TRUE, UINT64_MAX);
+
         if (!presentQueue(context.presentationQueue, context.swapchain, renderFinishedSemaphore, nextImage)) {
             // This is a common Vulkan situation handled automatically by OpenGL.
             // We need to remake our swap chain, image views, and framebuffers.
+            // This usually happens after the first frame, but if the image was being used,
+            // the above fence will protect it from being modified by us while in use.
 
             std::cout << "swap chain out of date, trying to remake" << std::endl;
             rebuildPresentationResources();
@@ -334,10 +343,8 @@ int main(int argc, char *argv[]) {
                 presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), renderPass);
             }
         }
+
         SDL_Delay(100);
-        
-        vkWaitForFences(context.device, 1, &fence, VK_TRUE, UINT64_MAX);
-        vkResetCommandBuffer(commandBuffers[nextImage], 0); // manually reset, otherwise implicit reset causes warnings
     }
 
     return 0;
