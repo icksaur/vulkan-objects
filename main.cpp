@@ -23,6 +23,7 @@ size_t computedQuadCount = 100;
 // A single binding is common.  They are zero-indexed so zero here.
 const size_t vertexBindingIndex = 0; 
 
+// A helper to clean up an SDL Window.
 struct SDLWindow {
     SDL_Window *window;
     SDLWindow(const char * title, int w, int h) {
@@ -136,7 +137,7 @@ void recordRenderPass(
     }
 }
 
-void submitCommandBuffer(VkQueue graphicsQueue, VkCommandBuffer commandBuffer, VkSemaphore imageAvailableSemaphore, VkSemaphore renderFinishedSemaphore) {
+void submitCommandBuffer(VkQueue graphicsQueue, VkCommandBuffer commandBuffer, VkSemaphore imageAvailableSemaphore, VkSemaphore renderFinishedSemaphore, VkFence submitFinishedFence) {
     VkSubmitInfo submitInfo = {};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
@@ -154,13 +155,8 @@ void submitCommandBuffer(VkQueue graphicsQueue, VkCommandBuffer commandBuffer, V
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
 
-    if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+    if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, submitFinishedFence) != VK_SUCCESS) {
         throw std::runtime_error("failed to submit command buffer!");
-    }
-
-    VkResult result = vkQueueWaitIdle(graphicsQueue);
-    if (VK_SUCCESS != result) {
-        throw std::runtime_error("failed to wait for the graphics queue to be idle");
     }
 }
 
@@ -176,15 +172,16 @@ bool presentQueue(VkQueue presentQueue, VkSwapchainKHR & swapchain, VkSemaphore 
     presentInfo.pImageIndices = &nextImage;
 
     VkResult result = vkQueuePresentKHR(presentQueue, &presentInfo);
-    if (result != VK_SUCCESS) {
-        if (VK_ERROR_OUT_OF_DATE_KHR == result) {
-            return false;
-        } else {
-            throw std::runtime_error("failed to present swap chain image!");
-        }
+
+    switch (result) {
+        case VK_SUCCESS:
+            return true;
+        case VK_ERROR_OUT_OF_DATE_KHR:
+        case VK_SUBOPTIMAL_KHR:
+            return false; // swap chain needs to be recreated
     }
 
-    return true;
+    throw std::runtime_error("failed to present swap chain image!");
 }
 
 int main(int argc, char *argv[]) {
@@ -283,12 +280,18 @@ int main(int argc, char *argv[]) {
     VkPipeline computePipeline = createComputePipeline(pipelineLayout, compShaderModule); // context-owned
 
     // sync primitives
-    // A fence does GPU-CPU syncing.  vkAcquireNextImageKHR requires either a fence or semaphore. We have both for an example.
-    // Most render loops are single-threaded.  A typical Vulkan app will have one fence because it will only be using one thread at a time.
-    VkFence imageReadyFence = createFence(); // context-owned
+    // A fence does GPU-CPU syncing.
+    std::vector<VkFence> submittedBuffersFinishedFences(4);
+    for (size_t i = 0; i < submittedBuffersFinishedFences.size(); ++i) {
+        submittedBuffersFinishedFences[i] = createFence(); // context-owned
+    }
     
     // index of the swapchain resources to use for the next frame
     uint nextImage = 0;
+
+    // index of the next frame in flight, so we can use the oldest semaphore and fence
+    // vkAcquireNextImageKHR indices are not predicatable, so we need to count these ourself
+    uint frameInFlightIndex = 0;
 
     bool done = false;
     while (!done) {
@@ -299,16 +302,19 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        vkResetFences(context.device, 1, &imageReadyFence);
+        VkSemaphore imageAvailableSemaphore = $context().imageAvailableSemaphores[frameInFlightIndex];
+        VkFence submittedBuffersFinishedFence = submittedBuffersFinishedFences[frameInFlightIndex];
+        VkCommandBuffer commandBuffer = $context().commandBuffers[frameInFlightIndex];
 
-        VkSemaphore imageAvailableSemaphore = $context().imageAvailableSemaphores[nextImage];
-        VkSemaphore renderFinishedSemaphore = $context().renderFinishedSemaphores[nextImage];
+        // Wait for all buffers to finish submitting before resetting them.
+        vkWaitForFences(context.device, 1, &submittedBuffersFinishedFence, VK_TRUE, UINT64_MAX);
+        vkResetFences(context.device, 1, &submittedBuffersFinishedFence);
 
-        if (VK_SUCCESS != vkAcquireNextImageKHR(context.device, context.swapchain, UINT64_MAX, imageAvailableSemaphore, imageReadyFence, &nextImage)) {
+        if (VK_SUCCESS != vkAcquireNextImageKHR(context.device, context.swapchain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &nextImage)) {
             throw std::runtime_error("failed to acquire next swapchain image index");
         }
-
-        vkResetCommandBuffer(commandBuffers[nextImage], 0); // manually reset, otherwise implicit reset causes warnings
+    
+        vkResetCommandBuffer(commandBuffer, 0); // manually reset the buffer, otherwise implicit reset causes warnings
 
         // This program has no dynamic data content, but we record in
         // the loop as an example of how you'd typically record a frame.
@@ -318,17 +324,14 @@ int main(int argc, char *argv[]) {
             graphicsPipeline,
             renderPass,
             presentFramebuffers[nextImage].framebuffer,
-            commandBuffers[nextImage],
+            commandBuffer,
             shaderStorageBuffer,
             pipelineLayout,
             descriptorSet);
             
         // Submit the command buffer to the graphics queue
-        submitCommandBuffer(context.graphicsQueue, commandBuffers[nextImage], imageAvailableSemaphore, renderFinishedSemaphore);
-
-        // We don't really need a fence in this example.  The semaphore is enough.  If we wanted to modify a resource that could be used by the frame,
-        // we would want to wait for the fence like so before doing that modification.
-        vkWaitForFences(context.device, 1, &imageReadyFence, VK_TRUE, UINT64_MAX);
+        VkSemaphore renderFinishedSemaphore = $context().renderFinishedSemaphores[nextImage];
+        submitCommandBuffer(context.graphicsQueue, commandBuffer, imageAvailableSemaphore, renderFinishedSemaphore, submittedBuffersFinishedFence);
 
         if (!presentQueue(context.presentationQueue, context.swapchain, renderFinishedSemaphore, nextImage)) {
             // This is a common Vulkan situation handled automatically by OpenGL.
@@ -344,7 +347,13 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        SDL_Delay(100);
+        frameInFlightIndex = (frameInFlightIndex + 1) % context.swapchainImageCount;
+    }
+
+    VkResult result = vkQueueWaitIdle(context.graphicsQueue);
+
+    if (VK_SUCCESS != result) {
+        throw std::runtime_error("failed to wait for the graphics queue to be idle");
     }
 
     return 0;
