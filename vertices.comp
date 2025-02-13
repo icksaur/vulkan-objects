@@ -2,8 +2,13 @@
 
 layout (local_size_x = 100, local_size_y = 1, local_size_z = 1) in;
 
+layout(std140, binding = 0) uniform matrixBuffer {
+    mat4 viewProjection;
+    float zScale;
+};
+
 layout(std430, binding = 2) buffer VerticesSSBO {
-   float vertices[ ];
+    float vertices[];
 };
 
 void writeVertex(float x, float y, float z, float u, float v, uint i) {
@@ -16,7 +21,7 @@ void writeVertex(float x, float y, float z, float u, float v, uint i) {
 
 void main() 
 {
-    float z = float(gl_GlobalInvocationID.x) * 0.2;
+    float z = float(gl_GlobalInvocationID.x) * zScale;
     uint offset = gl_GlobalInvocationID.x * 6 * 5;
 
     // emit six vertices for a single quad

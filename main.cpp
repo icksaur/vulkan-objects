@@ -204,13 +204,23 @@ int main(int argc, char *argv[]) {
  
     // uniform buffer for our view projection matrix
     // In our program it's a static buffer, but if it were dynamic, we'd need to have one for each swapchain image.
-    mat16f viewProjection = Camera()
+    struct UniformBufferData {
+        mat16f viewProjection;
+        float zScale;
+        float pad1;
+        float pad2;
+        float pad3;
+        float wayOut;
+    } uniformBufferData;
+
+    uniformBufferData.viewProjection = Camera()
         .perspective(0.5f*M_PI, windowWidth, windowHeight, 0.1f, 100.0f)
         .moveTo(1.0f, 0.0f, -0.1f)
         .lookAt(0.0f, 0.0f, 1.0f)
         .getViewProjection();
-    Buffer uniformBuffer(BufferBuilder(sizeof(float) * 16).uniform());
-    uniformBuffer.setData(&viewProjection, sizeof(float) * 16);
+    uniformBufferData.zScale = uniformBufferData.pad1 = uniformBufferData.pad2 = uniformBufferData.pad3 = uniformBufferData.wayOut = 0.2f;
+    Buffer uniformBuffer(BufferBuilder(sizeof(UniformBufferData)).uniform());
+    uniformBuffer.setData(&uniformBufferData, sizeof(UniformBufferData));
 
     // shader storage buffer for computed vertices
     // For simplicity, we're sticking with one buffer and one fence.
@@ -221,7 +231,7 @@ int main(int argc, char *argv[]) {
     // we're going to use a single descriptor set layout that is used by by both pipelines
     // normally you would probably want to use two, one for graphics pipeline and another for compute
     DescriptorLayoutBuilder desriptorLayoutBuilder;
-    desriptorLayoutBuilder.addUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT).addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT).addStorageBuffer(2, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    desriptorLayoutBuilder.addUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_COMPUTE_BIT).addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT).addStorageBuffer(2, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayout descriptorSetLayout = desriptorLayoutBuilder.build();
 
     // descriptor pool for allocating descriptor sets
@@ -234,7 +244,7 @@ int main(int argc, char *argv[]) {
     // create a descriptor set and bind resources to it
     VkDescriptorSet descriptorSet = descriptorPool.allocate(descriptorSetLayout); // pool-owned
     DescriptorSetBinder binder;
-    binder.bindUniformBuffer(descriptorSet, 0, uniformBuffer, sizeof(float)*16);
+    binder.bindUniformBuffer(descriptorSet, 0, uniformBuffer);
     binder.bindSampler(descriptorSet, 1, textureSampler, textureImage);
     binder.bindStorageBuffer(descriptorSet, 2, shaderStorageBuffer);
     binder.updateSets();
@@ -306,7 +316,7 @@ int main(int argc, char *argv[]) {
         VkFence submittedBuffersFinishedFence = submittedBuffersFinishedFences[frameInFlightIndex];
         VkCommandBuffer commandBuffer = $context().commandBuffers[frameInFlightIndex];
 
-        // Wait for all buffers to finish submitting before resetting them.
+        // Wait for the oldest frame to be finished so that we don't reuse its semaphore or command buffer.
         vkWaitForFences(context.device, 1, &submittedBuffersFinishedFence, VK_TRUE, UINT64_MAX);
         vkResetFences(context.device, 1, &submittedBuffersFinishedFence);
 

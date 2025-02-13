@@ -1559,10 +1559,11 @@ struct Buffer {
         if (size != this->size) {
             throw std::runtime_error("Uniform buffer size mismatch");
         }
-        void * mapped;
+
+        void* mapped;
         vkMapMemory($context().device, memory, 0, size, 0, &mapped);
         memcpy(mapped, bytes, size);
-        vkUnmapMemory($context().device, memory);           
+        vkUnmapMemory($context().device, memory);
     }
     ~Buffer() {
         vkFreeMemory($context().device, memory, nullptr);
@@ -1573,10 +1574,26 @@ struct Buffer {
     }
 };
 
+struct DynamicBuffer {
+    std::vector<Buffer> buffers;
+    DynamicBuffer(BufferBuilder & builder) {
+        buffers.reserve($context().swapchainImageCount);
+        for (size_t i = 0; i < $context().swapchainImageCount; ++i) {
+            buffers.emplace_back(builder);
+        }
+    }
+    void setData(void* data, size_t size, size_t frameInFlightIndex) {
+        buffers[frameInFlightIndex].setData(data, size);
+    }
+    VkBuffer getBuffer(size_t frameInFlightIndex) const {
+        return buffers[frameInFlightIndex].buffer;
+    }
+};
+
 struct DescriptorLayoutBuilder {
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     DescriptorLayoutBuilder() { }
-    DescriptorLayoutBuilder & addStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlagBits stages) {
+    DescriptorLayoutBuilder & addStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
         VkDescriptorSetLayoutBinding desc = {};
         desc.binding = binding,
         desc.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1585,7 +1602,7 @@ struct DescriptorLayoutBuilder {
         bindings.push_back(desc);
         return *this;
     }
-    DescriptorLayoutBuilder & addSampler(uint32_t binding, uint32_t count, VkShaderStageFlagBits stages) {
+    DescriptorLayoutBuilder & addSampler(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
         VkDescriptorSetLayoutBinding desc = {};
         desc.binding = binding,
         desc.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1594,7 +1611,7 @@ struct DescriptorLayoutBuilder {
         bindings.push_back(desc);
         return *this;
     }
-    DescriptorLayoutBuilder & addUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlagBits stages) {
+    DescriptorLayoutBuilder & addUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
         VkDescriptorSetLayoutBinding desc = {};
         desc.binding = binding,
         desc.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -1707,11 +1724,11 @@ struct DescriptorSetBinder {
 
         descriptorWriteSets.push_back(descriptorWrite);
     }
-    void bindUniformBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, Buffer & buffer, uint64_t size) {
+    void bindUniformBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, Buffer & buffer) {
         VkDescriptorBufferInfo bufferInfo = {};
         bufferInfo.buffer = buffer;
         bufferInfo.offset = 0;
-        bufferInfo.range = size;
+        bufferInfo.range = buffer.size;
         bufferInfos.push_back(bufferInfo);
 
         VkWriteDescriptorSet descriptorWrite = {};
