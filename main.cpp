@@ -191,8 +191,6 @@ int main(int argc, char *argv[]) {
     // There can only be one context, and creating it is required for other objects to construct.
     VulkanContext context(window);
 
-    std::vector<VkCommandBuffer> & commandBuffers = context.commandBuffers;
-
     // shaders
     ShaderModule fragShaderModule(ShaderBuilder().fragment().fromFile("tri.frag.spv"));
     ShaderModule vertShaderModule(ShaderBuilder().vertex().fromFile("tri.vert.spv"));
@@ -231,7 +229,10 @@ int main(int argc, char *argv[]) {
     // we're going to use a single descriptor set layout that is used by by both pipelines
     // normally you would probably want to use two, one for graphics pipeline and another for compute
     DescriptorLayoutBuilder desriptorLayoutBuilder;
-    desriptorLayoutBuilder.addUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_COMPUTE_BIT).addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT).addStorageBuffer(2, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    desriptorLayoutBuilder
+        .addUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_COMPUTE_BIT)
+        .addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT)
+        .addStorageBuffer(2, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayout descriptorSetLayout = desriptorLayoutBuilder.build();
 
     // descriptor pool for allocating descriptor sets
@@ -261,7 +262,7 @@ int main(int argc, char *argv[]) {
     VkRenderPass renderPass = renderpassBuilder.build(); // context-owned
     
     // Framebuffers are used to store the results of rendering, including color and depth buffers, and other deep buffers for multi-pass uses.
-    // The last framebuffer used in a frame is the swapchain framebuffer, which contains images owned by the Vulkan device that can present to your screen.
+    // The last framebuffer used in a frame is the swapchain presentframebuffer, which contains color images owned by the Vulkan device that can present to your screen.
     std::vector<Framebuffer> presentFramebuffers; // auto cleaned up by vector destructor
     presentFramebuffers.reserve(context.swapchainImageCount); 
     for (size_t i = 0; i < context.swapchainImageCount; ++i) {
@@ -288,20 +289,12 @@ int main(int argc, char *argv[]) {
     VkPipeline graphicsPipeline = graphicsPipelineBuilder.build(); // context-owned
 
     VkPipeline computePipeline = createComputePipeline(pipelineLayout, compShaderModule); // context-owned
-
-    // sync primitives
-    // A fence does GPU-CPU syncing.
-    std::vector<VkFence> submittedBuffersFinishedFences(4);
-    for (size_t i = 0; i < submittedBuffersFinishedFences.size(); ++i) {
-        submittedBuffersFinishedFences[i] = createFence(); // context-owned
-    }
     
     // index of the swapchain resources to use for the next frame
     uint nextImage = 0;
 
-    // index of the next frame in flight, so we can use the oldest semaphore and fence
-    // vkAcquireNextImageKHR indices are not predicatable, so we need to count these ourself
-    uint frameInFlightIndex = 0;
+    // semaphore signaling when the next image has completed rendering
+    VkSemaphore renderFinishedSemaphore;
 
     bool done = false;
     while (!done) {
@@ -312,37 +305,35 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        VkSemaphore imageAvailableSemaphore = $context().imageAvailableSemaphores[frameInFlightIndex];
-        VkFence submittedBuffersFinishedFence = submittedBuffersFinishedFences[frameInFlightIndex];
-        VkCommandBuffer commandBuffer = $context().commandBuffers[frameInFlightIndex];
+        // Frame objects provide convenient per-frame sync resources and track cleanup and progression of per-frame buffer data.
+        // One one frame object can exist at a time.
+        Frame frame;
 
-        // Wait for the oldest frame to be finished so that we don't reuse its semaphore or command buffer.
-        vkWaitForFences(context.device, 1, &submittedBuffersFinishedFence, VK_TRUE, UINT64_MAX);
-        vkResetFences(context.device, 1, &submittedBuffersFinishedFence);
+        // The previous frame's resources might be in flight.  The oldest frame's resources are what we will reuse.
+        frame.prepareOldestFrameResources();
 
-        if (VK_SUCCESS != vkAcquireNextImageKHR(context.device, context.swapchain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &nextImage)) {
-            throw std::runtime_error("failed to acquire next swapchain image index");
-        }
+        // Acquire a new image from the swapchain.  The next image index has no guaranteed order.
+        // This call will block until the index is identified, but will not block while waiting for the image to be ready!
+        // The semaphore is used to ensure that the image at that index is ready.
+        frame.acquireNextImageIndex(nextImage, renderFinishedSemaphore);
     
-        vkResetCommandBuffer(commandBuffer, 0); // manually reset the buffer, otherwise implicit reset causes warnings
-
         // This program has no dynamic data content, but we record in
-        // the loop as an example of how you'd typically record a frame.
+        // the loop as an example of how you'd typically record a dynamic frame.
         recordRenderPass(
             VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight},
             computePipeline,
             graphicsPipeline,
             renderPass,
             presentFramebuffers[nextImage].framebuffer,
-            commandBuffer,
+            frame.commandBuffer,
             shaderStorageBuffer,
             pipelineLayout,
             descriptorSet);
             
         // Submit the command buffer to the graphics queue
-        VkSemaphore renderFinishedSemaphore = $context().renderFinishedSemaphores[nextImage];
-        submitCommandBuffer(context.graphicsQueue, commandBuffer, imageAvailableSemaphore, renderFinishedSemaphore, submittedBuffersFinishedFence);
-
+        submitCommandBuffer(context.graphicsQueue, frame.commandBuffer, frame.imageAvailableSemaphore, renderFinishedSemaphore, frame.submittedBuffersFinishedFence);
+       
+        // Present the image to the screen.  The semaphore is now unsignaled, and the presentation engine will signal it when it's done.
         if (!presentQueue(context.presentationQueue, context.swapchain, renderFinishedSemaphore, nextImage)) {
             // This is a common Vulkan situation handled automatically by OpenGL.
             // We need to remake our swap chain, image views, and framebuffers.
@@ -357,7 +348,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        frameInFlightIndex = (frameInFlightIndex + 1) % context.swapchainImageCount;
+        frame.cleanup(); // automatically called by destructor, but we call it explicitly here for clarity
     }
 
     VkResult result = vkQueueWaitIdle(context.graphicsQueue);

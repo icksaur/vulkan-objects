@@ -22,6 +22,12 @@ VkFormat surfaceFormat = VK_FORMAT_B8G8R8A8_SRGB;
 VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 VkFormat depthFormat = VK_FORMAT_D24_UNORM_S8_UINT; // some options are VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT
 
+// A set of resources scheduled for destruction.
+struct DestroyGeneration {
+    std::vector<VkBuffer> buffers;
+    std::vector<VkDeviceMemory> memories;
+};
+
 struct VulkanContext {
     // things that will not change during the context lifetime
     SDL_Window * window;
@@ -40,15 +46,19 @@ struct VulkanContext {
     VkCommandPool commandPool;
     VkQueue graphicsQueue;
 
+    // things that will change during the context lifetime
+    size_t frameInFlightIndex;
+    struct Frame * currentFrame;
+
     // presentation loop sync primitives
     std::vector<VkSemaphore> imageAvailableSemaphores;
     std::vector<VkSemaphore> renderFinishedSemaphores;
+    std::vector<VkFence> submittedBuffersFinishedFences;
 
     // presentation loop resources that may need to be rebuilt
     std::vector<VkImage> swapchainImages;
     std::vector<VkImageView> swapchainImageViews;
     std::vector<VkFramebuffer> presentFramebuffers;
-    size_t currentFrame = 0;
 
     // managed resource collections that will be auto-cleaned when the context is destroyed
     std::vector<VkCommandBuffer> commandBuffers;
@@ -59,6 +69,8 @@ struct VulkanContext {
     std::set<VkPipeline> pipelines;
     std::set<VkRenderPass> renderPasses;
 
+    // managed resource collections that will be auto-cleaned after swapchain frames have passed
+    std::vector<DestroyGeneration> destroyGenerations;
     VulkanContext(SDL_Window * window);
     ~VulkanContext();
     VulkanContext & operator=(const VulkanContext & other) = delete;
@@ -1005,6 +1017,18 @@ std::tuple<VkImageView, VkImage, VkDeviceMemory> createDepthBuffer(VkPhysicalDev
     return std::make_tuple(imageView, image, memory);
 }
 
+VkFence createFence() {
+    VkFenceCreateInfo createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    createInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    VkFence fence;
+    if (VK_SUCCESS != vkCreateFence($context().device, &createInfo, nullptr, &fence)) {
+        throw std::runtime_error("failed to create fence");
+    }
+    $context().fences.push_back(fence);
+    return fence;
+}
+
 VkSemaphore createSemaphore() {
     VkSemaphoreCreateInfo createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -1020,7 +1044,7 @@ VkSemaphore createSemaphore() {
     return semaphore;
 }
 
-VulkanContext::VulkanContext(SDL_Window * window):window(window) {
+VulkanContext::VulkanContext(SDL_Window * window):window(window), frameInFlightIndex(0), currentFrame(nullptr) {
     if ($context.contextInstance != nullptr) {
         throw std::runtime_error("VulkanContext already exists");
     }
@@ -1078,6 +1102,9 @@ VulkanContext::VulkanContext(SDL_Window * window):window(window) {
         commandBuffer = createCommandBuffer(device, commandPool);
     }
 
+    // preallocate our scheduled destruction generations
+    this->destroyGenerations.resize(this->swapchainImages.size());
+
     vkGetDeviceQueue(this->device, this->graphicsQueueIndex, 0, &this->graphicsQueue);
 
     $context.contextInstance = this;
@@ -1085,7 +1112,8 @@ VulkanContext::VulkanContext(SDL_Window * window):window(window) {
     for (size_t i=0; i<swapchainImageCount; i++) {
         imageAvailableSemaphores.push_back(createSemaphore());
         renderFinishedSemaphores.push_back(createSemaphore());
-    } 
+        submittedBuffersFinishedFences.push_back(createFence());
+    }
 }
 
 void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator) {
@@ -1167,6 +1195,16 @@ void rebuildPresentationResources() {
 
 VulkanContext::~VulkanContext() {
     vkQueueWaitIdle(graphicsQueue); // wait until we're done or render semaphores may be in use
+
+    // clean up scheduled destroy generations
+    for (DestroyGeneration & generation : destroyGenerations) {
+        for (VkDeviceMemory memory : generation.memories) {
+            vkFreeMemory(device, memory, nullptr);
+        }
+        for (VkBuffer buffer : generation.buffers) {  
+            vkDestroyBuffer(device, buffer, nullptr);
+        }
+    }
 
     // clean up managed resource collections
     for (auto semaphore : semaphores) {
@@ -1566,8 +1604,9 @@ struct Buffer {
         vkUnmapMemory($context().device, memory);
     }
     ~Buffer() {
-        vkFreeMemory($context().device, memory, nullptr);
-        vkDestroyBuffer($context().device, buffer, nullptr);
+        VulkanContext & context = $context();
+        context.destroyGenerations[context.frameInFlightIndex].memories.push_back(memory);
+        context.destroyGenerations[context.frameInFlightIndex].buffers.push_back(buffer);
     }
     operator VkBuffer() const {
         return buffer;
@@ -1576,6 +1615,7 @@ struct Buffer {
 
 struct DynamicBuffer {
     std::vector<Buffer> buffers;
+    bool isStale;
     DynamicBuffer(BufferBuilder & builder) {
         buffers.reserve($context().swapchainImageCount);
         for (size_t i = 0; i < $context().swapchainImageCount; ++i) {
@@ -1584,6 +1624,7 @@ struct DynamicBuffer {
     }
     void setData(void* data, size_t size, size_t frameInFlightIndex) {
         buffers[frameInFlightIndex].setData(data, size);
+        isStale = false;
     }
     VkBuffer getBuffer(size_t frameInFlightIndex) const {
         return buffers[frameInFlightIndex].buffer;
@@ -1724,26 +1765,7 @@ struct DescriptorSetBinder {
 
         descriptorWriteSets.push_back(descriptorWrite);
     }
-    void bindUniformBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, Buffer & buffer) {
-        VkDescriptorBufferInfo bufferInfo = {};
-        bufferInfo.buffer = buffer;
-        bufferInfo.offset = 0;
-        bufferInfo.range = buffer.size;
-        bufferInfos.push_back(bufferInfo);
-
-        VkWriteDescriptorSet descriptorWrite = {};
-        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = descriptorSet;
-        descriptorWrite.dstBinding = bindingIndex; // match binding point in shader
-        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        descriptorWrite.descriptorCount = 1;
-
-        // store index into info vector since pointer may become invalidated
-        descriptorWrite.pBufferInfo = (VkDescriptorBufferInfo*)(bufferInfos.size()-1);
-
-        descriptorWriteSets.push_back(descriptorWrite);
-    }
-    void bindStorageBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, Buffer & buffer) {
+    void bindBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, Buffer & buffer, VkDescriptorType descriptorType) {
         VkDescriptorBufferInfo bufferInfo = {};
         bufferInfo.buffer = buffer;
         bufferInfo.offset = 0;
@@ -1754,7 +1776,7 @@ struct DescriptorSetBinder {
         descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         descriptorWrite.dstSet = descriptorSet;
         descriptorWrite.dstBinding = bindingIndex; // match binding point in shader
-        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        descriptorWrite.descriptorType = descriptorType;
         descriptorWrite.descriptorCount = 1;
 
         // store index into info vector since pointer may become invalidated
@@ -1762,6 +1784,13 @@ struct DescriptorSetBinder {
 
         descriptorWriteSets.push_back(descriptorWrite);
     }
+    void bindUniformBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, Buffer & buffer) {
+        bindBuffer(descriptorSet, bindingIndex, buffer, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    }
+    void bindStorageBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, Buffer & buffer) {
+        bindBuffer(descriptorSet, bindingIndex, buffer, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+    }
+
     void updateSets() {
         // we can't keep pointers into the vectors because vectors can resize
         // convert indices into up-to-date pointers
@@ -1783,18 +1812,6 @@ struct DescriptorSetBinder {
         bufferInfos.clear();
     }
 };
-
-VkFence createFence() {
-    VkFenceCreateInfo createInfo = {};
-    createInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    createInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    VkFence fence;
-    if (VK_SUCCESS != vkCreateFence($context().device, &createInfo, nullptr, &fence)) {
-        throw std::runtime_error("failed to create fence");
-    }
-    $context().fences.push_back(fence);
-    return fence;
-}
 
 enum ImageType {
     None = 0,
@@ -1874,6 +1891,73 @@ struct Framebuffer {
         vkDestroyFramebuffer($context().device, framebuffer, nullptr); // safe if already VK_NULL_HANDLE
     }
 };
+
+size_t oldestGenerationIndex(VulkanContext & context) {
+    return (context.frameInFlightIndex + 1) % context.swapchainImageCount;
+}
+
+void advancePostFrame(VulkanContext & context) {
+    // TODO
+    // identify any stale DynamicBuffer content and copy from previous generation
+    // do not copy for buffers that have been stale for all generations
+
+    size_t oldestGeneration = oldestGenerationIndex(context);
+
+    for (VkDeviceMemory memory : context.destroyGenerations[oldestGeneration].memories) {
+        vkFreeMemory(context.device, memory, nullptr);
+    }
+    for (VkBuffer buffer : context.destroyGenerations[oldestGeneration].buffers) {
+        vkDestroyBuffer(context.device, buffer, nullptr);
+    }
+
+    context.frameInFlightIndex = (context.frameInFlightIndex + 1) % context.swapchainImageCount;
+}
+
+// Help to advance the frame and do post-frame generational resource cleanup scheduling.
+struct Frame {
+    VulkanContext & context;
+    bool cleanedup;
+    size_t inFlightIndex;
+    VkSemaphore imageAvailableSemaphore;
+    VkFence submittedBuffersFinishedFence;
+    VkCommandBuffer commandBuffer;
+
+    Frame() :
+        context($context()),
+        cleanedup(false),
+        inFlightIndex(context.frameInFlightIndex),
+        imageAvailableSemaphore(context.imageAvailableSemaphores[inFlightIndex]),
+        submittedBuffersFinishedFence(context.submittedBuffersFinishedFences[inFlightIndex]),
+        commandBuffer(context.commandBuffers[inFlightIndex])
+    {
+        if (context.currentFrame != nullptr) {
+            throw std::runtime_error("multiple frames in flight, only one frame is allowed at a time");
+        }
+        context.currentFrame = this;
+    }
+    void prepareOldestFrameResources() {
+        vkWaitForFences(context.device, 1, &submittedBuffersFinishedFence, VK_TRUE, UINT64_MAX);
+        vkResetFences(context.device, 1, &submittedBuffersFinishedFence);
+        vkResetCommandBuffer(commandBuffer, 0); // manually reset the buffer, otherwise implicit reset causes warnings
+    }
+    void acquireNextImageIndex(uint32_t & nextImage, VkSemaphore & renderFinishedSemaphore) {
+        if (VK_SUCCESS != vkAcquireNextImageKHR(context.device, context.swapchain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &nextImage)) {
+            throw std::runtime_error("failed to acquire next swapchain image index");
+        }
+        renderFinishedSemaphore = context.renderFinishedSemaphores[nextImage];
+    }
+    void cleanup() {
+        if (!cleanedup) {
+            advancePostFrame(context);
+            context.currentFrame = nullptr;
+            cleanedup = true;
+        }
+    }
+    ~Frame() {
+        cleanup();
+    }
+};
+
 
 VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> & descriptorSetLayouts) {
     if (descriptorSetLayouts.empty()) {
