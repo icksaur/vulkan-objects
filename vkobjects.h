@@ -1615,19 +1615,22 @@ struct Buffer {
 
 struct DynamicBuffer {
     std::vector<Buffer> buffers;
-    bool isStale;
-    DynamicBuffer(BufferBuilder & builder) {
+    ushort lastWriteIndex;
+    DynamicBuffer(BufferBuilder & builder):lastWriteIndex(0) {
         buffers.reserve($context().swapchainImageCount);
         for (size_t i = 0; i < $context().swapchainImageCount; ++i) {
             buffers.emplace_back(builder);
         }
     }
-    void setData(void* data, size_t size, size_t frameInFlightIndex) {
-        buffers[frameInFlightIndex].setData(data, size);
-        isStale = false;
+    void setData(void* data, size_t size) {
+        // write to the "oldest" buffer.
+        // warning: multiple writes per frame may modify frames in flight
+        ushort nextWriteIndex = (lastWriteIndex + 1) % $context().swapchainImageCount;
+        buffers[nextWriteIndex].setData(data, size);
+        lastWriteIndex = nextWriteIndex;
     }
-    VkBuffer getBuffer(size_t frameInFlightIndex) const {
-        return buffers[frameInFlightIndex].buffer;
+    operator VkBuffer() const {
+        return buffers[lastWriteIndex].buffer;
     }
 };
 
@@ -1897,10 +1900,6 @@ size_t oldestGenerationIndex(VulkanContext & context) {
 }
 
 void advancePostFrame(VulkanContext & context) {
-    // TODO
-    // identify any stale DynamicBuffer content and copy from previous generation
-    // do not copy for buffers that have been stale for all generations
-
     size_t oldestGeneration = oldestGenerationIndex(context);
 
     for (VkDeviceMemory memory : context.destroyGenerations[oldestGeneration].memories) {
