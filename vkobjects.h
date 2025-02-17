@@ -1916,12 +1916,18 @@ void advancePostFrame(VulkanContext & context) {
 }
 
 // Help to advance the frame and do post-frame generational resource cleanup scheduling.
+// This class does too much and its methods MUST be called in order to work properly.
+// We could go off the deep end with objects and have a chain of objects that require one another:
+// Frame currentFrame;
+// FrameCommands frameCommands(currentFrame);
+// FramePresentation framePresentation(frameCommands);
 struct Frame {
     VulkanContext & context;
     bool preparedOldResources;
     bool cleanedup;
     size_t inFlightIndex;
     VkSemaphore imageAvailableSemaphore;
+    VkSemaphore renderFinishedSemaphore;
     VkFence submittedBuffersFinishedFence;
     VkCommandBuffer commandBuffer;
     int nextImageIndex;
@@ -1932,6 +1938,7 @@ struct Frame {
         cleanedup(false),
         inFlightIndex(context.frameInFlightIndex),
         imageAvailableSemaphore(context.imageAvailableSemaphores[inFlightIndex]),
+        renderFinishedSemaphore(VK_NULL_HANDLE),
         submittedBuffersFinishedFence(context.submittedBuffersFinishedFences[inFlightIndex]),
         commandBuffer(context.commandBuffers[inFlightIndex]),
         nextImageIndex(UnacquiredIndex)
@@ -1952,15 +1959,65 @@ struct Frame {
     }
     void acquireNextImageIndex(uint32_t & nextImage, VkSemaphore & renderFinishedSemaphore) {
         if (nextImageIndex != UnacquiredIndex) {
+            renderFinishedSemaphore = this->renderFinishedSemaphore;
             nextImage = nextImageIndex;
-            renderFinishedSemaphore = context.renderFinishedSemaphores[nextImage];
             return;
         }
         if (VK_SUCCESS != vkAcquireNextImageKHR(context.device, context.swapchain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &nextImage)) {
             throw std::runtime_error("failed to acquire next swapchain image index");
         }
         nextImageIndex = nextImage;
-        renderFinishedSemaphore = context.renderFinishedSemaphores[nextImage];
+        this->renderFinishedSemaphore = context.renderFinishedSemaphores[nextImage];
+        renderFinishedSemaphore = this->renderFinishedSemaphore;
+    }
+    void submitCommandBuffer() {
+        VkSubmitInfo submitInfo = {};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+        VkCommandBuffer commandBuffers[] = {commandBuffer};
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = commandBuffers;
+
+        VkSemaphore waitSemaphores[] = {imageAvailableSemaphore};
+        VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+        submitInfo.waitSemaphoreCount = 1;
+        submitInfo.pWaitSemaphores = waitSemaphores;
+        submitInfo.pWaitDstStageMask = waitStages;
+
+        VkSemaphore signalSemaphores[] = {renderFinishedSemaphore};
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = signalSemaphores;
+
+        if (vkQueueSubmit(context.graphicsQueue, 1, &submitInfo, submittedBuffersFinishedFence) != VK_SUCCESS) {
+            throw std::runtime_error("failed to submit command buffer!");
+        }
+    }
+    bool tryPresentQueue() {
+        if (nextImageIndex == UnacquiredIndex) {
+            throw std::runtime_error("next image index has not been acquired");
+        }
+
+        uint nextImage = nextImageIndex;
+        VkSwapchainKHR swapChains[] = {context.swapchain};
+        VkPresentInfoKHR presentInfo = {};
+        presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        presentInfo.waitSemaphoreCount = 1;
+        presentInfo.pWaitSemaphores = &renderFinishedSemaphore; // waits for this on the GPU
+        presentInfo.swapchainCount = 1;
+        presentInfo.pSwapchains = swapChains;
+        presentInfo.pImageIndices = &nextImage;
+
+        VkResult result = vkQueuePresentKHR(context.presentationQueue, &presentInfo);
+
+        switch (result) {
+            case VK_SUCCESS:
+                return true;
+            case VK_ERROR_OUT_OF_DATE_KHR:
+            case VK_SUBOPTIMAL_KHR:
+                return false; // swap chain needs to be recreated
+        }
+
+        throw std::runtime_error("failed to present swap chain image");
     }
     void cleanup() {
         if (!cleanedup) {

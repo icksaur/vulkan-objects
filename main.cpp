@@ -23,7 +23,6 @@ size_t computedQuadCount = 100;
 // A single binding is common.  They are zero-indexed so zero here.
 const size_t vertexBindingIndex = 0; 
 
-// A helper to clean up an SDL Window.
 struct SDLWindow {
     SDL_Window *window;
     SDLWindow(const char * title, int w, int h) {
@@ -148,53 +147,6 @@ void recordRenderPass(
     }
 }
 
-void submitCommandBuffer(VkQueue graphicsQueue, VkCommandBuffer commandBuffer, VkSemaphore imageAvailableSemaphore, VkSemaphore renderFinishedSemaphore, VkFence submitFinishedFence) {
-    VkSubmitInfo submitInfo = {};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
-    VkCommandBuffer commandBuffers[] = {commandBuffer};
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = commandBuffers;
-
-    VkSemaphore waitSemaphores[] = {imageAvailableSemaphore};
-    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-    submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = waitSemaphores;
-    submitInfo.pWaitDstStageMask = waitStages;
-
-    VkSemaphore signalSemaphores[] = {renderFinishedSemaphore};
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = signalSemaphores;
-
-    if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, submitFinishedFence) != VK_SUCCESS) {
-        throw std::runtime_error("failed to submit command buffer!");
-    }
-}
-
-bool presentQueue(VkQueue presentQueue, VkSwapchainKHR & swapchain, VkSemaphore renderFinishedSemaphore, uint nextImage) {
-    // Present the image to the screen, waiting for renderFinishedSemaphore
-    VkSwapchainKHR swapChains[] = {swapchain};
-    VkPresentInfoKHR presentInfo = {};
-    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &renderFinishedSemaphore; // waits for this
-    presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = swapChains;
-    presentInfo.pImageIndices = &nextImage;
-
-    VkResult result = vkQueuePresentKHR(presentQueue, &presentInfo);
-
-    switch (result) {
-        case VK_SUCCESS:
-            return true;
-        case VK_ERROR_OUT_OF_DATE_KHR:
-        case VK_SUBOPTIMAL_KHR:
-            return false; // swap chain needs to be recreated
-    }
-
-    throw std::runtime_error("failed to present swap chain image!");
-}
-
 int main(int argc, char *argv[]) {
     SDLWindow window(appName, windowWidth, windowHeight);
 
@@ -246,8 +198,8 @@ int main(int argc, char *argv[]) {
     // Be sure to look that up.
 
     // descriptor layout of uniforms in our pipeline
-    // we're going to use a single descriptor set layout that is used by by both pipelines
-    // normally you would probably want to use two, one for graphics pipeline and another for compute
+    // we're going to use a single descriptor set layout that is used by both pipelines
+    // you may prefer to use multiple layouts, one for graphics pipeline and another for compute
     DescriptorLayoutBuilder desriptorLayoutBuilder;
     desriptorLayoutBuilder
         .addUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_COMPUTE_BIT)
@@ -269,7 +221,7 @@ int main(int argc, char *argv[]) {
     // There are multiple uniform buffers in our dynamic buffer.  That means we need multiple descriptor sets
     // where each one refers to a different buffer in the dynamic buffer.
     // If we had multiple dynamic buffers there would be a need for a total of swapchainImageCount^dynamicBufferCount descriptor sets.
-    // That's complex. A general-purpose solution is very complex.  
+    // A general-purpose solution is necessarily complex, and this is a simple solution.
     std::vector<VkDescriptorSet> descriptorSets(context.swapchainImageCount);
     DescriptorSetBinder binder;
     for (size_t i = 0; i < context.swapchainImageCount; i++) {
@@ -294,7 +246,7 @@ int main(int argc, char *argv[]) {
     // Framebuffers are used to store the results of rendering, including color and depth buffers, and other deep buffers for multi-pass uses.
     // The last framebuffer used in a frame is the swapchain presentframebuffer, which contains color images owned by the Vulkan device that can present to your screen.
     std::vector<Framebuffer> presentFramebuffers; // auto cleaned up by vector destructor
-    presentFramebuffers.reserve(context.swapchainImageCount); 
+    presentFramebuffers.reserve(context.swapchainImageCount);
     for (size_t i = 0; i < context.swapchainImageCount; ++i) {
         presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), renderPass);
     }
@@ -324,7 +276,9 @@ int main(int argc, char *argv[]) {
     uint nextImage = 0;
 
     // semaphore signaling when the next image has completed rendering
-    VkSemaphore renderFinishedSemaphore;
+    // This is not used in this example.
+    VkSemaphore unusedRenderFinishedSemaphore;
+
     Timer timer;
     bool done = false;
     while (!done) {
@@ -340,12 +294,14 @@ int main(int argc, char *argv[]) {
         Frame frame;
 
         // The previous frame's resources might be in flight.  The oldest frame-in-flight's resources are what we will reuse.
+        // Acquire them into the frame object, and also block await that they are 
         frame.prepareOldestFrameResources();
 
         // Acquire a new image from the swapchain.  The next image index has no guaranteed order.
         // This call will block until the index is identified, but will not block while waiting for the image to be ready!
         // The semaphore is used to ensure that the image at that index is ready.
-        frame.acquireNextImageIndex(nextImage, renderFinishedSemaphore);
+        // The semaphore is stored in the frame and is awaited when submitting buffers, but returned here if you need it.
+        frame.acquireNextImageIndex(nextImage, unusedRenderFinishedSemaphore);
 
         // Rotate the camera, and update dynamic uniform buffer for the GPU.
         float seconds = (float)timer.elapsed()/1000.0f;
@@ -367,10 +323,10 @@ int main(int argc, char *argv[]) {
             descriptorSets[uniformBuffer.lastWriteIndex]); // use the descriptor set associated with the most recent buffer written
             
         // Submit the command buffer to the graphics queue
-        submitCommandBuffer(context.graphicsQueue, frame.commandBuffer, frame.imageAvailableSemaphore, renderFinishedSemaphore, frame.submittedBuffersFinishedFence);
+        frame.submitCommandBuffer();
        
-        // Present the image to the screen.  The semaphore is now unsignaled, and the presentation engine will signal it when it's done.
-        if (!presentQueue(context.presentationQueue, context.swapchain, renderFinishedSemaphore, nextImage)) {
+        // Present the image to the screen.  The internnal semaphore is now unsignaled, and the presentation engine will signal it when it's done.
+        if (!frame.tryPresentQueue()) {
             // This is a common Vulkan situation handled automatically by OpenGL.
             // We need to remake our swap chain, image views, and framebuffers.
             // This usually happens after the first frame, but if the image was being used,
