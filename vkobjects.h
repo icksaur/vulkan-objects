@@ -1918,19 +1918,23 @@ void advancePostFrame(VulkanContext & context) {
 // Help to advance the frame and do post-frame generational resource cleanup scheduling.
 struct Frame {
     VulkanContext & context;
+    bool preparedOldResources;
     bool cleanedup;
     size_t inFlightIndex;
     VkSemaphore imageAvailableSemaphore;
     VkFence submittedBuffersFinishedFence;
     VkCommandBuffer commandBuffer;
-
+    int nextImageIndex;
+    static const int UnacquiredIndex = -1;
     Frame() :
         context($context()),
+        preparedOldResources(false),
         cleanedup(false),
         inFlightIndex(context.frameInFlightIndex),
         imageAvailableSemaphore(context.imageAvailableSemaphores[inFlightIndex]),
         submittedBuffersFinishedFence(context.submittedBuffersFinishedFences[inFlightIndex]),
-        commandBuffer(context.commandBuffers[inFlightIndex])
+        commandBuffer(context.commandBuffers[inFlightIndex]),
+        nextImageIndex(UnacquiredIndex)
     {
         if (context.currentFrame != nullptr) {
             throw std::runtime_error("multiple frames in flight, only one frame is allowed at a time");
@@ -1938,14 +1942,24 @@ struct Frame {
         context.currentFrame = this;
     }
     void prepareOldestFrameResources() {
+        if (preparedOldResources) {
+            return;
+        }
         vkWaitForFences(context.device, 1, &submittedBuffersFinishedFence, VK_TRUE, UINT64_MAX);
         vkResetFences(context.device, 1, &submittedBuffersFinishedFence);
         vkResetCommandBuffer(commandBuffer, 0); // manually reset the buffer, otherwise implicit reset causes warnings
+        preparedOldResources = true;
     }
     void acquireNextImageIndex(uint32_t & nextImage, VkSemaphore & renderFinishedSemaphore) {
+        if (nextImageIndex != UnacquiredIndex) {
+            nextImage = nextImageIndex;
+            renderFinishedSemaphore = context.renderFinishedSemaphores[nextImage];
+            return;
+        }
         if (VK_SUCCESS != vkAcquireNextImageKHR(context.device, context.swapchain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &nextImage)) {
             throw std::runtime_error("failed to acquire next swapchain image index");
         }
+        nextImageIndex = nextImage;
         renderFinishedSemaphore = context.renderFinishedSemaphores[nextImage];
     }
     void cleanup() {
