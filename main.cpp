@@ -44,6 +44,17 @@ struct SDLWindow {
     }
 };
 
+struct Timer {
+    size_t lastTicks;
+    Timer():lastTicks(SDL_GetTicks()){ }
+    size_t elapsed() {
+        size_t now = SDL_GetTicks();
+        size_t elapsed = now - lastTicks;
+        lastTicks = now;
+        return elapsed;
+    }
+};
+
 Image createImageFromTGAFile(const char * filename) {
     std::ifstream file(filename);
     std::vector<char> fileBytes = std::vector<char>(
@@ -185,7 +196,6 @@ bool presentQueue(VkQueue presentQueue, VkSwapchainKHR & swapchain, VkSemaphore 
 }
 
 int main(int argc, char *argv[]) {
-    // these are destroyed in opposite order of creation, cleaning up things in the right order
     SDLWindow window(appName, windowWidth, windowHeight);
 
     // There can only be one context, and creating it is required for other objects to construct.
@@ -200,30 +210,40 @@ int main(int argc, char *argv[]) {
     Image textureImage = createImageFromTGAFile("vulkan.tga");
     TextureSampler textureSampler;
  
-    // uniform buffer for our view projection matrix
-    // In our program it's a static buffer, but if it were dynamic, we'd need to have one for each swapchain image.
+    // uniform buffer data for our view projection matrix and z scale in compute
     struct UniformBufferData {
         mat16f viewProjection;
         float zScale;
-        float pad1;
-        float pad2;
-        float pad3;
-        float wayOut;
     } uniformBufferData;
 
-    uniformBufferData.viewProjection = Camera()
-        .perspective(0.5f*M_PI, windowWidth, windowHeight, 0.1f, 100.0f)
-        .moveTo(1.0f, 0.0f, -0.1f)
-        .lookAt(0.0f, 0.0f, 1.0f)
-        .getViewProjection();
-    uniformBufferData.zScale = uniformBufferData.pad1 = uniformBufferData.pad2 = uniformBufferData.pad3 = uniformBufferData.wayOut = 0.2f;
-    Buffer uniformBuffer(BufferBuilder(sizeof(UniformBufferData)).uniform());
-    uniformBuffer.setData(&uniformBufferData, sizeof(UniformBufferData));
+    Camera camera;
+    camera.perspective(0.5f*M_PI, windowWidth, windowHeight, 0.1f, 100.0f)
+        .moveTo(1.0f, 0.0f, -0.5f)
+        .lookAt(0.0f, 0.0f, 0.0f)
+        .moveTo(0.0f, 0.0f, 0.0f)
+        .setDistance(1.0f);
+
+    uniformBufferData.viewProjection = camera.getViewProjection();
+    uniformBufferData.zScale = 0.2f;
+
+    // dynamic buffer means that it has multiple buffers so that we don't modify data being used by the GPU
+    // dynamic buffers have as many buffers as swapchain image count
+    // we will set the data above in the render loop
+    DynamicBuffer uniformBuffer(BufferBuilder(sizeof(UniformBufferData)).uniform());
 
     // shader storage buffer for computed vertices
     // For simplicity, we're sticking with one buffer and one fence.
     // For a fully dynamic buffer, we'd need one per swapchain image.
-    Buffer shaderStorageBuffer(BufferBuilder(sizeof(float) * 5 * 6 * computedQuadCount).storage().vertex());
+    // in a typical program, you would probably want a large buffer like this to be static anyhow
+    Buffer shaderStorageVertexBuffer(BufferBuilder(sizeof(float) * 5 * 6 * computedQuadCount).storage().vertex());
+
+    // DESCRIPTOR SETS
+    // These things are complex.  They describe what resources are bound to shader invocations.
+    // We need layouts, pools matching the layout for allocating them, then to allocate them,
+    // then bind the actual resources to the descriptor sets, and use the right descriptor set.
+    // This example does all of that with a one dynamic buffer which adds enough complexity for an example.
+    // There's a way around a lot of this: vkCmdPushDescriptorSet in the extension VK_KHR_push_descriptor.
+    // Be sure to look that up.
 
     // descriptor layout of uniforms in our pipeline
     // we're going to use a single descriptor set layout that is used by by both pipelines
@@ -239,22 +259,32 @@ int main(int argc, char *argv[]) {
     // we've only got one pool here that can build the combined descriptor set above
     // you might want to have two pools if you have different sizes of descriptor sets
     DescriptorPoolBuilder poolBuilder;
-    poolBuilder.addSampler(1).addStorageBuffer(1).addUniformBuffer(1).maxSets(1);
+    poolBuilder
+        .addSampler(context.swapchainImageCount)
+        .addStorageBuffer(context.swapchainImageCount)
+        .addUniformBuffer(context.swapchainImageCount)
+        .maxSets(context.swapchainImageCount);
     DescriptorPool descriptorPool(poolBuilder);
     
-    // create a descriptor set and bind resources to it
-    VkDescriptorSet descriptorSet = descriptorPool.allocate(descriptorSetLayout); // pool-owned
+    // There are multiple uniform buffers in our dynamic buffer.  That means we need multiple descriptor sets
+    // where each one refers to a different buffer in the dynamic buffer.
+    // If we had multiple dynamic buffers there would be a need for a total of swapchainImageCount^dynamicBufferCount descriptor sets.
+    // That's complex. A general-purpose solution is very complex.  
+    std::vector<VkDescriptorSet> descriptorSets(context.swapchainImageCount);
     DescriptorSetBinder binder;
-    binder.bindUniformBuffer(descriptorSet, 0, uniformBuffer);
-    binder.bindSampler(descriptorSet, 1, textureSampler, textureImage);
-    binder.bindStorageBuffer(descriptorSet, 2, shaderStorageBuffer);
+    for (size_t i = 0; i < context.swapchainImageCount; i++) {
+        descriptorSets[i] = descriptorPool.allocate(descriptorSetLayout);
+        binder.bindUniformBuffer(descriptorSets[i], 0, uniformBuffer.buffers[i]); // bind each buffer in the dynamic buffer
+        binder.bindSampler(descriptorSets[i], 1, textureSampler, textureImage);
+        binder.bindStorageBuffer(descriptorSets[i], 2, shaderStorageVertexBuffer);
+    }
     binder.updateSets();
     
     // render pass
     // VkRenderPass is a key object in building a Vulkan application.
     // It defines the layout of the framebuffer attachments and how they are used in the rendering process.
-    // Each framebuffer must be related to a render pass.
-    // Each pipeline must must be related to a rander pass.
+    // Each framebuffer is associated with exactly one render pass.
+    // Each pipeline is associated with exactly one render pass.
     RenderpassBuilder renderpassBuilder;
     renderpassBuilder
         .colorAttachment().depthAttachment()
@@ -295,7 +325,7 @@ int main(int argc, char *argv[]) {
 
     // semaphore signaling when the next image has completed rendering
     VkSemaphore renderFinishedSemaphore;
-
+    Timer timer;
     bool done = false;
     while (!done) {
         SDL_Event event;
@@ -305,30 +335,36 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Frame objects provide convenient per-frame sync resources and track cleanup and progression of per-frame buffer data.
-        // One one frame object can exist at a time.
+        // Frame objects provide convenient per-frame sync resources and track cleanup of destroyed buffer data.
+        // Only one one frame object can exist at a time.
         Frame frame;
 
-        // The previous frame's resources might be in flight.  The oldest frame's resources are what we will reuse.
+        // The previous frame's resources might be in flight.  The oldest frame-in-flight's resources are what we will reuse.
         frame.prepareOldestFrameResources();
 
         // Acquire a new image from the swapchain.  The next image index has no guaranteed order.
         // This call will block until the index is identified, but will not block while waiting for the image to be ready!
         // The semaphore is used to ensure that the image at that index is ready.
         frame.acquireNextImageIndex(nextImage, renderFinishedSemaphore);
+
+        // Rotate the camera, and update dynamic uniform buffer for the GPU.
+        float seconds = (float)timer.elapsed()/1000.0f;
+        camera.rotate(0.0f, 1.0f, 0.0f, M_PI*seconds/2.0);
+        uniformBufferData.viewProjection = camera.getViewProjection();
+        uniformBuffer.setData(&uniformBufferData, sizeof(uniformBufferData));
     
-        // This program has no dynamic data content, but we record in
+        // This program has no dynamic commands, but we record in
         // the loop as an example of how you'd typically record a dynamic frame.
         recordRenderPass(
             VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight},
             computePipeline,
             graphicsPipeline,
             renderPass,
-            presentFramebuffers[nextImage].framebuffer,
+            presentFramebuffers[nextImage].framebuffer, // use the framebuffer associated with the most recent image accquired
             frame.commandBuffer,
-            shaderStorageBuffer,
+            shaderStorageVertexBuffer,
             pipelineLayout,
-            descriptorSet);
+            descriptorSets[uniformBuffer.lastWriteIndex]); // use the descriptor set associated with the most recent buffer written
             
         // Submit the command buffer to the graphics queue
         submitCommandBuffer(context.graphicsQueue, frame.commandBuffer, frame.imageAvailableSemaphore, renderFinishedSemaphore, frame.submittedBuffersFinishedFence);
@@ -351,9 +387,9 @@ int main(int argc, char *argv[]) {
         frame.cleanup(); // automatically called by destructor, but we call it explicitly here for clarity
     }
 
-    VkResult result = vkQueueWaitIdle(context.graphicsQueue);
+    // Wait until GPU is done with all work before cleaning up resources which could be in use.
 
-    if (VK_SUCCESS != result) {
+    if (VK_SUCCESS != vkQueueWaitIdle(context.graphicsQueue)) {
         throw std::runtime_error("failed to wait for the graphics queue to be idle");
     }
 

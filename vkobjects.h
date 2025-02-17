@@ -1629,6 +1629,9 @@ struct DynamicBuffer {
         buffers[nextWriteIndex].setData(data, size);
         lastWriteIndex = nextWriteIndex;
     }
+    operator const Buffer&() const {
+        return buffers[lastWriteIndex];
+    }
     operator VkBuffer() const {
         return buffers[lastWriteIndex].buffer;
     }
@@ -1768,7 +1771,7 @@ struct DescriptorSetBinder {
 
         descriptorWriteSets.push_back(descriptorWrite);
     }
-    void bindBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, Buffer & buffer, VkDescriptorType descriptorType) {
+    void bindBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer, VkDescriptorType descriptorType) {
         VkDescriptorBufferInfo bufferInfo = {};
         bufferInfo.buffer = buffer;
         bufferInfo.offset = 0;
@@ -1787,10 +1790,10 @@ struct DescriptorSetBinder {
 
         descriptorWriteSets.push_back(descriptorWrite);
     }
-    void bindUniformBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, Buffer & buffer) {
+    void bindUniformBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer) {
         bindBuffer(descriptorSet, bindingIndex, buffer, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     }
-    void bindStorageBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, Buffer & buffer) {
+    void bindStorageBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer) {
         bindBuffer(descriptorSet, bindingIndex, buffer, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
     }
 
