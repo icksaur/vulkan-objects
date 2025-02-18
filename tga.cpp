@@ -74,8 +74,6 @@ void * read_tga(const std::vector<char> & bytes, unsigned & width, unsigned & he
     bool rle;
 	void *pixels;
 
-    printf("header size: %lu\n", sizeof(tga_header));
-
 	if (bytes.size() < sizeof(tga_header)) {
         fail("data has no tga header");
 	}

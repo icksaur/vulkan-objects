@@ -119,6 +119,9 @@ struct ScopedCommandBuffer {
         if (VK_SUCCESS != vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE)) {
             throw std::runtime_error("failed submit queue");
         }
+
+        // TODO: waiting on the primary graphics queue is not ideal. We can use a parallel queue and sync primitives instead.
+        // The primary use of this struct is transitioning images, which would be satisfied with a command buffer supporting only VK_QUEUE_TRANSFER_BIT.
         if (VK_SUCCESS != vkQueueWaitIdle(graphicsQueue)) {
             throw std::runtime_error("failed wait for queue to be idle");
         }
@@ -338,6 +341,28 @@ void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& o
     std::vector<VkQueueFamilyProperties> queueProperties(familyQueueCount);
     vkGetPhysicalDeviceQueueFamilyProperties(selectedDevice, &familyQueueCount, queueProperties.data());
 
+    std::cout << "found " << familyQueueCount << " queue family(s):" << std::endl;
+    for (size_t i = 0; i < familyQueueCount; ++i) {
+        VkQueueFamilyProperties & properties = queueProperties[i];
+        std::cout << i << ": count (" <<  properties.queueCount << "): ";
+        for (VkQueueFlagBits flag : {VK_QUEUE_GRAPHICS_BIT, VK_QUEUE_COMPUTE_BIT, VK_QUEUE_TRANSFER_BIT}) {
+            if (properties.queueFlags & flag) {
+                switch (flag) {
+                    case VK_QUEUE_GRAPHICS_BIT:
+                        std::cout << "graphics ";
+                        break;
+                    case VK_QUEUE_COMPUTE_BIT:
+                        std::cout << "compute ";
+                        break;
+                    case VK_QUEUE_TRANSFER_BIT:
+                        std::cout << "transfer ";
+                        break;
+                }
+            }
+        }
+        std::cout << std::endl;
+    }
+
     // Make sure the family of commands contains an option to issue graphical commands.
     int queueNodeIndex = -1;
     for (unsigned int i = 0; i < familyQueueCount; i++) {
@@ -352,6 +377,8 @@ void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& o
     if (queueNodeIndex == -1) {
         throw std::runtime_error("Unable to find a queue command family that accepts graphics commands");
     }
+
+    std::cout << "selected queue family index: " << queueNodeIndex << std::endl;
 
     // Set the output variables
     outDevice = selectedDevice;
@@ -370,7 +397,7 @@ VkDevice createLogicalDevice(VkPhysicalDevice& physicalDevice, unsigned int queu
     if (VK_SUCCESS != vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &devicePropertyCount, NULL)) {
         throw std::runtime_error("Unable to acquire device extension property count");
     }
-    std::cout << "\nfound " << devicePropertyCount << " device extensions\n";
+    std::cout << "found " << devicePropertyCount << " device extensions\n";
 
     // Acquire their actual names
     std::vector<VkExtensionProperties> extensionProperties(devicePropertyCount);
@@ -396,7 +423,6 @@ VkDevice createLogicalDevice(VkPhysicalDevice& physicalDevice, unsigned int queu
         throw std::runtime_error("not all required device extensions are supported!");
     }
 
-    std::cout << std::endl;
     for (const auto& name : devicePropertyNames) {
         std::cout << "applying device extension: " << name << std::endl;
     }
@@ -467,6 +493,20 @@ VkQueue getPresentationQueue(VkPhysicalDevice gpu, VkDevice logicalDevice, uint 
     return presentQueue;
 }
 
+const char * getPresentationModeString(VkPresentModeKHR mode) {
+    switch(mode) {
+        case VK_PRESENT_MODE_IMMEDIATE_KHR:
+            return "IMMEDIATE";
+        case VK_PRESENT_MODE_FIFO_KHR:
+            return "FIFO";
+        case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
+            return "FIFO RELAXED";
+        case VK_PRESENT_MODE_MAILBOX_KHR:
+            return "MAILBOX";
+    }
+    return "OTHER ";
+}
+
 bool getPresentationMode(VkSurfaceKHR surface, VkPhysicalDevice device, VkPresentModeKHR& ioMode) {
     uint32_t modeCount = 0;
     if(vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &modeCount, NULL) != VK_SUCCESS) {
@@ -480,17 +520,18 @@ bool getPresentationMode(VkSurfaceKHR surface, VkPhysicalDevice device, VkPresen
         return false;
     }
 
+    std::cout << "found " << modeCount << " presentation mode(s):" << std::endl;
+    for (VkPresentModeKHR& mode : availableModes) {
+        std::cout << getPresentationModeString(mode) << std::endl;
+    }
+
     for (auto& mode : availableModes) {
         if (mode == ioMode) {
             return true;
         }
     }
-    std::cout << "unable to obtain preferred display mode, fallback to FIFO\n";
-
-    std::cout << "available present modes: " << std::endl;
-    for (auto & mode : availableModes) {
-        std::cout << "    "  << mode << std::endl;
-    }
+    std::cout << getPresentationModeString(ioMode) << " not availble\n"
+        << getPresentationModeString(VK_PRESENT_MODE_FIFO_KHR) << " selected as guaranteed by Vulkan" << std::endl;
 
     ioMode = VK_PRESENT_MODE_FIFO_KHR;
     return true;
@@ -1092,18 +1133,28 @@ VulkanContext::VulkanContext(SDL_Window * window):window(window), frameInFlightI
     createSwapChain(*this, this->presentationSurface, this->physicalDevice, this->device, this->swapchain);
     getSwapChainImageHandles(this->device, this->swapchain, this->swapchainImages);
 
-    // we have the image count now, this is used for every set of framebuffers we will need
+    // we have the image count now, this is used for every set of dynamic buffer:
+    // frame buffers
+    // command buffers
+    // other dynamic buffers like uniform or shader storage
     this->swapchainImageCount = this->swapchainImages.size();
     makeChainImageViews(this->device, this->swapchain, this->colorFormat, this->swapchainImages, this->swapchainImageViews);
 
     this->commandPool = createCommandPool(this->device, this->graphicsQueueIndex);
-    this->commandBuffers.resize(this->swapchainImages.size());
+
+    // we have the minimum of N command buffers per swapchain image
+    // your program may have use for more, and there are many reasons to do so:
+    // separate static and dynamic command buffers
+    // parallel recording
+    // multi-pass rendering
+    // resource and code management
+    this->commandBuffers.resize(this->swapchainImageCount);
     for (auto & commandBuffer : commandBuffers) {
         commandBuffer = createCommandBuffer(device, commandPool);
     }
 
     // preallocate our scheduled destruction generations
-    this->destroyGenerations.resize(this->swapchainImages.size());
+    this->destroyGenerations.resize(this->swapchainImageCount);
 
     vkGetDeviceQueue(this->device, this->graphicsQueueIndex, 0, &this->graphicsQueue);
 

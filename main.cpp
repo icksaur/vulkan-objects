@@ -310,7 +310,7 @@ int main(int argc, char *argv[]) {
         uniformBuffer.setData(&uniformBufferData, sizeof(uniformBufferData));
     
         // This program has no dynamic commands, but we record in
-        // the loop as an example of how you'd typically record a dynamic frame.
+        // the loop as an example of how you'd record a dynamic frame.
         recordRenderPass(
             VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight},
             computePipeline,
@@ -325,7 +325,7 @@ int main(int argc, char *argv[]) {
         // Submit the command buffer to the graphics queue
         frame.submitCommandBuffer();
        
-        // Present the image to the screen.  The internnal semaphore is now unsignaled, and the presentation engine will signal it when it's done.
+        // Present the image to the screen.  The internal semaphore is now unsignaled, and the presentation engine will signal it when it's done.
         if (!frame.tryPresentQueue()) {
             // This is a common Vulkan situation handled automatically by OpenGL.
             // We need to remake our swap chain, image views, and framebuffers.
