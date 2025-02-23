@@ -183,10 +183,10 @@ int main(int argc, char *argv[]) {
     // we will set the data above in the render loop
     DynamicBuffer uniformBuffer(BufferBuilder(sizeof(UniformBufferData)).uniform());
 
-    // shader storage buffer for computed vertices
-    // For simplicity, we're sticking with one buffer and one fence.
-    // For a fully dynamic buffer, we'd need one per swapchain image.
-    // in a typical program, you would probably want a large buffer like this to be static anyhow
+    // buffer for writing in compute and reading in vertex
+    // This single buffer strategy is incorrect.  If this program runs slow enough, previous frames may be reading the buffer
+    // while the current frame is writing to it.  Either dispatch the compute first and never write again, or we need multiple buffers.
+    // This buffer is an example to show how we can write to and reuse a buffer.  Typically such a vertex buffer would be static anyhow.
     Buffer shaderStorageVertexBuffer(BufferBuilder(sizeof(float) * 5 * 6 * computedQuadCount).storage().vertex());
 
     // DESCRIPTOR SETS
@@ -251,6 +251,11 @@ int main(int argc, char *argv[]) {
         presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), renderPass);
     }
 
+    // command buffers are recorded into and submitted to a queue
+    // we have one command buffer for each swapchain image, and cycle through them
+    // they must be reset before rewritten
+    std::vector<CommandBuffer> commandBuffers(context.swapchainImageCount);
+
     // pipelines
     // Pipelines represent the configurable pipeline stages that define what shaders are used and how their results are combined.
     // Take a look at the build() function to see all the options that are necessary and configurable.
@@ -309,6 +314,10 @@ int main(int argc, char *argv[]) {
         uniformBufferData.viewProjection = camera.getViewProjection();
         uniformBuffer.setData(&uniformBufferData, sizeof(uniformBufferData));
     
+        // get and reset the oldest command buffer
+        CommandBuffer & commandBuffer = commandBuffers[context.frameInFlightIndex];
+        commandBuffer.reset();
+    
         // This program has no dynamic commands, but we record in
         // the loop as an example of how you'd record a dynamic frame.
         recordRenderPass(
@@ -317,13 +326,13 @@ int main(int argc, char *argv[]) {
             graphicsPipeline,
             renderPass,
             presentFramebuffers[nextImage].framebuffer, // use the framebuffer associated with the most recent image accquired
-            frame.commandBuffer,
+            commandBuffer,
             shaderStorageVertexBuffer,
             pipelineLayout,
             descriptorSets[uniformBuffer.lastWriteIndex]); // use the descriptor set associated with the most recent buffer written
             
         // Submit the command buffer to the graphics queue
-        frame.submitCommandBuffer();
+        frame.submitCommandBuffer(commandBuffer);
        
         // Present the image to the screen.  The internal semaphore is now unsignaled, and the presentation engine will signal it when it's done.
         if (!frame.tryPresentQueue()) {

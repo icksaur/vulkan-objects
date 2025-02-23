@@ -15,7 +15,8 @@
 // useful defaults
 const char * appName = "VulkanExample";
 const char * engineName = "VulkanExampleEngine";
-VkPresentModeKHR preferredPresentationMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+VkPresentModeKHR preferredPresentationMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR; // vsync
+// VkPresentModeKHR preferredPresentationMode = VK_PRESENT_MODE_IMMEDIATE_KHR; // unlimited frame rate, may be useful for debugging
 VkImageUsageFlags desiredImageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 VkSurfaceTransformFlagBitsKHR desiredTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 VkFormat surfaceFormat = VK_FORMAT_B8G8R8A8_SRGB;
@@ -26,6 +27,9 @@ VkFormat depthFormat = VK_FORMAT_D24_UNORM_S8_UINT; // some options are VK_FORMA
 struct DestroyGeneration {
     std::vector<VkBuffer> buffers;
     std::vector<VkDeviceMemory> memories;
+    std::vector<VkCommandBuffer> commandBuffers;
+    void destroy();
+    ~DestroyGeneration();
 };
 
 struct VulkanContext {
@@ -58,10 +62,8 @@ struct VulkanContext {
     // presentation loop resources that may need to be rebuilt
     std::vector<VkImage> swapchainImages;
     std::vector<VkImageView> swapchainImageViews;
-    std::vector<VkFramebuffer> presentFramebuffers;
 
     // managed resource collections that will be auto-cleaned when the context is destroyed
-    std::vector<VkCommandBuffer> commandBuffers;
     std::vector<VkSemaphore> semaphores;
     std::vector<VkFence> fences;
     std::set<VkDescriptorSetLayout> layouts;
@@ -76,6 +78,20 @@ struct VulkanContext {
     VulkanContext & operator=(const VulkanContext & other) = delete;
     VulkanContext(const VulkanContext & other) = delete;
     VulkanContext(VulkanContext && other) = delete; 
+
+    // What's NOT automatically created and why not?
+/*
+    FrameBuffers
+    We do need one per swapchain image, but may need multiple sets depending on how many render passes your program needs.
+    Storing one set in the context and any further outside is confusing.
+
+    Command Buffers
+    Similar to framebuffers, we need one per swapchain image.  The program may want static ones, or more 
+    with complex semaphore dependencies, or others that are running concurrently.  All are outside the context.
+
+    Pipelines
+    Pipelines configuration will be unique to your program.  There's no one-size-fits-all or we'd have the OpenGL fixed-function pipeline!
+*/
 };
 
 struct VulkanContextSingleton {
@@ -83,21 +99,45 @@ struct VulkanContextSingleton {
     VulkanContext& operator()() { return *contextInstance; }
 } $context; // this global is guaranteed to null-initialize by C++ initialization rules
 
+void DestroyGeneration::destroy() {
+    struct VulkanContext & context = $context();
+    for (VkDeviceMemory memory : memories) {
+        vkFreeMemory(context.device, memory, nullptr);
+    }
+    memories.clear();
+    for (VkBuffer buffer : buffers) {
+        vkDestroyBuffer(context.device, buffer, nullptr);
+    }
+    buffers.clear();
+    if (!commandBuffers.empty()) {
+        vkFreeCommandBuffers(context.device, context.commandPool, commandBuffers.size(), commandBuffers.data());
+        commandBuffers.clear();
+    }
+}
+DestroyGeneration::~DestroyGeneration() {
+    destroy();
+}
+
+VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool) {
+    VkCommandBuffer commandBuffer;
+
+    VkCommandBufferAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.commandPool = commandPool;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; // primary can be submitted, secondary can be a sub-command of primaries
+    allocInfo.commandBufferCount = 1;  // Number of command buffers to allocate
+
+    if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate command buffer!");
+    }
+
+    return commandBuffer;
+}
+
 // a helper to start and end a command buffer which can be submitted and waited
 struct ScopedCommandBuffer {
-    VkDevice device;
-    VkCommandPool commandPool;
-    VkQueue graphicsQueue;
     VkCommandBuffer commandBuffer;
-    ScopedCommandBuffer(VkDevice device, VkCommandPool commandPool, VkQueue graphicsQueue) : device(device), commandPool(commandPool), graphicsQueue(graphicsQueue) {
-        VkCommandBufferAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandPool = commandPool;
-        allocInfo.commandBufferCount = 1;
-
-        vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
-
+    ScopedCommandBuffer() : commandBuffer(createCommandBuffer($context().device, $context().commandPool)) {
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -116,18 +156,18 @@ struct ScopedCommandBuffer {
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &commandBuffer;
 
-        if (VK_SUCCESS != vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE)) {
+        if (VK_SUCCESS != vkQueueSubmit($context().graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE)) {
             throw std::runtime_error("failed submit queue");
         }
 
         // TODO: waiting on the primary graphics queue is not ideal. We can use a parallel queue and sync primitives instead.
         // The primary use of this struct is transitioning images, which would be satisfied with a command buffer supporting only VK_QUEUE_TRANSFER_BIT.
-        if (VK_SUCCESS != vkQueueWaitIdle(graphicsQueue)) {
+        if (VK_SUCCESS != vkQueueWaitIdle($context().graphicsQueue)) {
             throw std::runtime_error("failed wait for queue to be idle");
         }
     }
     ~ScopedCommandBuffer() {
-        vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        vkFreeCommandBuffers($context().device, $context().commandPool, 1, &commandBuffer);
     }
 };
 
@@ -764,22 +804,6 @@ VkCommandPool createCommandPool(VkDevice device, uint32_t queueFamilyIndex) {
     return commandPool;
 }
 
-VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool) {
-    VkCommandBuffer commandBuffer;
-
-    VkCommandBufferAllocateInfo allocInfo = {};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.commandPool = commandPool;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; // primary can be submitted, secondary can be a sub-command of primaries
-    allocInfo.commandBufferCount = 1;  // Number of command buffers to allocate
-
-    if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
-        throw std::runtime_error("failed to allocate command buffer!");
-    }
-
-    return commandBuffer;
-}
-
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t memoryTypeBits, VkMemoryPropertyFlags properties) {
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
@@ -831,7 +855,7 @@ void generateMipmaps(VkDevice device, VkImage image, VkCommandPool commandPool, 
     blit.dstSubresource.baseArrayLayer = 0;
     blit.dstSubresource.layerCount = 1;
 
-    ScopedCommandBuffer scopedCommandBuffer(device, commandPool, graphicsQueue);
+    ScopedCommandBuffer scopedCommandBuffer;
 
     int mipWidth = width;
     int mipHeight = height;
@@ -893,7 +917,7 @@ void generateMipmaps(VkDevice device, VkImage image, VkCommandPool commandPool, 
 }
 
 void copyBufferToImage(VkDevice device, VkCommandPool commandPool, VkQueue graphicsQueue, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
-    ScopedCommandBuffer scopedCommandBuffer(device, commandPool, graphicsQueue);
+    ScopedCommandBuffer scopedCommandBuffer;
 
     VkBufferImageCopy region = {};
     region.bufferOffset = 0;
@@ -938,7 +962,7 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
 }
 
 void transitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue graphicsQueue, VkImage image, VkFormat format, size_t mipLevels, VkImageLayout oldLayout, VkImageLayout newLayout) {
-    ScopedCommandBuffer scopedCommandBuffer(device, commandPool, graphicsQueue);
+    ScopedCommandBuffer scopedCommandBuffer;
 
     VkImageMemoryBarrier barrier = {};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1142,17 +1166,6 @@ VulkanContext::VulkanContext(SDL_Window * window):window(window), frameInFlightI
 
     this->commandPool = createCommandPool(this->device, this->graphicsQueueIndex);
 
-    // we have the minimum of N command buffers per swapchain image
-    // your program may have use for more, and there are many reasons to do so:
-    // separate static and dynamic command buffers
-    // parallel recording
-    // multi-pass rendering
-    // resource and code management
-    this->commandBuffers.resize(this->swapchainImageCount);
-    for (auto & commandBuffer : commandBuffers) {
-        commandBuffer = createCommandBuffer(device, commandPool);
-    }
-
     // preallocate our scheduled destruction generations
     this->destroyGenerations.resize(this->swapchainImageCount);
 
@@ -1247,15 +1260,7 @@ void rebuildPresentationResources() {
 VulkanContext::~VulkanContext() {
     vkQueueWaitIdle(graphicsQueue); // wait until we're done or render semaphores may be in use
 
-    // clean up scheduled destroy generations
-    for (DestroyGeneration & generation : destroyGenerations) {
-        for (VkDeviceMemory memory : generation.memories) {
-            vkFreeMemory(device, memory, nullptr);
-        }
-        for (VkBuffer buffer : generation.buffers) {  
-            vkDestroyBuffer(device, buffer, nullptr);
-        }
-    }
+    destroyGenerations.clear(); // will destroy all contents
 
     // clean up managed resource collections
     for (auto semaphore : semaphores) {
@@ -1263,9 +1268,6 @@ VulkanContext::~VulkanContext() {
     }
     for (auto fence : fences) {
         vkDestroyFence(device, fence, nullptr);
-    }
-    for (auto commandBuffer : commandBuffers) {
-        vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
     }
     for (VkDescriptorSetLayout layout : layouts) {
         vkDestroyDescriptorSetLayout(device, layout, nullptr);
@@ -1688,6 +1690,21 @@ struct DynamicBuffer {
     }
 };
 
+struct CommandBuffer {
+    VkCommandBuffer buffer;
+    CommandBuffer() : buffer(createCommandBuffer($context().device, $context().commandPool)) {}
+    ~CommandBuffer() {
+        VulkanContext & context = $context();
+        context.destroyGenerations[context.frameInFlightIndex].commandBuffers.push_back(buffer);
+    }
+    void reset() {
+        vkResetCommandBuffer(buffer, 0);
+    }
+    operator VkCommandBuffer() const {
+        return buffer;
+    }
+};
+
 struct DescriptorLayoutBuilder {
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     DescriptorLayoutBuilder() { }
@@ -1954,15 +1971,7 @@ size_t oldestGenerationIndex(VulkanContext & context) {
 }
 
 void advancePostFrame(VulkanContext & context) {
-    size_t oldestGeneration = oldestGenerationIndex(context);
-
-    for (VkDeviceMemory memory : context.destroyGenerations[oldestGeneration].memories) {
-        vkFreeMemory(context.device, memory, nullptr);
-    }
-    for (VkBuffer buffer : context.destroyGenerations[oldestGeneration].buffers) {
-        vkDestroyBuffer(context.device, buffer, nullptr);
-    }
-
+    context.destroyGenerations[oldestGenerationIndex(context)].destroy();
     context.frameInFlightIndex = (context.frameInFlightIndex + 1) % context.swapchainImageCount;
 }
 
@@ -1980,7 +1989,6 @@ struct Frame {
     VkSemaphore imageAvailableSemaphore;
     VkSemaphore renderFinishedSemaphore;
     VkFence submittedBuffersFinishedFence;
-    VkCommandBuffer commandBuffer;
     int nextImageIndex;
     static const int UnacquiredIndex = -1;
     Frame() :
@@ -1991,7 +1999,6 @@ struct Frame {
         imageAvailableSemaphore(context.imageAvailableSemaphores[inFlightIndex]),
         renderFinishedSemaphore(VK_NULL_HANDLE),
         submittedBuffersFinishedFence(context.submittedBuffersFinishedFences[inFlightIndex]),
-        commandBuffer(context.commandBuffers[inFlightIndex]),
         nextImageIndex(UnacquiredIndex)
     {
         if (context.currentFrame != nullptr) {
@@ -2005,7 +2012,6 @@ struct Frame {
         }
         vkWaitForFences(context.device, 1, &submittedBuffersFinishedFence, VK_TRUE, UINT64_MAX);
         vkResetFences(context.device, 1, &submittedBuffersFinishedFence);
-        vkResetCommandBuffer(commandBuffer, 0); // manually reset the buffer, otherwise implicit reset causes warnings
         preparedOldResources = true;
     }
     void acquireNextImageIndex(uint32_t & nextImage, VkSemaphore & renderFinishedSemaphore) {
@@ -2021,7 +2027,7 @@ struct Frame {
         this->renderFinishedSemaphore = context.renderFinishedSemaphores[nextImage];
         renderFinishedSemaphore = this->renderFinishedSemaphore;
     }
-    void submitCommandBuffer() {
+    void submitCommandBuffer(VkCommandBuffer commandBuffer) {
         VkSubmitInfo submitInfo = {};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
