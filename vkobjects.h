@@ -166,6 +166,9 @@ struct ScopedCommandBuffer {
             throw std::runtime_error("failed wait for queue to be idle");
         }
     }
+    operator VkCommandBuffer() {
+        return commandBuffer;
+    }
     ~ScopedCommandBuffer() {
         vkFreeCommandBuffers($context().device, $context().commandPool, 1, &commandBuffer);
     }
@@ -1666,6 +1669,12 @@ struct Buffer {
     }
 };
 
+// This class shows an incomplete understanding of Vulkan capabilities.
+// A "dynamic buffer" is one which has enough storage to be read at one location while being written at another.
+// VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC and VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC
+// means the descriptor write set has an offset into a large buffer.
+// When binding descriptor sets in a command buffer, we pass "dynamic offsets" which is a set of offsets for each dynamic buffer
+// bound by each descriptor set in the binding command.
 struct DynamicBuffer {
     std::vector<Buffer> buffers;
     ushort lastWriteIndex;
@@ -2026,6 +2035,12 @@ struct Frame {
         nextImageIndex = nextImage;
         this->renderFinishedSemaphore = context.renderFinishedSemaphores[nextImage];
         renderFinishedSemaphore = this->renderFinishedSemaphore;
+    }
+    uint32_t acquireNextImageIndex() {
+        uint32_t nextImageIndex;
+        VkSemaphore unused;
+        acquireNextImageIndex(nextImageIndex, unused);
+        return nextImageIndex;
     }
     void submitCommandBuffer(VkCommandBuffer commandBuffer) {
         VkSubmitInfo submitInfo = {};
