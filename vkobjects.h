@@ -15,6 +15,7 @@
 // useful defaults
 const char * appName = "VulkanExample";
 const char * engineName = "VulkanExampleEngine";
+const uint32_t vulkanVersion = VK_API_VERSION_1_3;
 VkPresentModeKHR preferredPresentationMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR; // vsync
 // VkPresentModeKHR preferredPresentationMode = VK_PRESENT_MODE_IMMEDIATE_KHR; // unlimited frame rate, may be useful for debugging
 VkImageUsageFlags desiredImageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -30,6 +31,45 @@ struct DestroyGeneration {
     std::vector<VkCommandBuffer> commandBuffers;
     void destroy();
     ~DestroyGeneration();
+};
+
+// function pointers for extensions
+static PFN_vkCmdDrawMeshTasksEXT vkCmdDrawMeshTasks;
+static PFN_vkCmdBeginRendering vkBeginRendering;
+static PFN_vkCmdEndRendering vkEndRendering;
+
+struct VulkanContextOptions {
+    bool enableMultisampling;
+    uint multisampleCount;
+    bool enableMeshShaders;
+    bool enableValidationLayers;
+    float shaderSampleRateShading;
+    VulkanContextOptions() :
+        enableMultisampling(false),
+        multisampleCount(1),
+        enableMeshShaders(false),
+        enableValidationLayers(false),
+        shaderSampleRateShading(0.0f) {}
+    VulkanContextOptions & multisample(uint count) {
+        multisampleCount = count;
+        enableMultisampling = count > 1;
+        return *this;
+    }
+    VulkanContextOptions & meshShaders() {
+        enableMeshShaders = true;
+        return *this;
+    }
+    VulkanContextOptions & validation() {
+        enableValidationLayers = true;
+        return *this;
+    }
+    VulkanContextOptions & sampleRateShading(float rate) {
+        if (rate < 0.0f || rate > 2.0f) {
+            throw std::runtime_error("invalid sample rate shading value");
+        }
+        shaderSampleRateShading = rate;
+        return *this;
+    }
 };
 
 struct VulkanContext {
@@ -49,6 +89,8 @@ struct VulkanContext {
     size_t swapchainImageCount;
     VkCommandPool commandPool;
     VkQueue graphicsQueue;
+    uint maxSamples;
+    VulkanContextOptions options;
 
     // things that will change during the context lifetime
     size_t frameInFlightIndex;
@@ -69,11 +111,10 @@ struct VulkanContext {
     std::set<VkDescriptorSetLayout> layouts;
     std::set<VkPipelineLayout> pipelineLayouts;
     std::set<VkPipeline> pipelines;
-    std::set<VkRenderPass> renderPasses;
 
     // managed resource collections that will be auto-cleaned after swapchain frames have passed
     std::vector<DestroyGeneration> destroyGenerations;
-    VulkanContext(SDL_Window * window);
+    VulkanContext(SDL_Window * window, VulkanContextOptions & options);
     ~VulkanContext();
     VulkanContext & operator=(const VulkanContext & other) = delete;
     VulkanContext(const VulkanContext & other) = delete;
@@ -81,12 +122,8 @@ struct VulkanContext {
 
     // What's NOT automatically created and why not?
 /*
-    FrameBuffers
-    We do need one per swapchain image, but may need multiple sets depending on how many render passes your program needs.
-    Storing one set in the context and any further outside is confusing.
-
     Command Buffers
-    Similar to framebuffers, we need one per swapchain image.  The program may want static ones, or more 
+    We need one per swapchain image.  The program may want static ones, or more 
     with complex semaphore dependencies, or others that are running concurrently.  All are outside the context.
 
     Pipelines
@@ -116,6 +153,19 @@ void DestroyGeneration::destroy() {
 }
 DestroyGeneration::~DestroyGeneration() {
     destroy();
+}
+
+VkSampleCountFlagBits getSampleBits(uint sampleCount) {
+    switch (sampleCount) {
+        case 1: return VK_SAMPLE_COUNT_1_BIT;
+        case 2: return VK_SAMPLE_COUNT_2_BIT;
+        case 4: return VK_SAMPLE_COUNT_4_BIT;
+        case 8: return VK_SAMPLE_COUNT_8_BIT;
+        case 16: return VK_SAMPLE_COUNT_16_BIT;
+        case 32: return VK_SAMPLE_COUNT_32_BIT;
+        case 64: return VK_SAMPLE_COUNT_64_BIT;
+        default: throw std::runtime_error("unsupported sample count");
+    }
 }
 
 VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool) {
@@ -190,13 +240,12 @@ void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& 
 
     // std::cout << "found " << extensionCount << " Vulkan instance extensions:\n";
     for (unsigned int i = 0; i < extensionCount; i++) {
-        //std::cout << i << ": " << ext_names[i] << std::endl;
         outExtensions.emplace_back(ext_names[i]);
     }
 
-    // Add debug display extension, we need this to relay debug messages
-    outExtensions.emplace_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
-    //std::cout << std::endl;
+    outExtensions.emplace_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME); // debug relay
+    outExtensions.emplace_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME); // for mesh shaders
+    outExtensions.emplace_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME); // for mesh shaders
 }
 
 void getAvailableVulkanLayers(std::vector<std::string>& outLayers) {
@@ -219,7 +268,6 @@ void getAvailableVulkanLayers(std::vector<std::string>& outLayers) {
     int count = 0;
     outLayers.clear();
     for (const auto& name : instance_layer_names) {
-        // std::cout << count << ": " << name.layerName << ": " << name.description << std::endl;
         auto it = requestedLayers.find(std::string(name.layerName));
         if (it != requestedLayers.end())
             outLayers.emplace_back(name.layerName);
@@ -235,11 +283,13 @@ void getAvailableVulkanLayers(std::vector<std::string>& outLayers) {
 #endif
 }
 
-const std::set<std::string>& getRequestedLayerNames() {
+const std::set<std::string>& getRequestedLayerNames(VulkanContextOptions & options) {
     static std::set<std::string> layers;
     if (layers.empty()) {
         layers.emplace("VK_LAYER_NV_optimus");
-        layers.emplace("VK_LAYER_KHRONOS_validation");
+        if (options.enableValidationLayers) {
+            layers.emplace("VK_LAYER_KHRONOS_validation");
+        }
     }
     return layers;
 }
@@ -267,7 +317,7 @@ void createVulkanInstance(const std::vector<std::string>& layerNameStrings, cons
     appInfo.applicationVersion = 1;
     appInfo.pEngineName = engineName;
     appInfo.engineVersion = 1;
-    appInfo.apiVersion = VK_API_VERSION_1_0;
+    appInfo.apiVersion = vulkanVersion;
 
     // initialize the VkInstanceCreateInfo structure
     VkInstanceCreateInfo instanceInfo = {};
@@ -334,7 +384,18 @@ bool setupDebugCallback(VkInstance instance, VkDebugReportCallbackEXT& callback)
     return true;
 }
 
-void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& outQueueFamilyIndex) {
+VkSampleCountFlagBits getMaximumSampleSize(VkSampleCountFlags sampleCountBits, uint & count) {
+    if (sampleCountBits & VK_SAMPLE_COUNT_64_BIT) { count = 64; return VK_SAMPLE_COUNT_64_BIT; }
+    if (sampleCountBits & VK_SAMPLE_COUNT_32_BIT) { count = 32; return VK_SAMPLE_COUNT_32_BIT; }
+    if (sampleCountBits & VK_SAMPLE_COUNT_16_BIT) { count = 16; return VK_SAMPLE_COUNT_16_BIT; }
+    if (sampleCountBits & VK_SAMPLE_COUNT_8_BIT) { count = 8; return VK_SAMPLE_COUNT_8_BIT; }
+    if (sampleCountBits & VK_SAMPLE_COUNT_4_BIT) { count = 4; return VK_SAMPLE_COUNT_4_BIT; }
+    if (sampleCountBits & VK_SAMPLE_COUNT_2_BIT) { count = 2; return VK_SAMPLE_COUNT_2_BIT; }
+    count = 1;
+    return VK_SAMPLE_COUNT_1_BIT;
+}
+
+void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& outQueueFamilyIndex, uint & maxSampleCount) {
     // Get number of available physical devices, needs to be at least 1
     unsigned int physicalDeviceCount = 0;
     vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, nullptr);
@@ -358,6 +419,7 @@ void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& o
 
     // Select one if more than 1 is available
     unsigned int selectionId = 0;
+
     if (physicalDeviceCount > 1)  {
         while (true) {
             std::cout << "select device: ";
@@ -372,6 +434,10 @@ void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& o
 
     std::cout << "selected: " << physicalDeviceProperties[selectionId].deviceName << std::endl;
     VkPhysicalDevice selectedDevice = physicalDevices[selectionId];
+
+    VkSampleCountFlags counts = physicalDeviceProperties[selectionId].limits.framebufferColorSampleCounts & physicalDeviceProperties[selectionId].limits.framebufferDepthSampleCounts;
+    VkSampleCountFlagBits maxSampleBits = getMaximumSampleSize(counts, maxSampleCount);
+    std::cout << "max sample count: " << maxSampleCount << std::endl;
 
     // Find the number queues this device supports, we want to make sure that we have a queue that supports graphics commands
     unsigned int familyQueueCount = 0;
@@ -428,7 +494,7 @@ void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& o
     outQueueFamilyIndex = queueNodeIndex;
 }
 
-VkDevice createLogicalDevice(VkPhysicalDevice& physicalDevice, unsigned int queueFamilyIndex, const std::vector<std::string>& layerNameStrings) {
+VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& physicalDevice, unsigned int queueFamilyIndex, const std::vector<std::string>& layerNameStrings) {
     // Copy layer names
     std::vector<const char*> layerNames;
     for (const auto& layer : layerNameStrings) {
@@ -450,20 +516,28 @@ VkDevice createLogicalDevice(VkPhysicalDevice& physicalDevice, unsigned int queu
 
     // Match names against requested extension
     std::vector<const char*> devicePropertyNames;
-    const std::set<std::string> requiredExtensionNames{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    std::set<std::string> requiredExtensionNames{VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+
+    if (options.enableMeshShaders) {
+        requiredExtensionNames.emplace(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+    }
+
     int count = 0;
     for (const auto& extensionProperty : extensionProperties) {
-        // std::cout << count << ": " << extensionProperty.extensionName << std::endl;
         auto it = requiredExtensionNames.find(std::string(extensionProperty.extensionName));
         if (it != requiredExtensionNames.end()) {
             devicePropertyNames.emplace_back(extensionProperty.extensionName);
+            requiredExtensionNames.erase(it);
         }
         count++;
     }
 
     // Warn if not all required extensions were found
-    if (requiredExtensionNames.size() != devicePropertyNames.size()) {
-        throw std::runtime_error("not all required device extensions are supported!");
+    if (!requiredExtensionNames.empty()) {
+        for (auto missing : requiredExtensionNames) {
+            std::cout << "missing extension: " << missing << std::endl;
+        }
+        throw std::runtime_error("not all required device extensions are supported!\n");
     }
 
     for (const auto& name : devicePropertyNames) {
@@ -481,11 +555,36 @@ VkDevice createLogicalDevice(VkPhysicalDevice& physicalDevice, unsigned int queu
     queueCreateInfo.pNext = NULL;
     queueCreateInfo.flags = 0;
 
-    VkPhysicalDeviceFeatures deviceFeatures = {};
-    deviceFeatures.samplerAnisotropy = VK_TRUE; // required for aniostropic filtering, the sampler must have anisotropy enabled too
+    void* previousInChain = nullptr;
+
+    VkPhysicalDeviceVulkan13Features device13Features = {};
+    device13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    device13Features.maintenance4 = VK_TRUE;
+    device13Features.dynamicRendering = VK_TRUE;
+    previousInChain = &device13Features;
+
+    VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures = {};
+    meshShaderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+    meshShaderFeatures.taskShader = VK_TRUE;  // Enable task shaders
+    meshShaderFeatures.meshShader = VK_TRUE;  // Enable mesh shaders
+    meshShaderFeatures.pNext = previousInChain;
+
+    if (options.enableMeshShaders) {
+        previousInChain = &meshShaderFeatures;
+    }
+
+    VkPhysicalDeviceFeatures2 deviceFeatures2 = {};
+    deviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    deviceFeatures2.features.samplerAnisotropy = VK_TRUE;
+    deviceFeatures2.pNext = previousInChain;
+    if (options.shaderSampleRateShading > 0.0f) {
+        deviceFeatures2.features.sampleRateShading = VK_TRUE; // for multisampling at the fragment shader level
+    }
+    deviceFeatures2.features.alphaToOne = VK_FALSE; // for alpha to coverage
+    previousInChain = &deviceFeatures2;
 
     // Device creation information
-    VkDeviceCreateInfo deviceCreateInfo;
+    VkDeviceCreateInfo deviceCreateInfo = {};
     deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     deviceCreateInfo.queueCreateInfoCount = 1;
     deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
@@ -493,10 +592,8 @@ VkDevice createLogicalDevice(VkPhysicalDevice& physicalDevice, unsigned int queu
     deviceCreateInfo.enabledLayerCount = static_cast<uint32_t>(layerNames.size());
     deviceCreateInfo.ppEnabledExtensionNames = devicePropertyNames.data();
     deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(devicePropertyNames.size());
-    deviceCreateInfo.pNext = NULL;
-    deviceCreateInfo.pEnabledFeatures = NULL;
+    deviceCreateInfo.pNext = previousInChain;
     deviceCreateInfo.flags = 0;
-    deviceCreateInfo.pEnabledFeatures = &deviceFeatures;
 
     // Finally we're ready to create a new device
     VkDevice device;
@@ -989,7 +1086,8 @@ void transitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue g
     VkPipelineStageFlags sourceStage;
     VkPipelineStageFlags destinationStage;
 
-    if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+    if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && 
+        (newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)) {
         barrier.srcAccessMask = 0;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
@@ -1112,7 +1210,8 @@ VkSemaphore createSemaphore() {
     return semaphore;
 }
 
-VulkanContext::VulkanContext(SDL_Window * window):window(window), frameInFlightIndex(0), currentFrame(nullptr) {
+VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions & options)
+    : options(options), window(window), frameInFlightIndex(0), currentFrame(nullptr) {
     if ($context.contextInstance != nullptr) {
         throw std::runtime_error("VulkanContext already exists");
     }
@@ -1129,26 +1228,35 @@ VulkanContext::VulkanContext(SDL_Window * window):window(window), frameInFlightI
     std::vector<std::string> foundExtensions;
     getAvailableVulkanExtensions(window, foundExtensions);
 
+    if (!foundExtensions.empty()) {
+        std::cout << "found Vulkan extensions:\n";
+        for (size_t i=0; i<foundExtensions.size(); i++) {
+            std::cout << i << ": " << foundExtensions[i] << std::endl;
+        }
+    }
+
     // Get available vulkan layer extensions, notify when not all could be found
     std::vector<std::string> foundLayers;
     getAvailableVulkanLayers(foundLayers);
 
     // Warn when not all requested layers could be found
-    if (foundLayers.size() != getRequestedLayerNames().size())
+    if (foundLayers.size() != getRequestedLayerNames(options).size())
         std::cout << "warning! not all requested layers could be found!\n";
 
     // Create Vulkan Instance
     createVulkanInstance(foundLayers, foundExtensions, this->instance);
 
     // Vulkan messaging callback
-    setupDebugCallback(this->instance, this->callback);
+    if (options.enableValidationLayers) { 
+        setupDebugCallback(this->instance, this->callback);
+    }
 
-    // Select GPU after succsessful creation of a vulkan instance (jeeeej no global states anymore)
+    // Select GPU after succsessful creation of a vulkan instance (no global states anymore)
     this->graphicsQueueIndex = -1;
-    selectGPU(this->instance, this->physicalDevice, this->graphicsQueueIndex);
+    selectGPU(this->instance, this->physicalDevice, this->graphicsQueueIndex, this->maxSamples);
 
     // Create a logical device that interfaces with the physical device
-    this->device = createLogicalDevice(this->physicalDevice, this->graphicsQueueIndex, foundLayers);
+    this->device = createLogicalDevice(options, this->physicalDevice, this->graphicsQueueIndex, foundLayers);
 
     // Create the surface we want to render to, associated with the window we created before
     // This call also checks if the created surface is compatible with the previously selected physical device and associated render queue
@@ -1176,11 +1284,21 @@ VulkanContext::VulkanContext(SDL_Window * window):window(window), frameInFlightI
 
     $context.contextInstance = this;
 
+    // dynamic rendering swapchain images must be transitioned to VK_IMAGE_LAYOUT_PRESENT_SRC_KHR or VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR
+    for (VkImage & image : this->swapchainImages) {
+        transitionImageLayout(this->device, this->commandPool, this->graphicsQueue, image, this->colorFormat, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    }
+
     for (size_t i=0; i<swapchainImageCount; i++) {
         imageAvailableSemaphores.push_back(createSemaphore());
         renderFinishedSemaphores.push_back(createSemaphore());
         submittedBuffersFinishedFences.push_back(createFence());
     }
+
+    // function pointers for extensions
+    vkCmdDrawMeshTasks = (PFN_vkCmdDrawMeshTasksEXT)vkGetDeviceProcAddr($context().device, "vkCmdDrawMeshTasksEXT");
+    vkBeginRendering = (PFN_vkCmdBeginRendering)vkGetDeviceProcAddr($context().device, "vkCmdBeginRendering");
+    vkEndRendering = (PFN_vkCmdEndRendering)vkGetDeviceProcAddr($context().device, "vkCmdEndRendering");
 }
 
 void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator) {
@@ -1257,7 +1375,13 @@ void rebuildPresentationResources() {
     context.swapchain = VK_NULL_HANDLE;
     createSwapChain(context, context.presentationSurface, context.physicalDevice, context.device, context.swapchain);
     getSwapChainImageHandles(context.device, context.swapchain, context.swapchainImages);
+
     makeChainImageViews(context.device, context.swapchain, context.colorFormat, context.swapchainImages, context.swapchainImageViews);
+
+    // dynamic rendering swapchain images must be transitioned to VK_IMAGE_LAYOUT_PRESENT_SRC_KHR or VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR
+    for (VkImage & image : context.swapchainImages) {
+        transitionImageLayout(context.device, context.commandPool, context.graphicsQueue, image, context.colorFormat, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    }
 }
 
 VulkanContext::~VulkanContext() {
@@ -1281,9 +1405,6 @@ VulkanContext::~VulkanContext() {
     for (VkPipeline pipeline : pipelines) {
         vkDestroyPipeline(device, pipeline, nullptr);
     }
-    for (VkRenderPass renderPass : renderPasses) {
-        vkDestroyRenderPass(device, renderPass, nullptr);
-    }
 
     // clean up other global resources
     vkDestroyCommandPool(device, commandPool, nullptr);
@@ -1300,101 +1421,6 @@ VulkanContext::~VulkanContext() {
     $context.contextInstance = nullptr;
 }
 
-struct RenderpassBuilder {
-    std::vector<VkAttachmentDescription> attachmentDescriptions;
-    std::vector<VkSubpassDescription> subpassDescriptions;
-    std::vector<VkSubpassDependency> dependencies;
-    std::vector<VkAttachmentReference> colorAttachmentRefs;
-    VkAttachmentReference depthAttachmentRef;
-    bool hasDepthRef;
-    RenderpassBuilder() {
-        attachmentDescriptions.reserve(2);
-        subpassDescriptions.reserve(1);
-        dependencies.reserve(1);
-        hasDepthRef = false;
-        depthAttachmentRef = {};
-    }
-    RenderpassBuilder& colorAttachment() {
-        VkAttachmentDescription colorAttachment = {};
-        colorAttachment.format = $context().colorFormat;
-        colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        attachmentDescriptions.push_back(colorAttachment);
-        return *this;
-    }
-    RenderpassBuilder& depthAttachment() {
-        VkAttachmentDescription depthAttachment = {};
-        depthAttachment.format = depthFormat;
-        depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; // should already be in this format
-        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        attachmentDescriptions.push_back(depthAttachment);
-        return *this;
-    }
-    RenderpassBuilder& colorRef(int index) {
-        VkAttachmentReference colorAttachmentRef = {};
-        colorAttachmentRef.attachment = index;
-        colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        colorAttachmentRefs.push_back(colorAttachmentRef);
-        return *this;
-    }
-    RenderpassBuilder& depthRef(int index) {
-        if (hasDepthRef) {
-            throw std::runtime_error("a depth ref already exists and has not been put into a subpass");
-        }
-        hasDepthRef = true;
-        depthAttachmentRef.attachment = index;
-        depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        return *this;
-    }
-    VkRenderPass build() {
-        VkSubpassDependency dependency = {};
-        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-        dependency.dstSubpass = 0;
-        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-        dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-
-        VkSubpassDescription subpass = {};
-        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        if (this->colorAttachmentRefs.size() > 0) {
-            subpass.colorAttachmentCount = this->colorAttachmentRefs.size();
-            subpass.pColorAttachments = this->colorAttachmentRefs.data();
-        }
-        if (this->hasDepthRef) {
-            subpass.pDepthStencilAttachment = &(this->depthAttachmentRef);
-        }
-
-        VkRenderPassCreateInfo renderPassInfo = {};
-        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        renderPassInfo.subpassCount = 1;
-        renderPassInfo.pSubpasses = &subpass;
-        renderPassInfo.dependencyCount = 1;
-        renderPassInfo.pDependencies = &dependency;
-        renderPassInfo.attachmentCount = this->attachmentDescriptions.size();
-        renderPassInfo.pAttachments = this->attachmentDescriptions.data();
-
-        VkRenderPass renderPass;
-        if (VK_SUCCESS != vkCreateRenderPass($context().device, &renderPassInfo, nullptr, &renderPass)) {
-            throw std::runtime_error("failed to create render pass");
-        }
-
-        $context().renderPasses.emplace(renderPass);
-
-        return renderPass;
-    }
-};
-
 struct ShaderBuilder {
     VkShaderStageFlagBits stage;
     std::vector<char> code;
@@ -1410,6 +1436,10 @@ struct ShaderBuilder {
     }
     ShaderBuilder& compute() {
         stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        return *this;
+    }
+    ShaderBuilder& mesh() {
+        stage = VK_SHADER_STAGE_MESH_BIT_EXT;
         return *this;
     }
 
@@ -1458,12 +1488,13 @@ struct ImageBuilder {
     VkFormat format;
     VkExtent2D extent; // width and height
     bool isDepthBuffer;
-    ImageBuilder() : buildMipmaps(true), bytes(nullptr), isDepthBuffer(false) {}
+    VkSampleCountFlagBits sampleBits;
+    ImageBuilder() : buildMipmaps(true), bytes(nullptr), isDepthBuffer(false), sampleBits(VK_SAMPLE_COUNT_1_BIT) {}
     ImageBuilder & createMipmaps(bool buildMipmaps) {
         this->buildMipmaps = buildMipmaps;
         return *this;
     }
-    ImageBuilder & forDepthBuffer() {
+    ImageBuilder & depth() {
         bytes = nullptr;
         byteCount = 0;
         buildMipmaps = false;
@@ -1473,16 +1504,6 @@ struct ImageBuilder {
         isDepthBuffer = true;
         return *this;
     }
-    ImageBuilder & forFramebuffer(VkFormat format) {
-        bytes = nullptr;
-        byteCount = 0;
-        buildMipmaps = false;
-        extent.width = $context().windowWidth;
-        extent.height = $context().windowHeight;
-        this->format = format;
-        isDepthBuffer = false;
-        return *this;
-    }
     ImageBuilder & fromBytes(void * bytes, int byteCount, int width, int height, VkFormat format) {
         this->bytes = bytes;
         this->byteCount = byteCount;
@@ -1490,6 +1511,20 @@ struct ImageBuilder {
         extent.height = height;
         this->format = format;
         isDepthBuffer = false;
+        return *this;
+    }
+    ImageBuilder & color() {
+        bytes = nullptr;
+        byteCount = 0;
+        buildMipmaps = false;
+        extent.width = $context().windowWidth;
+        extent.height = $context().windowHeight;
+        this->format = $context().colorFormat;
+        isDepthBuffer = false;
+        return *this;
+    }
+    ImageBuilder & multisample() {
+        sampleBits = getSampleBits($context().options.multisampleCount);
         return *this;
     }
 };
@@ -1529,9 +1564,13 @@ struct Image {
             imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT // copy bytes from image into mip levels
                 | VK_IMAGE_USAGE_TRANSFER_DST_BIT // copy bytes into image
                 | VK_IMAGE_USAGE_SAMPLED_BIT; // read by sampler in shader
+
+            if (builder.sampleBits != VK_SAMPLE_COUNT_1_BIT) {
+                imageInfo.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; // multisample images are color attachments
+            }
         }
 
-        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.samples = builder.sampleBits;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         if (vkCreateImage($context().device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
@@ -1896,85 +1935,6 @@ struct DescriptorSetBinder {
     }
 };
 
-enum ImageType {
-    None = 0,
-    Present = 1,
-    Color = 2,
-    Depth = 3
-};
-
-struct FramebufferBuilder {
-    std::vector<ImageType> imageTypes;
-    size_t swapchainIndex;
-    FramebufferBuilder():swapchainIndex(0) { }
-    FramebufferBuilder & present(size_t swapchainIndex) {
-        if (swapchainIndex >= $context().swapchainImageCount) {
-            throw std::runtime_error("Invalid swapchain index");
-        }
-        imageTypes.push_back(ImageType::Present);
-        this->swapchainIndex = swapchainIndex;
-        return *this;
-    }
-    FramebufferBuilder & color() {
-        imageTypes.push_back(ImageType::Color);
-        return *this;
-    }
-    FramebufferBuilder & depth() {
-        imageTypes.push_back(ImageType::Depth);
-        return *this;
-    }
-};
-
-struct Framebuffer {
-    std::vector<Image> images;
-    VkFramebuffer framebuffer;
-    VkRenderPass renderpass;
-    Framebuffer(Framebuffer && other):images(std::move(other.images)),framebuffer(other.framebuffer),renderpass(other.renderpass) {
-        other.framebuffer = VK_NULL_HANDLE;
-        other.renderpass = VK_NULL_HANDLE;
-    }
-    Framebuffer(FramebufferBuilder & builder, VkRenderPass renderpass):renderpass(renderpass) {
-        if (builder.imageTypes.empty()) {
-            throw std::runtime_error("Framebuffer builder must specify at least one image type");
-        }
-        std::vector<VkImageView> imageViews;
-        for (ImageType imageType : builder.imageTypes) {
-            switch (imageType) {
-                case ImageType::Color:
-                    images.emplace_back(ImageBuilder().forFramebuffer(VK_FORMAT_R8G8B8A8_UNORM));
-                    imageViews.push_back(images.back().imageView);
-                    break;
-                case ImageType::Depth:
-                    images.emplace_back(ImageBuilder().forDepthBuffer());
-                    imageViews.push_back(images.back().imageView);
-                    break;
-                case ImageType::Present:
-                    if (builder.swapchainIndex >= $context().swapchainImageCount) {
-                        throw std::runtime_error("builder swapchain index is greater than swapchain image count");
-                    }
-                    imageViews.push_back($context().swapchainImageViews[builder.swapchainIndex]);
-                    break;
-            }
-        }
-
-        VkFramebufferCreateInfo framebufferInfo = {};
-        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        framebufferInfo.renderPass = renderpass;
-        framebufferInfo.attachmentCount = imageViews.size();
-        framebufferInfo.pAttachments = imageViews.data();
-        framebufferInfo.width = $context().windowWidth;
-        framebufferInfo.height = $context().windowHeight; 
-        framebufferInfo.layers = 1;
-
-        if (vkCreateFramebuffer($context().device, &framebufferInfo, nullptr, &framebuffer) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create framebuffer");
-        }
-    }
-    ~Framebuffer() {
-        vkDestroyFramebuffer($context().device, framebuffer, nullptr); // safe if already VK_NULL_HANDLE
-    }
-};
-
 size_t oldestGenerationIndex(VulkanContext & context) {
     return (context.frameInFlightIndex + 1) % context.swapchainImageCount;
 }
@@ -2123,16 +2083,25 @@ VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> &
 
 struct GraphicsPipelineBuilder {
     VkPipelineLayout pipelineLayout;
-    VkRenderPass renderPass;
     std::vector<VkVertexInputBindingDescription> bindingDescriptions;
     std::vector<VkVertexInputAttributeDescription> vertexAttributeDescriptions;
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
-    GraphicsPipelineBuilder(VkPipelineLayout layout, VkRenderPass renderPass) : pipelineLayout(layout), renderPass(renderPass) {}
+    VkSampleCountFlagBits sampleCountBit;
+    GraphicsPipelineBuilder(VkPipelineLayout layout) : pipelineLayout(layout), sampleCountBit(VK_SAMPLE_COUNT_1_BIT) {}
     GraphicsPipelineBuilder & addVertexShader(ShaderModule & vertexShaderModule, const char * entryPoint = "main") {
         VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
         vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
         vertShaderStageInfo.module = vertexShaderModule.module;
+        vertShaderStageInfo.pName = entryPoint;
+        shaderStages.push_back(vertShaderStageInfo);
+        return *this;
+    }
+    GraphicsPipelineBuilder & addMeshShader(ShaderModule & meshShaderModule, const char * entryPoint = "main") {
+        VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
+        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageInfo.stage = VK_SHADER_STAGE_MESH_BIT_EXT;
+        vertShaderStageInfo.module = meshShaderModule.module;
         vertShaderStageInfo.pName = entryPoint;
         shaderStages.push_back(vertShaderStageInfo);
         return *this;
@@ -2178,6 +2147,15 @@ struct GraphicsPipelineBuilder {
                 throw std::invalid_argument("unsupported float count");
         }
         vertexAttributeDescriptions.push_back(attributeDescription);
+        return *this;
+    }
+    GraphicsPipelineBuilder & sampleCount(size_t sampleCount) {
+        if (sampleCount > $context().maxSamples) {
+            throw std::runtime_error("requested sample count exceeds maximum supported by device");
+        } else if (sampleCount == 0) {
+            throw std::runtime_error("sample count must be greater than 0");
+        }
+        sampleCountBit = getSampleBits(sampleCount);
         return *this;
     }
     VkPipeline build() {
@@ -2235,8 +2213,22 @@ struct GraphicsPipelineBuilder {
 
         VkPipelineMultisampleStateCreateInfo multisampling = {};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-        multisampling.sampleShadingEnable = VK_FALSE;
-        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        if (sampleCountBit == VK_SAMPLE_COUNT_1_BIT) {
+            multisampling.sampleShadingEnable = VK_FALSE;
+        } else {
+            #if 1
+            if ($context().options.shaderSampleRateShading > 0.0f) {
+                multisampling.sampleShadingEnable = VK_TRUE;
+                multisampling.minSampleShading = 1.0f;
+            }
+            #else
+            multisampling.sampleShadingEnable = VK_FALSE;
+            multisampling.rasterizationSamples = sampleCountBit;
+            multisampling.alphaToCoverageEnable = VK_TRUE;
+            multisampling.alphaToOneEnable = VK_FALSE;
+            #endif
+        }
+        multisampling.rasterizationSamples = sampleCountBit;
 
         VkPipelineDepthStencilStateCreateInfo depthStencil = {};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -2246,7 +2238,15 @@ struct GraphicsPipelineBuilder {
         depthStencil.depthBoundsTestEnable = VK_FALSE;
         depthStencil.stencilTestEnable = VK_FALSE;
 
-        VkPipeline pipeline;
+        VkFormat colorFormat = $context().colorFormat;
+ 
+        VkPipelineRenderingCreateInfo renderingInfo = {};
+        renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
+        renderingInfo.colorAttachmentCount = 1; // TODO: make this dynamic
+        renderingInfo.pColorAttachmentFormats = &colorFormat;
+        renderingInfo.depthAttachmentFormat = depthFormat;
+        renderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+
         VkGraphicsPipelineCreateInfo pipelineCreateInfo = {};
         pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
         pipelineCreateInfo.stageCount = shaderStages.size();
@@ -2258,11 +2258,13 @@ struct GraphicsPipelineBuilder {
         pipelineCreateInfo.pMultisampleState = &multisampling;
         pipelineCreateInfo.pColorBlendState = &colorBlending;
         pipelineCreateInfo.layout = pipelineLayout;  // Pipeline layout created earlier
-        pipelineCreateInfo.renderPass = renderPass;
+        // pipelineCreateInfo.renderPass = renderPass; // VK_NULL_HANDLE if dynamic rendering
         pipelineCreateInfo.subpass = 0;  // Index of the subpass where this pipeline will be used
         pipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;  // Not deriving from another pipeline
         pipelineCreateInfo.pDepthStencilState = &depthStencil;
-        
+        pipelineCreateInfo.pNext = &renderingInfo;
+
+        VkPipeline pipeline;
         if (vkCreateGraphicsPipelines($context().device,  VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline) != VK_SUCCESS) {
             throw std::runtime_error("failed to create graphics pipeline");
         }
@@ -2289,3 +2291,140 @@ VkPipeline createComputePipeline(VkPipelineLayout pipelineLayout, VkShaderModule
     $context().pipelines.emplace(computePipeline);
     return computePipeline;
 }
+
+struct MultisampleRenderingRecording {
+    VkCommandBuffer commandBuffer;
+    MultisampleRenderingRecording(
+        VkCommandBuffer commandBuffer,
+        VkImageView multisampleColor,
+        VkImageView multisampleResolveImage,
+        VkImageView depthImage) : commandBuffer(commandBuffer)
+    {
+        VkRenderingAttachmentInfo colorAttachment = {};
+        colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        colorAttachment.imageView = multisampleColor;
+        colorAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+        colorAttachment.resolveImageView = multisampleResolveImage;
+        colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        VkClearValue clearColor = { .color = { 0.0f, 0.0f, 0.0f, 1.0f } };
+        colorAttachment.clearValue = clearColor;
+
+        VkRenderingAttachmentInfo depthAttachment = {};
+        depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depthAttachment.imageView = depthImage;
+        depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        VkClearValue clearDepth = { .depthStencil = { 1.0f, 0 } };
+        depthAttachment.clearValue = clearDepth;
+
+        VkRenderingInfo renderingInfo = {};
+        renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        renderingInfo.renderArea = { 0, 0, (uint)$context().windowWidth, (uint)$context().windowHeight };
+        renderingInfo.layerCount = 1;
+        renderingInfo.pColorAttachments = &colorAttachment;
+        renderingInfo.colorAttachmentCount = 1;
+        renderingInfo.pDepthAttachment = &depthAttachment;
+
+        vkCmdBeginRendering(commandBuffer, &renderingInfo);
+    }
+    ~MultisampleRenderingRecording() {
+        vkCmdEndRendering(commandBuffer);
+    }
+};
+
+struct RenderingRecording {
+    std::vector<VkRenderingAttachmentInfo> colorAttachments;
+    VkRenderingAttachmentInfo depthAttachment;
+    VkCommandBuffer commandBuffer;
+    void init(std::vector<VkImageView> & colorImages, VkImageView depthImage) {
+        if (colorImages.empty() && depthImage == VK_NULL_HANDLE) {
+            throw std::runtime_error("no color or depth images to render to");
+        }
+        VkRenderingInfo renderingInfo = {};
+        renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        renderingInfo.renderArea = { 0, 0, (uint)$context().windowWidth, (uint)$context().windowHeight };
+        renderingInfo.layerCount = 1;
+
+        std::vector<VkRenderingAttachmentInfo> colorAttachments;
+        for (VkImageView colorImage : colorImages) {
+            VkRenderingAttachmentInfo colorAttachment = {};
+            colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            colorAttachment.imageView = colorImage;
+            colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            VkClearValue clearColor = { .color = { 0.0f, 0.0f, 0.0f, 1.0f } };
+            colorAttachment.clearValue = clearColor;
+            colorAttachments.push_back(colorAttachment);
+        }
+
+        depthAttachment = {};
+        if (depthImage != VK_NULL_HANDLE) {
+            depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            depthAttachment.imageView = depthImage;
+            depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            VkClearValue clearDepth = { .depthStencil = { 1.0f, 0 } };
+            depthAttachment.clearValue = clearDepth;
+            renderingInfo.pDepthAttachment = &depthAttachment;
+        }
+
+        renderingInfo.pColorAttachments = colorAttachments.data();
+        renderingInfo.colorAttachmentCount = colorAttachments.size();
+
+        vkCmdBeginRendering(commandBuffer, &renderingInfo);
+    }
+    RenderingRecording(VkCommandBuffer commandBuffer, std::vector<VkImageView> & colorImages, VkImageView depthImage) : commandBuffer(commandBuffer) {
+        init(colorImages, depthImage);
+    }
+    RenderingRecording(VkCommandBuffer commandBuffer, VkImageView colorImage, VkImageView depthImage) : commandBuffer(commandBuffer) {
+        std::vector<VkImageView> colorImages = {colorImage};
+        init(colorImages, depthImage);
+    }
+    ~RenderingRecording() {
+        vkCmdEndRendering(commandBuffer);
+    }
+};
+
+
+struct CommandBufferRecording {
+    VkCommandBuffer commandBuffer;
+    CommandBufferRecording(VkCommandBuffer commandBuffer):commandBuffer(commandBuffer) {
+        VkCommandBufferBeginInfo beginInfo = {};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT; // Can be resubmitted multiple times
+        if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+            throw std::runtime_error("failed to begin command buffer");
+        }
+    }
+    operator VkCommandBuffer() {
+        return commandBuffer;
+    }
+    ~CommandBufferRecording() {
+        VkResult result = vkEndCommandBuffer(commandBuffer);
+        if (VK_SUCCESS != result) {
+            const char * errorString;
+            switch (result) {
+                case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+                errorString = "out of device memory";
+                break;
+                case VK_ERROR_OUT_OF_HOST_MEMORY:
+                errorString = "out of host memory";
+                break;
+                case VK_ERROR_INVALID_VIDEO_STD_PARAMETERS_KHR:
+                errorString = "invalid video std parameters";
+                break;
+                default:
+                errorString = "error not in vulkan spec";
+                break;
+            }
+            std::cout << "failed to record command buffer: " << errorString << std::endl;
+            std::terminate(); // this is fatal, we will not throw
+        }
+    }
+};

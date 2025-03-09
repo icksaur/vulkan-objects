@@ -85,49 +85,26 @@ Image createImageFromTGAFile(const char * filename) {
     return image;
 }
 
-void recordRenderPass(
+void record(
     VkExtent2D extent,
     VkPipeline computePipeline,
     VkPipeline graphicsPipeline,
-    VkRenderPass renderPass,
-    VkFramebuffer framebuffer,
     VkCommandBuffer commandBuffer,
+    VkImageView colorImage,
+    VkImageView depthImage,
     VkBuffer vertexBuffer,
     VkPipelineLayout pipelineLayout,
     VkDescriptorSet descriptorSet
 ) {
-    VkCommandBufferBeginInfo beginInfo = {};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;  // Can be resubmitted multiple times
-
-    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
-        throw std::runtime_error("failed to begin command buffer");
-    }
+    CommandBufferRecording commandBufferRecording(commandBuffer);
 
     // bind and dispatch compute
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
     vkCmdDispatch(commandBuffer, 1, 1, 1);
 
-    VkRenderPassBeginInfo renderPassBeginInfo = {};
-    renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    renderPassBeginInfo.renderPass = renderPass;  // Your created render pass
-    renderPassBeginInfo.framebuffer = framebuffer;  // The framebuffer corresponding to the swap chain image
-
-    // Define the render area (usually the size of the swap chain image)
-    renderPassBeginInfo.renderArea.offset = { 0, 0 };  // Starting at (0, 0)
-    renderPassBeginInfo.renderArea.extent = extent;  // Covers the whole framebuffer (usually the swap chain image size)
-
-    // Set clear values for attachments (e.g., clearing the color buffer to black and depth buffer to 1.0f)
-    VkClearValue clearValues[2];
-    clearValues[0].color = { { 0.0f, 0.0f, 0.0f, 1.0f } };  // Clear color: black
-    clearValues[1].depthStencil = { 1.0f, 0 };               // Clear depth: 1.0, no stencil
-
-    renderPassBeginInfo.clearValueCount = 2;                 // Two clear values (color and depth)
-    renderPassBeginInfo.pClearValues = clearValues;
-
-    // begin recording the render pass
-    vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+    // start dynamic rendering to our presentation image and depth buffer
+    RenderingRecording renderingRecording(commandBuffer, colorImage, depthImage);
 
     // Bind the descriptor which contains the shader uniform buffer
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
@@ -135,23 +112,16 @@ void recordRenderPass(
 
     VkDeviceSize offsets[] = { 0 };
     vkCmdBindVertexBuffers(commandBuffer, vertexBindingIndex, 1, &vertexBuffer, offsets);  // bind the vertex buffer
-
-    size_t vertexCount = 6 * computedQuadCount;
-
-    vkCmdDraw(commandBuffer, vertexCount, 1, 0, 0);
-
-    vkCmdEndRenderPass(commandBuffer);
-
-    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-        throw std::runtime_error("failed to record command buffer!");
-    }
+    vkCmdDraw(commandBuffer, 6 * computedQuadCount, 1, 0, 0);
 }
 
 int main(int argc, char *argv[]) {
     SDLWindow window(appName, windowWidth, windowHeight);
 
     // There can only be one context, and creating it is required for other objects to construct.
-    VulkanContext context(window);
+    VulkanContextOptions vulkanContextOptions;
+    vulkanContextOptions.validation();
+    VulkanContext context(window, vulkanContextOptions);
 
     // shaders
     ShaderModule fragShaderModule(ShaderBuilder().fragment().fromFile("tri.frag.spv"));
@@ -231,25 +201,6 @@ int main(int argc, char *argv[]) {
         binder.bindStorageBuffer(descriptorSets[i], 2, shaderStorageVertexBuffer);
     }
     binder.updateSets();
-    
-    // render pass
-    // VkRenderPass is a key object in building a Vulkan application.
-    // It defines the layout of the framebuffer attachments and how they are used in the rendering process.
-    // Each framebuffer is associated with exactly one render pass.
-    // Each pipeline is associated with exactly one render pass.
-    RenderpassBuilder renderpassBuilder;
-    renderpassBuilder
-        .colorAttachment().depthAttachment()
-        .colorRef(0).depthRef(1);
-    VkRenderPass renderPass = renderpassBuilder.build(); // context-owned
-    
-    // Framebuffers are used to store the results of rendering, including color and depth buffers, and other deep buffers for multi-pass uses.
-    // The last framebuffer used in a frame is the swapchain presentframebuffer, which contains color images owned by the Vulkan device that can present to your screen.
-    std::vector<Framebuffer> presentFramebuffers; // auto cleaned up by vector destructor
-    presentFramebuffers.reserve(context.swapchainImageCount);
-    for (size_t i = 0; i < context.swapchainImageCount; ++i) {
-        presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), renderPass);
-    }
 
     // command buffers are recorded into and submitted to a queue
     // we have one command buffer for each swapchain image, and cycle through them
@@ -265,7 +216,7 @@ int main(int argc, char *argv[]) {
     // You can have multiple vertex bindings for different use cases, and step through per vertex or per instance.
     // We only have one in this example.  See how we use vec3 position and vec2 UV in tri.vert
     // Locations have to be unique across the vertex shader in a pipeline.
-    GraphicsPipelineBuilder graphicsPipelineBuilder(pipelineLayout, renderPass);
+    GraphicsPipelineBuilder graphicsPipelineBuilder(pipelineLayout);
     graphicsPipelineBuilder
         .addVertexShader(vertShaderModule)
         .addFragmentShader(fragShaderModule)
@@ -279,6 +230,14 @@ int main(int argc, char *argv[]) {
     
     // index of the swapchain resources to use for the next frame
     uint nextImage = 0;
+
+    // depth buffer images, used for depth testing
+    ImageBuilder depthImagebuilder;
+    depthImagebuilder.depth();
+    std::vector<Image> depthImages;
+    for (size_t i=0; i<context.swapchainImageCount; ++i) {
+        depthImages.emplace_back(depthImagebuilder);
+    }
 
     // semaphore signaling when the next image has completed rendering
     // This is not used in this example.
@@ -320,13 +279,13 @@ int main(int argc, char *argv[]) {
     
         // This program has no dynamic commands, but we record in
         // the loop as an example of how you'd record a dynamic frame.
-        recordRenderPass(
+        record(
             VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight},
             computePipeline,
             graphicsPipeline,
-            renderPass,
-            presentFramebuffers[nextImage].framebuffer, // use the framebuffer associated with the most recent image accquired
             commandBuffer,
+            $context().swapchainImageViews[nextImage], // use the next swapchain image
+            depthImages[nextImage].imageView,
             shaderStorageVertexBuffer,
             pipelineLayout,
             descriptorSets[uniformBuffer.lastWriteIndex]); // use the descriptor set associated with the most recent buffer written
@@ -343,9 +302,9 @@ int main(int argc, char *argv[]) {
 
             std::cout << "swap chain out of date, trying to remake" << std::endl;
             rebuildPresentationResources();
-            presentFramebuffers.clear();
+            depthImages.clear();
             for (size_t i=0; i<context.swapchainImageCount; ++i) {
-                presentFramebuffers.emplace_back(FramebufferBuilder().present(i).depth(), renderPass);
+                depthImages.push_back(depthImagebuilder);
             }
         }
 
