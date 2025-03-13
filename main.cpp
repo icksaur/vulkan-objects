@@ -116,7 +116,7 @@ void record(
 }
 
 int main(int argc, char *argv[]) {
-    SDLWindow window(appName, windowWidth, windowHeight);
+    SDLWindow window("VulkanApp", windowWidth, windowHeight);
 
     // There can only be one context, and creating it is required for other objects to construct.
     VulkanContext context(window, VulkanContextOptions().validation());
@@ -282,7 +282,7 @@ int main(int argc, char *argv[]) {
             computePipeline,
             graphicsPipeline,
             commandBuffer,
-            $context().swapchainImageViews[nextImage], // use the next swapchain image
+            context.swapchainImageViews[nextImage], // use the next swapchain image
             depthImages[nextImage].imageView,
             shaderStorageVertexBuffer,
             pipelineLayout,
