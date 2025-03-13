@@ -85,8 +85,9 @@ Image createImageFromTGAFile(const char * filename) {
     return image;
 }
 
+VkDeviceSize vertexOffsets[] = { 0 };
+
 void record(
-    VkExtent2D extent,
     VkPipeline computePipeline,
     VkPipeline graphicsPipeline,
     VkCommandBuffer commandBuffer,
@@ -110,18 +111,15 @@ void record(
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
 
-    VkDeviceSize offsets[] = { 0 };
-    vkCmdBindVertexBuffers(commandBuffer, vertexBindingIndex, 1, &vertexBuffer, offsets);  // bind the vertex buffer
-    vkCmdDraw(commandBuffer, 6 * computedQuadCount, 1, 0, 0);
+    vkCmdBindVertexBuffers(commandBuffer, vertexBindingIndex, 1, &vertexBuffer, vertexOffsets);  // bind the vertex buffer
+    vkCmdDraw(commandBuffer, 6 * computedQuadCount, 1, 0, 0); // draw the quads
 }
 
 int main(int argc, char *argv[]) {
     SDLWindow window(appName, windowWidth, windowHeight);
 
     // There can only be one context, and creating it is required for other objects to construct.
-    VulkanContextOptions vulkanContextOptions;
-    vulkanContextOptions.validation();
-    VulkanContext context(window, vulkanContextOptions);
+    VulkanContext context(window, VulkanContextOptions().validation());
 
     // shaders
     ShaderModule fragShaderModule(ShaderBuilder().fragment().fromFile("tri.frag.spv"));
@@ -193,14 +191,14 @@ int main(int argc, char *argv[]) {
     // If we had multiple dynamic buffers there would be a need for a total of swapchainImageCount^dynamicBufferCount descriptor sets.
     // A general-purpose solution is necessarily complex, and this is a simple solution.
     std::vector<VkDescriptorSet> descriptorSets(context.swapchainImageCount);
-    DescriptorSetBinder binder;
+    DescriptorSetBinder descriptorSetBinder;
     for (size_t i = 0; i < context.swapchainImageCount; i++) {
         descriptorSets[i] = descriptorPool.allocate(descriptorSetLayout);
-        binder.bindUniformBuffer(descriptorSets[i], 0, uniformBuffer.buffers[i]); // bind each buffer in the dynamic buffer
-        binder.bindSampler(descriptorSets[i], 1, textureSampler, textureImage);
-        binder.bindStorageBuffer(descriptorSets[i], 2, shaderStorageVertexBuffer);
+        descriptorSetBinder.bindUniformBuffer(descriptorSets[i], 0, uniformBuffer.buffers[i]); // bind each buffer in the dynamic buffer
+        descriptorSetBinder.bindSampler(descriptorSets[i], 1, textureSampler, textureImage);
+        descriptorSetBinder.bindStorageBuffer(descriptorSets[i], 2, shaderStorageVertexBuffer);
     }
-    binder.updateSets();
+    descriptorSetBinder.updateSets();
 
     // command buffers are recorded into and submitted to a queue
     // we have one command buffer for each swapchain image, and cycle through them
@@ -216,6 +214,7 @@ int main(int argc, char *argv[]) {
     // You can have multiple vertex bindings for different use cases, and step through per vertex or per instance.
     // We only have one in this example.  See how we use vec3 position and vec2 UV in tri.vert
     // Locations have to be unique across the vertex shader in a pipeline.
+    // Mesh shaders much simpler than this, but for this example we're using the traditional vertex stage.
     GraphicsPipelineBuilder graphicsPipelineBuilder(pipelineLayout);
     graphicsPipelineBuilder
         .addVertexShader(vertShaderModule)
@@ -280,7 +279,6 @@ int main(int argc, char *argv[]) {
         // This program has no dynamic commands, but we record in
         // the loop as an example of how you'd record a dynamic frame.
         record(
-            VkExtent2D{(uint32_t)context.windowWidth, (uint32_t)context.windowHeight},
             computePipeline,
             graphicsPipeline,
             commandBuffer,
@@ -296,9 +294,8 @@ int main(int argc, char *argv[]) {
         // Present the image to the screen.  The internal semaphore is now unsignaled, and the presentation engine will signal it when it's done.
         if (!frame.tryPresentQueue()) {
             // This is a common Vulkan situation handled automatically by OpenGL.
-            // We need to remake our swap chain, image views, and framebuffers.
-            // This usually happens after the first frame, but if the image was being used,
-            // the above fence will protect it from being modified by us while in use.
+            // We need to remake our swap chain and any images used in presentation, like the depth buffer.
+            // This usually happens after the first frame.
 
             std::cout << "swap chain out of date, trying to remake" << std::endl;
             rebuildPresentationResources();
