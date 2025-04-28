@@ -6,7 +6,7 @@
     "configurations": [
         {
             "name": "debug ",
-            "type":"cppdbg",
+            "type":"lldb",
             "linux": {
                 "setupCommands": [
                     {
@@ -21,7 +21,7 @@
             "cwd": "${workspaceFolder}",
             "program": "${workspaceFolder}/vulkan",
             "request": "launch",
-            "args": ["test"],
+            "args": [""],
             "stopAtEntry": false,
             "environment": [],
             "externalConsole": false,

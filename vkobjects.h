@@ -22,9 +22,9 @@ struct DestroyGeneration {
 };
 
 // function pointers for extensions
-static PFN_vkCmdDrawMeshTasksEXT vkCmdDrawMeshTasks;
-static PFN_vkCmdBeginRendering vkBeginRendering;
-static PFN_vkCmdEndRendering vkEndRendering;
+extern PFN_vkCmdDrawMeshTasksEXT vkCmdDrawMeshTasks;
+extern PFN_vkCmdBeginRendering vkBeginRendering;
+extern PFN_vkCmdEndRendering vkEndRendering;
 
 struct VulkanContextOptions {
     bool enableMultisampling;
@@ -114,6 +114,8 @@ VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool);
 struct ScopedCommandBuffer {
     VkCommandBuffer commandBuffer;
     ScopedCommandBuffer();
+    void bufferHostBarrier(VkBuffer buffer);
+    void submit();
     void submitAndWait();
     operator VkCommandBuffer();
     ~ScopedCommandBuffer();
@@ -238,6 +240,7 @@ struct TextureSampler {
 
 struct BufferBuilder {
     VkBufferUsageFlags usage;
+    VkMemoryPropertyFlags properties;
     size_t byteCount;
 
     BufferBuilder(size_t byteCount);
@@ -245,6 +248,12 @@ struct BufferBuilder {
     BufferBuilder & index();
     BufferBuilder & uniform();
     BufferBuilder & storage();
+    BufferBuilder & indirect();
+    BufferBuilder & hostCoherent();
+    BufferBuilder & hostVisible();
+    BufferBuilder & deviceLocal();
+    BufferBuilder & transferSource();
+    BufferBuilder & transferDestination();
     BufferBuilder & size(size_t byteCount);
 };
 
@@ -254,9 +263,12 @@ struct Buffer {
     size_t size;
 
     void setData(void * bytes, size_t size);
+    void getData(void * bytes, size_t size);
     Buffer(BufferBuilder & builder);
+    Buffer(Buffer && other);
     ~Buffer();
     operator VkBuffer() const;
+    operator VkBuffer*() const;
 };
 
 // This class shows an incomplete understanding of Vulkan capabilities.
@@ -290,6 +302,15 @@ struct DescriptorLayoutBuilder {
     DescriptorLayoutBuilder & addUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
     VkDescriptorSetLayout build();
     void reset();
+    void throwIfDuplicate(uint32_t binding);
+};
+
+struct PushConstantsBuilder {
+    std::vector<VkPushConstantRange> ranges;
+    VkShaderStageFlags currentBits;
+    PushConstantsBuilder();
+    PushConstantsBuilder & addRange(size_t offset, size_t size, VkShaderStageFlags stageBits);
+    operator std::vector<VkPushConstantRange> & ();
 };
 
 struct DescriptorPoolBuilder {
@@ -316,9 +337,10 @@ struct DescriptorSetBinder {
     std::vector<VkDescriptorBufferInfo> bufferInfos;
     DescriptorSetBinder();
     void bindSampler(VkDescriptorSet descriptorSet, uint32_t bindingIndex, TextureSampler & sampler, Image & image);
-    void bindBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer, VkDescriptorType descriptorType);
+    void bindBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer, VkDescriptorType descriptorType, VkDeviceSize deviceSize = VK_WHOLE_SIZE);
     void bindUniformBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer);
     void bindStorageBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer);
+    void bindStorageBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer, size_t size);
     void updateSets();
 };
 
@@ -340,17 +362,19 @@ struct Frame {
     VkFence submittedBuffersFinishedFence;
     int nextImageIndex;
     static const int UnacquiredIndex = -1;
+
     Frame();
     ~Frame();
     void prepareOldestFrameResources();
     void acquireNextImageIndex(uint32_t & nextImage, VkSemaphore & renderFinishedSemaphore);
     uint32_t acquireNextImageIndex();
     void submitCommandBuffer(VkCommandBuffer commandBuffer);
+    void submitCommandBuffer(VkCommandBuffer commandBuffer, std::vector<VkSemaphore> & additionalWaitSemaphores, std::vector<VkSemaphore> & additionalSignalSemaphores);
     bool tryPresentQueue();
     void cleanup();
 };
 
-
+VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> & descriptorSetLayouts, const std::vector<VkPushConstantRange> & pushConstantRanges);
 VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> & descriptorSetLayouts);
 
 struct GraphicsPipelineBuilder {
@@ -397,4 +421,25 @@ struct CommandBufferRecording {
     CommandBufferRecording(VkCommandBuffer commandBuffer);
     operator VkCommandBuffer();
     ~CommandBufferRecording();
+};
+void bufferBarrier(VkCommandBuffer commandBuffer, VkBuffer buffer);
+void bufferBarrierComputeToFragment(VkCommandBuffer commandBuffer, VkBuffer buffer);
+void bufferBarrierFromHost(VkCommandBuffer commandBuffer, VkBuffer buffer);
+void bufferBarrierToHost(VkCommandBuffer commandBuffer, VkBuffer buffer);
+
+struct BufferBarrier {
+    VkBufferMemoryBarrier barrier;
+    VkPipelineStageFlags srcStage;
+    VkPipelineStageFlags dstStage;
+    bool toIndirect;
+    VkCommandBuffer commandBuffer;
+    BufferBarrier(VkCommandBuffer commandBuffer);
+    BufferBarrier & buffer(VkBuffer buffer);
+    BufferBarrier & fromHost();
+    BufferBarrier & toHost();
+    BufferBarrier & fromCompute();
+    BufferBarrier & toCompute();
+    BufferBarrier & toFragment();
+    BufferBarrier & indirect();
+    void command();
 };

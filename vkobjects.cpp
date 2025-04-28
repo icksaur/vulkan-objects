@@ -12,6 +12,10 @@ VkFormat surfaceFormat = VK_FORMAT_B8G8R8A8_SRGB;
 VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 VkFormat depthFormat = VK_FORMAT_D24_UNORM_S8_UINT; // some options are VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT
 
+PFN_vkCmdDrawMeshTasksEXT vkCmdDrawMeshTasks;
+PFN_vkCmdBeginRendering vkBeginRendering;
+PFN_vkCmdEndRendering vkEndRendering;
+
 VulkanContextOptions::VulkanContextOptions() :
     enableMultisampling(false),
     multisampleCount(1),
@@ -91,7 +95,6 @@ VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool) 
     return commandBuffer;
 }
 
-
 ScopedCommandBuffer::ScopedCommandBuffer() : commandBuffer(createCommandBuffer($context().device, $context().commandPool)) {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -101,7 +104,7 @@ ScopedCommandBuffer::ScopedCommandBuffer() : commandBuffer(createCommandBuffer($
         throw std::runtime_error("failed to begin recording command buffer");
     }
 }
-void ScopedCommandBuffer::submitAndWait() {
+void ScopedCommandBuffer::submit() {
     if (VK_SUCCESS != vkEndCommandBuffer(commandBuffer)) {
         throw std::runtime_error("failed to end command buffer");
     }
@@ -114,12 +117,28 @@ void ScopedCommandBuffer::submitAndWait() {
     if (VK_SUCCESS != vkQueueSubmit($context().graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE)) {
         throw std::runtime_error("failed submit queue");
     }
-
+}
+void ScopedCommandBuffer::submitAndWait() {
+    submit();
+    
     // TODO: waiting on the primary graphics queue is not ideal. We can use a parallel queue and sync primitives instead.
     // The primary use of this struct is transitioning images, which would be satisfied with a command buffer supporting only VK_QUEUE_TRANSFER_BIT.
     if (VK_SUCCESS != vkQueueWaitIdle($context().graphicsQueue)) {
         throw std::runtime_error("failed wait for queue to be idle");
     }
+}
+void ScopedCommandBuffer::bufferHostBarrier(VkBuffer buffer) {
+    VkBufferMemoryBarrier bufferBarrier{};
+    bufferBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    bufferBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    bufferBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bufferBarrier.buffer = buffer;
+    bufferBarrier.offset = 0;
+    bufferBarrier.size = VK_WHOLE_SIZE;
+
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &bufferBarrier, 0, nullptr);
 }
 ScopedCommandBuffer::operator VkCommandBuffer() {
     return commandBuffer;
@@ -169,13 +188,11 @@ void getAvailableVulkanLayers(std::vector<std::string>& outLayers) {
 
     std::set<std::string> requestedLayers({"VK_LAYER_KHRONOS_validation"});
 
-    int count = 0;
     outLayers.clear();
     for (const auto& name : instance_layer_names) {
         auto it = requestedLayers.find(std::string(name.layerName));
         if (it != requestedLayers.end())
             outLayers.emplace_back(name.layerName);
-        count++;
     }
 }
 
@@ -239,17 +256,18 @@ void createVulkanInstance(const std::vector<std::string>& layerNameStrings, cons
     throw std::runtime_error("unable to create Vulkan instance: unknown error");
 }
 
+// validation layer debug callback
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
-    VkDebugReportFlagsEXT flags,
-    VkDebugReportObjectTypeEXT objType,
-    uint64_t obj,
-    size_t location,
-    int32_t code,
+    VkDebugReportFlagsEXT,
+    VkDebugReportObjectTypeEXT,
+    uint64_t,
+    size_t,
+    int32_t,
     const char* layerPrefix,
     const char* msg,
-    void* userData)
+    void*)
 {
-    std::cout << "validation layer: " << layerPrefix << ": " << msg << std::endl;
+    std::cout << layerPrefix << ": " << msg << std::endl;
     return VK_FALSE;
 }
 
@@ -334,6 +352,12 @@ void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& o
     VkSampleCountFlags counts = physicalDeviceProperties[selectionId].limits.framebufferColorSampleCounts & physicalDeviceProperties[selectionId].limits.framebufferDepthSampleCounts;
     VkSampleCountFlagBits maxSampleBits = getMaximumSampleSize(counts, maxSampleCount);
     std::cout << "max sample count: " << maxSampleCount << std::endl;
+
+    VkPhysicalDeviceLimits & limits = physicalDeviceProperties[selectionId].limits;
+    std::cout << "max workgroups: " << limits.maxComputeWorkGroupCount[0] << " " << limits.maxComputeWorkGroupCount[1] << " " << limits.maxComputeWorkGroupCount[2] << std::endl;
+    std::cout << "max workgroup size: " << limits.maxComputeWorkGroupSize[0] << " " << limits.maxComputeWorkGroupSize[1] << " " << limits.maxComputeWorkGroupSize[2] << std::endl;
+    std::cout << "max workgroup invocations: " << limits.maxComputeWorkGroupInvocations << std::endl;
+    std::cout << "max shared memory: " << limits.maxComputeSharedMemorySize << std::endl;
 
     // Find the number queues this device supports, we want to make sure that we have a queue that supports graphics commands
     unsigned int familyQueueCount = 0;
@@ -1006,7 +1030,7 @@ void transitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue g
     }
 
     // it would be nice to print descriptive strings instead of integers here
-    std::cout << "transitioning image from " << oldLayout << " to " << newLayout << std::endl;
+    // std::cout << "transitioning image from " << oldLayout << " to " << newLayout << std::endl;
 
     vkCmdPipelineBarrier(
         scopedCommandBuffer.commandBuffer,
@@ -1204,7 +1228,7 @@ void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT
     }
 }
 
-std::tuple<VkBuffer, VkDeviceMemory> createBuffer(VkPhysicalDevice gpu, VkDevice device, VkBufferUsageFlags usageFlags, size_t byteCount) {
+std::tuple<VkBuffer, VkDeviceMemory> createBuffer(VkPhysicalDevice gpu, VkDevice device, VkBufferUsageFlags usageFlags, size_t byteCount, VkMemoryPropertyFlags flags) {
     VkBuffer buffer;
     VkDeviceMemory memory;
 
@@ -1224,7 +1248,7 @@ std::tuple<VkBuffer, VkDeviceMemory> createBuffer(VkPhysicalDevice gpu, VkDevice
     VkMemoryAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = findMemoryType(gpu, memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    allocInfo.memoryTypeIndex = findMemoryType(gpu, memRequirements.memoryTypeBits, flags);
 
     if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
         throw std::runtime_error("failed to allocate buffer memory");
@@ -1482,7 +1506,7 @@ Image::Image(ImageBuilder & builder) {
         VkDeviceMemory stagingMemory;
 
         // put the image bytes into a buffer for transitioning
-        std::tie(stagingBuffer, stagingMemory) = createBuffer($context().physicalDevice, $context().device, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, builder.byteCount);
+        std::tie(stagingBuffer, stagingMemory) = createBuffer($context().physicalDevice, $context().device, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, builder.byteCount, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         void * stagingBytes;
         vkMapMemory($context().device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &stagingBytes);
         memcpy(stagingBytes, builder.bytes, (size_t)builder.byteCount);
@@ -1525,7 +1549,7 @@ TextureSampler::operator VkSampler() const {
     return sampler;
 }
 
-BufferBuilder::BufferBuilder(size_t byteCount) : usage(0), byteCount(byteCount) {}
+BufferBuilder::BufferBuilder(size_t byteCount) : usage(0), byteCount(byteCount), properties(0) {}
 BufferBuilder & BufferBuilder::vertex() {
     usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     return *this;
@@ -1536,10 +1560,35 @@ BufferBuilder & BufferBuilder::index() {
 }
 BufferBuilder & BufferBuilder::uniform() {
     usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    properties |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
     return *this;
 }
 BufferBuilder & BufferBuilder::storage() {
     usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    return *this;
+}
+BufferBuilder & BufferBuilder::indirect() {
+    usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    return *this;
+}
+BufferBuilder & BufferBuilder::hostCoherent() {
+    properties |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    return *this;
+}
+BufferBuilder & BufferBuilder::hostVisible() {
+    properties |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+    return *this;
+}
+BufferBuilder & BufferBuilder::deviceLocal() {
+    properties |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    return *this;
+}
+BufferBuilder & BufferBuilder::transferSource() {
+    usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    return *this;
+}
+BufferBuilder & BufferBuilder::transferDestination() {
+    usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     return *this;
 }
 BufferBuilder & BufferBuilder::size(size_t byteCount) {
@@ -1548,16 +1597,31 @@ BufferBuilder & BufferBuilder::size(size_t byteCount) {
 }
 
 Buffer::Buffer(BufferBuilder & builder) : buffer(VK_NULL_HANDLE), memory(VK_NULL_HANDLE), size(builder.byteCount) {
-    std::tie(buffer, memory) = createBuffer($context().physicalDevice, $context().device, builder.usage, builder.byteCount);
+    std::tie(buffer, memory) = createBuffer($context().physicalDevice, $context().device, builder.usage, builder.byteCount, builder.properties);
+}
+Buffer::Buffer(Buffer && other) : buffer(other.buffer), memory(other.memory), size(other.size) {
+    other.buffer = VK_NULL_HANDLE;
+    other.memory = VK_NULL_HANDLE;
+    other.size = 0;
 }
 void Buffer::setData(void * bytes, size_t size) {
-    if (size != this->size) {
-        throw std::runtime_error("Uniform buffer size mismatch");
+    if (size > this->size) {
+        throw std::runtime_error("buffer size mismatch");
     }
 
     void* mapped;
     vkMapMemory($context().device, memory, 0, size, 0, &mapped);
     memcpy(mapped, bytes, size);
+    vkUnmapMemory($context().device, memory);
+}
+void Buffer::getData(void * bytes, size_t size) {
+    if (size > this->size) {
+        throw std::runtime_error("buffer size mismatch");
+    }
+
+    void* mapped;
+    vkMapMemory($context().device, memory, 0, size, 0, &mapped);
+    memcpy(bytes, mapped, size);
     vkUnmapMemory($context().device, memory);
 }
 Buffer::~Buffer() {
@@ -1567,6 +1631,9 @@ Buffer::~Buffer() {
 }
 Buffer::operator VkBuffer() const {
     return buffer;
+}
+Buffer::operator VkBuffer*() const {
+    return (VkBuffer*)&buffer;
 }
 
 DynamicBuffer::DynamicBuffer(BufferBuilder & builder):lastWriteIndex(0) {
@@ -1642,6 +1709,13 @@ VkDescriptorSetLayout DescriptorLayoutBuilder::build() {
     }
     $context().layouts.emplace(layout);
     return layout;
+}
+void DescriptorLayoutBuilder::throwIfDuplicate(uint32_t binding) {
+    for (auto& b : bindings) {
+        if (b.binding == binding) {
+            throw std::runtime_error("duplicate binding in descriptor layout");
+        }
+    }
 }
 void DescriptorLayoutBuilder::reset() {
     bindings.clear();
@@ -1722,7 +1796,7 @@ void DescriptorSetBinder::bindSampler(VkDescriptorSet descriptorSet, uint32_t bi
 
     descriptorWriteSets.push_back(descriptorWrite);
 }
-void DescriptorSetBinder::bindBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer, VkDescriptorType descriptorType) {
+void DescriptorSetBinder::bindBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer, VkDescriptorType descriptorType, VkDeviceSize deviceSize) {
     VkDescriptorBufferInfo bufferInfo = {};
     bufferInfo.buffer = buffer;
     bufferInfo.offset = 0;
@@ -1742,10 +1816,13 @@ void DescriptorSetBinder::bindBuffer(VkDescriptorSet descriptorSet, uint32_t bin
     descriptorWriteSets.push_back(descriptorWrite);
 }
 void DescriptorSetBinder::bindUniformBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer) {
-    bindBuffer(descriptorSet, bindingIndex, buffer, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    bindBuffer(descriptorSet, bindingIndex, buffer, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_WHOLE_SIZE);
 }
 void DescriptorSetBinder::bindStorageBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer) {
-    bindBuffer(descriptorSet, bindingIndex, buffer, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+    bindBuffer(descriptorSet, bindingIndex, buffer, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_WHOLE_SIZE);
+}
+void DescriptorSetBinder::bindStorageBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer, size_t size) {
+    bindBuffer(descriptorSet, bindingIndex, buffer, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, size);
 }
 void DescriptorSetBinder::updateSets() {
     // we can't keep pointers into the vectors because vectors can resize
@@ -1766,6 +1843,25 @@ void DescriptorSetBinder::updateSets() {
     descriptorWriteSets.clear();
     imageInfos.clear();
     bufferInfos.clear();
+}
+
+PushConstantsBuilder::PushConstantsBuilder() : currentBits(0) {}
+
+PushConstantsBuilder & PushConstantsBuilder::addRange(size_t offset, size_t size, VkShaderStageFlags stageFlags) {
+    if (currentBits & stageFlags) {
+        throw std::runtime_error("push constant stage flags overlap");
+    }
+    VkPushConstantRange range = {};
+    range.offset = offset;
+    range.size = size;
+    range.stageFlags = stageFlags;
+    ranges.push_back(range);
+
+    return *this;
+};
+
+PushConstantsBuilder::operator std::vector<VkPushConstantRange> & () {
+    return ranges;
 }
 
 size_t oldestGenerationIndex(VulkanContext & context) {
@@ -1819,7 +1915,13 @@ uint32_t Frame::acquireNextImageIndex() {
     acquireNextImageIndex(nextImageIndex, unused);
     return nextImageIndex;
 }
+
 void Frame::submitCommandBuffer(VkCommandBuffer commandBuffer) {
+    static std::vector<VkSemaphore> empty;
+    submitCommandBuffer(commandBuffer, empty, empty);
+}
+void Frame::submitCommandBuffer(
+    VkCommandBuffer commandBuffer, std::vector<VkSemaphore> & additionalWaitSemaphores, std::vector<VkSemaphore> & additionalSignalSemaphores) {
     VkSubmitInfo submitInfo = {};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
@@ -1827,15 +1929,19 @@ void Frame::submitCommandBuffer(VkCommandBuffer commandBuffer) {
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = commandBuffers;
 
-    VkSemaphore waitSemaphores[] = {imageAvailableSemaphore};
-    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-    submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = waitSemaphores;
+    std::vector<VkSemaphore> waitSemaphores = {imageAvailableSemaphore};
+    waitSemaphores.insert(waitSemaphores.end(), additionalWaitSemaphores.begin(), additionalWaitSemaphores.end());
+
+    // TODO: do not hardcode the additional wait stages, make a builder
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT};
+    submitInfo.waitSemaphoreCount = waitSemaphores.size();
+    submitInfo.pWaitSemaphores = waitSemaphores.data();
     submitInfo.pWaitDstStageMask = waitStages;
 
-    VkSemaphore signalSemaphores[] = {renderFinishedSemaphore};
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = signalSemaphores;
+    std::vector<VkSemaphore> signalSemaphores = {renderFinishedSemaphore};
+    signalSemaphores.insert(signalSemaphores.end(), additionalSignalSemaphores.begin(), additionalSignalSemaphores.end());
+    submitInfo.signalSemaphoreCount = signalSemaphores.size();
+    submitInfo.pSignalSemaphores = signalSemaphores.data();
 
     if (vkQueueSubmit(context.graphicsQueue, 1, &submitInfo, submittedBuffersFinishedFence) != VK_SUCCESS) {
         throw std::runtime_error("failed to submit command buffer!");
@@ -1879,8 +1985,7 @@ Frame::~Frame() {
     cleanup();
 }
 
-
-VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> & descriptorSetLayouts) {
+VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> & descriptorSetLayouts, const std::vector<VkPushConstantRange> & pushConstantRanges) {
     if (descriptorSetLayouts.empty()) {
         throw std::runtime_error("builder reqires at least one pipeline layout to build");
     }
@@ -1889,12 +1994,20 @@ VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> &
     pipelineLayoutCreateInfo.setLayoutCount = descriptorSetLayouts.size();  
     pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
 
+    pipelineLayoutCreateInfo.pushConstantRangeCount = pushConstantRanges.size();
+    pipelineLayoutCreateInfo.pPushConstantRanges = pushConstantRanges.empty() ? 0 : pushConstantRanges.data();
+
     VkPipelineLayout layout;
     if (VK_SUCCESS != vkCreatePipelineLayout($context().device, &pipelineLayoutCreateInfo, nullptr, &layout)) {
         throw std::runtime_error("failed to create pipeline layout");
     }
     $context().pipelineLayouts.emplace(layout);
     return layout;
+}
+
+VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> & descriptorSetLayouts) {
+    static const std::vector<VkPushConstantRange> emptyPushConstantRanges;
+    return createPipelineLayout(descriptorSetLayouts, emptyPushConstantRanges);
 }
 
 GraphicsPipelineBuilder::GraphicsPipelineBuilder(VkPipelineLayout layout) : pipelineLayout(layout), sampleCountBit(VK_SAMPLE_COUNT_1_BIT) {}
@@ -2217,4 +2330,104 @@ CommandBufferRecording::~CommandBufferRecording() {
         std::cout << "failed to record command buffer: " << errorString << std::endl;
         std::terminate(); // this is fatal, we will not throw
     }
+}
+
+BufferBarrier::BufferBarrier(VkCommandBuffer commandBuffer) : commandBuffer(commandBuffer), toIndirect(false) {
+    barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = VK_NULL_HANDLE;
+    barrier.offset = 0;
+    barrier.size = VK_WHOLE_SIZE;
+    srcStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    dstStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+}
+BufferBarrier & BufferBarrier::buffer(VkBuffer buffer) {
+    barrier.buffer = buffer;
+    return *this;
+}
+BufferBarrier & BufferBarrier::fromHost() {
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    this->srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+
+    return *this;
+}
+BufferBarrier & BufferBarrier::toHost() {
+    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    this->dstStage = VK_PIPELINE_STAGE_HOST_BIT;
+    return *this;
+}
+BufferBarrier & BufferBarrier::fromCompute() {
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    srcStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    return *this;
+}
+BufferBarrier & BufferBarrier::toCompute() {
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dstStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    return *this;
+}
+BufferBarrier & BufferBarrier::toFragment() {
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    return *this;
+}
+BufferBarrier & BufferBarrier::indirect() {
+    toIndirect = true;
+    return *this;
+}
+void BufferBarrier::command() {
+    if (toIndirect) {
+        barrier.dstAccessMask |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        dstStage |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+    }
+
+    vkCmdPipelineBarrier(commandBuffer, srcStage, dstStage, 0, 0, nullptr, 1, &barrier, 0, nullptr);
+}
+
+void bufferBarrier(VkCommandBuffer commandBuffer, VkBuffer buffer) {
+    VkBufferMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.buffer = buffer;
+    barrier.offset = 0;
+    barrier.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 1, &barrier, 0, nullptr);
+}
+
+void bufferBarrierComputeToFragment(VkCommandBuffer commandBuffer, VkBuffer buffer) {
+    VkBufferMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.buffer = buffer;
+    barrier.offset = 0;
+    barrier.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 1, &barrier, 0, nullptr);
+}
+void bufferBarrierToHost(VkCommandBuffer commandBuffer, VkBuffer buffer) {
+    VkBufferMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    barrier.buffer = buffer;
+    barrier.offset = 0;
+    barrier.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &barrier, 0, nullptr);
+}
+void bufferBarrierFromHost(VkCommandBuffer commandBuffer, VkBuffer buffer) {
+    VkBufferMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = buffer;
+    barrier.offset = 0;
+    barrier.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 1, &barrier, 0, nullptr);
 }
