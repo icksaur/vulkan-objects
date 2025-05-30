@@ -104,7 +104,7 @@ struct VulkanContextSingleton {
 };
 
 // Declare the global instance as extern
-extern VulkanContextSingleton $context;
+extern VulkanContextSingleton g_context;
 
 VkSampleCountFlagBits getSampleBits(uint sampleCount);
 
@@ -159,21 +159,21 @@ void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDe
 
 void getSwapChainImageHandles(VkDevice device, VkSwapchainKHR chain, std::vector<VkImage>& outImageHandles);
 
-void makeChainImageViews(VkDevice device, VkSwapchainKHR swapChain, VkFormat colorFormat, std::vector<VkImage> & images, std::vector<VkImageView> & imageViews);
+void makeChainImageViews(VkDevice device, VkFormat colorFormat, std::vector<VkImage> & images, std::vector<VkImageView> & imageViews);
 
 VkCommandPool createCommandPool(VkDevice device, uint32_t queueFamilyIndex);
 
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t memoryTypeBits, VkMemoryPropertyFlags properties);
 
-void generateMipmaps(VkDevice device, VkImage image, VkCommandPool commandPool, VkQueue graphicsQueue, int width, int height, size_t mipLevelCount);
+void generateMipmaps(VkImage image, int width, int height, size_t mipLevelCount);
 
-void copyBufferToImage(VkDevice device, VkCommandPool commandPool, VkQueue graphicsQueue, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
+void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
 
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags imageAspects, size_t mipLevelCount);
 
-void transitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue graphicsQueue, VkImage image, VkFormat format, size_t mipLevels, VkImageLayout oldLayout, VkImageLayout newLayout);
+void transitionImageLayout(VkImage image, size_t mipLevels, VkImageLayout oldLayout, VkImageLayout newLayout);
 
-std::tuple<VkImageView, VkImage, VkDeviceMemory> createDepthBuffer(VkPhysicalDevice gpu, VkDevice device, VkCommandPool commandPool, VkQueue graphicsQueue, uint32_t width, uint32_t height);
+std::tuple<VkImageView, VkImage, VkDeviceMemory> createDepthBuffer(VkPhysicalDevice gpu, VkDevice device, uint32_t width, uint32_t height);
 
 VkFence createFence();
 
@@ -214,12 +214,14 @@ struct ImageBuilder {
     VkExtent2D extent; // width and height
     bool isDepthBuffer;
     VkSampleCountFlagBits sampleBits;
+    VkImageUsageFlags usage;
     ImageBuilder();
     ImageBuilder & createMipmaps(bool buildMipmaps);
     ImageBuilder & depth();
     ImageBuilder & fromBytes(void * bytes, int byteCount, int width, int height, VkFormat format);
     ImageBuilder & color();
     ImageBuilder & multisample();
+    ImageBuilder & storage();
 };
 
 struct Image {
@@ -297,9 +299,11 @@ struct CommandBuffer {
 struct DescriptorLayoutBuilder {
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     DescriptorLayoutBuilder();
+    void addBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages, VkDescriptorType type);
     DescriptorLayoutBuilder & addStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
     DescriptorLayoutBuilder & addSampler(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
     DescriptorLayoutBuilder & addUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
+    DescriptorLayoutBuilder & addStorageImage(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
     VkDescriptorSetLayout build();
     void reset();
     void throwIfDuplicate(uint32_t binding);
@@ -320,6 +324,7 @@ struct DescriptorPoolBuilder {
     DescriptorPoolBuilder & addStorageBuffer(uint32_t count);
     DescriptorPoolBuilder & addSampler(uint32_t count);
     DescriptorPoolBuilder & addUniformBuffer(uint32_t count);
+    DescriptorPoolBuilder & addStorageImage(uint32_t count);
     DescriptorPoolBuilder & maxSets(uint32_t count);
 };
 
@@ -341,6 +346,7 @@ struct DescriptorSetBinder {
     void bindUniformBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer);
     void bindStorageBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer);
     void bindStorageBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer, size_t size);
+    void bindStorageImage(VkDescriptorSet descriptorSet, uint32_t bindingIndex, Image & image);
     void updateSets();
 };
 

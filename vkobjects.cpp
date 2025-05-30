@@ -1,4 +1,5 @@
 #include "vkobjects.h"
+#include <vulkan/vulkan_core.h>
 
 // useful defaults
 const char * appName = "VulkanExample";
@@ -45,10 +46,10 @@ VulkanContextOptions & VulkanContextOptions::sampleRateShading(float rate) {
 
 VulkanContext & VulkanContextSingleton::operator()() { return *contextInstance; }
 
-VulkanContextSingleton $context;
+VulkanContextSingleton g_context;
 
 void DestroyGeneration::destroy() {
-    struct VulkanContext & context = $context();
+    struct VulkanContext & context = g_context();
     for (VkDeviceMemory memory : memories) {
         vkFreeMemory(context.device, memory, nullptr);
     }
@@ -95,7 +96,7 @@ VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool) 
     return commandBuffer;
 }
 
-ScopedCommandBuffer::ScopedCommandBuffer() : commandBuffer(createCommandBuffer($context().device, $context().commandPool)) {
+ScopedCommandBuffer::ScopedCommandBuffer() : commandBuffer(createCommandBuffer(g_context().device, g_context().commandPool)) {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -114,7 +115,7 @@ void ScopedCommandBuffer::submit() {
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    if (VK_SUCCESS != vkQueueSubmit($context().graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE)) {
+    if (VK_SUCCESS != vkQueueSubmit(g_context().graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE)) {
         throw std::runtime_error("failed submit queue");
     }
 }
@@ -123,7 +124,7 @@ void ScopedCommandBuffer::submitAndWait() {
     
     // TODO: waiting on the primary graphics queue is not ideal. We can use a parallel queue and sync primitives instead.
     // The primary use of this struct is transitioning images, which would be satisfied with a command buffer supporting only VK_QUEUE_TRANSFER_BIT.
-    if (VK_SUCCESS != vkQueueWaitIdle($context().graphicsQueue)) {
+    if (VK_SUCCESS != vkQueueWaitIdle(g_context().graphicsQueue)) {
         throw std::runtime_error("failed wait for queue to be idle");
     }
 }
@@ -144,7 +145,7 @@ ScopedCommandBuffer::operator VkCommandBuffer() {
     return commandBuffer;
 }
 ScopedCommandBuffer::~ScopedCommandBuffer() {
-    vkFreeCommandBuffers($context().device, $context().commandPool, 1, &commandBuffer);
+    vkFreeCommandBuffers(g_context().device, g_context().commandPool, 1, &commandBuffer);
 }
 
 void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& outExtensions) {
@@ -386,6 +387,9 @@ void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& o
                     case VK_QUEUE_TRANSFER_BIT:
                         std::cout << "transfer ";
                         break;
+                    default:
+                        throw std::runtime_error("unknown queue flag");
+                        break;
                 }
             }
         }
@@ -563,8 +567,10 @@ const char * getPresentationModeString(VkPresentModeKHR mode) {
             return "FIFO RELAXED";
         case VK_PRESENT_MODE_MAILBOX_KHR:
             return "MAILBOX";
+        default:
+            return "OTHER PRESENT MODE";
+
     }
-    return "OTHER ";
 }
 
 bool getPresentationMode(VkSurfaceKHR surface, VkPhysicalDevice device, VkPresentModeKHR& ioMode) {
@@ -787,7 +793,7 @@ void getSwapChainImageHandles(VkDevice device, VkSwapchainKHR chain, std::vector
     }
 }
 
-void makeChainImageViews(VkDevice device, VkSwapchainKHR swapChain, VkFormat colorFormat, std::vector<VkImage> & images, std::vector<VkImageView> & imageViews) {
+void makeChainImageViews(VkDevice device, VkFormat colorFormat, std::vector<VkImage> & images, std::vector<VkImageView> & imageViews) {
     imageViews.resize(images.size());
     for (size_t i=0; i < images.size(); i++) {
         VkImageViewCreateInfo viewInfo = {};
@@ -838,7 +844,7 @@ uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t memoryTypeBits
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
-void generateMipmaps(VkDevice device, VkImage image, VkCommandPool commandPool, VkQueue graphicsQueue, int width, int height, size_t mipLevelCount) {
+void generateMipmaps(VkImage image, int width, int height, size_t mipLevelCount) {
     VkImageMemoryBarrier writeToReadBarrier = {};
     writeToReadBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     writeToReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -936,7 +942,7 @@ void generateMipmaps(VkDevice device, VkImage image, VkCommandPool commandPool, 
     scopedCommandBuffer.submitAndWait();
 }
 
-void copyBufferToImage(VkDevice device, VkCommandPool commandPool, VkQueue graphicsQueue, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
+void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
     ScopedCommandBuffer scopedCommandBuffer;
 
     VkBufferImageCopy region = {};
@@ -981,7 +987,7 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
     return textureImageView;
 }
 
-void transitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue graphicsQueue, VkImage image, VkFormat format, size_t mipLevels, VkImageLayout oldLayout, VkImageLayout newLayout) {
+void transitionImageLayout(VkImage image, size_t mipLevels, VkImageLayout oldLayout, VkImageLayout newLayout) {
     ScopedCommandBuffer scopedCommandBuffer;
 
     VkImageMemoryBarrier barrier = {};
@@ -1044,7 +1050,7 @@ void transitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue g
     scopedCommandBuffer.submitAndWait();
 }
 
-std::tuple<VkImageView, VkImage, VkDeviceMemory> createDepthBuffer(VkPhysicalDevice gpu, VkDevice device, VkCommandPool commandPool, VkQueue graphicsQueue, uint32_t width, uint32_t height) {
+std::tuple<VkImageView, VkImage, VkDeviceMemory> createDepthBuffer(VkPhysicalDevice gpu, VkDevice device, uint32_t width, uint32_t height) {
     VkFormatProperties props;
     vkGetPhysicalDeviceFormatProperties(gpu, depthFormat, &props);
     if (0 == (props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
@@ -1098,7 +1104,7 @@ std::tuple<VkImageView, VkImage, VkDeviceMemory> createDepthBuffer(VkPhysicalDev
     // image view must be after binding image memory.  Moving this above bind will not cause a validation failure, but will fail to await the queue later.
     VkImageView imageView = createImageView(device, image, depthFormat, imageAspects, oneMipLevel);
 
-    transitionImageLayout(device, commandPool, graphicsQueue, image, depthFormat, oneMipLevel, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    transitionImageLayout(image, oneMipLevel, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
     return std::make_tuple(imageView, image, memory);
 }
@@ -1108,10 +1114,10 @@ VkFence createFence() {
     createInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     createInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     VkFence fence;
-    if (VK_SUCCESS != vkCreateFence($context().device, &createInfo, nullptr, &fence)) {
+    if (VK_SUCCESS != vkCreateFence(g_context().device, &createInfo, nullptr, &fence)) {
         throw std::runtime_error("failed to create fence");
     }
-    $context().fences.push_back(fence);
+    g_context().fences.push_back(fence);
     return fence;
 }
 
@@ -1121,18 +1127,18 @@ VkSemaphore createSemaphore() {
 
     VkSemaphore semaphore;
     
-    if (vkCreateSemaphore($context().device, &createInfo, NULL, &semaphore) != VK_SUCCESS) {
+    if (vkCreateSemaphore(g_context().device, &createInfo, NULL, &semaphore) != VK_SUCCESS) {
         throw std::runtime_error("failed to create semaphore");
     }
 
-    $context().semaphores.push_back(semaphore);
+    g_context().semaphores.push_back(semaphore);
 
     return semaphore;
 }
 
 VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions & options)
     : options(options), window(window), frameInFlightIndex(0), currentFrame(nullptr) {
-    if ($context.contextInstance != nullptr) {
+    if (g_context.contextInstance != nullptr) {
         throw std::runtime_error("VulkanContext already exists");
     }
 
@@ -1193,7 +1199,7 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions & options
     // command buffers
     // other dynamic buffers like uniform or shader storage
     this->swapchainImageCount = this->swapchainImages.size();
-    makeChainImageViews(this->device, this->swapchain, this->colorFormat, this->swapchainImages, this->swapchainImageViews);
+    makeChainImageViews(this->device, this->colorFormat, this->swapchainImages, this->swapchainImageViews);
 
     this->commandPool = createCommandPool(this->device, this->graphicsQueueIndex);
 
@@ -1202,11 +1208,11 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions & options
 
     vkGetDeviceQueue(this->device, this->graphicsQueueIndex, 0, &this->graphicsQueue);
 
-    $context.contextInstance = this;
+    g_context.contextInstance = this;
 
     // dynamic rendering swapchain images must be transitioned to VK_IMAGE_LAYOUT_PRESENT_SRC_KHR or VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR
     for (VkImage & image : this->swapchainImages) {
-        transitionImageLayout(this->device, this->commandPool, this->graphicsQueue, image, this->colorFormat, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        transitionImageLayout(image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     }
 
     for (size_t i=0; i<swapchainImageCount; i++) {
@@ -1216,9 +1222,9 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions & options
     }
 
     // function pointers for extensions
-    vkCmdDrawMeshTasks = (PFN_vkCmdDrawMeshTasksEXT)vkGetDeviceProcAddr($context().device, "vkCmdDrawMeshTasksEXT");
-    vkBeginRendering = (PFN_vkCmdBeginRendering)vkGetDeviceProcAddr($context().device, "vkCmdBeginRendering");
-    vkEndRendering = (PFN_vkCmdEndRendering)vkGetDeviceProcAddr($context().device, "vkCmdEndRendering");
+    vkCmdDrawMeshTasks = (PFN_vkCmdDrawMeshTasksEXT)vkGetDeviceProcAddr(g_context().device, "vkCmdDrawMeshTasksEXT");
+    vkBeginRendering = (PFN_vkCmdBeginRendering)vkGetDeviceProcAddr(g_context().device, "vkCmdBeginRendering");
+    vkEndRendering = (PFN_vkCmdEndRendering)vkGetDeviceProcAddr(g_context().device, "vkCmdEndRendering");
 }
 
 void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator) {
@@ -1285,7 +1291,7 @@ VkSampler createSampler(VkDevice device) {
 }
 
 void rebuildPresentationResources() {
-    VulkanContext & context = $context();
+    VulkanContext & context = g_context();
     vkDeviceWaitIdle(context.device);
     for (VkImageView view : context.swapchainImageViews) {
         vkDestroyImageView(context.device, view, nullptr);
@@ -1296,11 +1302,11 @@ void rebuildPresentationResources() {
     createSwapChain(context, context.presentationSurface, context.physicalDevice, context.device, context.swapchain);
     getSwapChainImageHandles(context.device, context.swapchain, context.swapchainImages);
 
-    makeChainImageViews(context.device, context.swapchain, context.colorFormat, context.swapchainImages, context.swapchainImageViews);
+    makeChainImageViews(context.device, context.colorFormat, context.swapchainImages, context.swapchainImageViews);
 
     // dynamic rendering swapchain images must be transitioned to VK_IMAGE_LAYOUT_PRESENT_SRC_KHR or VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR
     for (VkImage & image : context.swapchainImages) {
-        transitionImageLayout(context.device, context.commandPool, context.graphicsQueue, image, context.colorFormat, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        transitionImageLayout(image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     }
 }
 
@@ -1338,7 +1344,7 @@ VulkanContext::~VulkanContext() {
     destroyDebugReportCallbackEXT(instance, callback, nullptr);
     vkDestroyInstance(instance, nullptr);
 
-    $context.contextInstance = nullptr;
+    g_context.contextInstance = nullptr;
 }
 
 ShaderBuilder::ShaderBuilder() : stage(VK_SHADER_STAGE_VERTEX_BIT) {}
@@ -1384,16 +1390,16 @@ ShaderModule::ShaderModule(ShaderBuilder & builder) {
     createInfo.codeSize = builder.code.size();
     createInfo.pCode = (uint32_t*)builder.code.data();
 
-    if (VK_SUCCESS != vkCreateShaderModule($context().device, &createInfo, nullptr, &module)) {
+    if (VK_SUCCESS != vkCreateShaderModule(g_context().device, &createInfo, nullptr, &module)) {
         throw std::runtime_error("failed to create shader module");
     }
 }
 ShaderModule::~ShaderModule() {
-    vkDestroyShaderModule($context().device, module, nullptr);
+    vkDestroyShaderModule(g_context().device, module, nullptr);
 }
 ShaderModule::operator VkShaderModule() const { return module; }
 
-ImageBuilder::ImageBuilder() : buildMipmaps(true), bytes(nullptr), isDepthBuffer(false), sampleBits(VK_SAMPLE_COUNT_1_BIT) {}
+ImageBuilder::ImageBuilder() : buildMipmaps(true), bytes(nullptr), isDepthBuffer(false), sampleBits(VK_SAMPLE_COUNT_1_BIT), usage(0) {}
 ImageBuilder & ImageBuilder::createMipmaps(bool buildMipmaps) {
     this->buildMipmaps = buildMipmaps;
     return *this;
@@ -1402,8 +1408,8 @@ ImageBuilder & ImageBuilder::depth() {
     bytes = nullptr;
     byteCount = 0;
     buildMipmaps = false;
-    extent.width = $context().windowWidth;
-    extent.height = $context().windowHeight;
+    extent.width = g_context().windowWidth;
+    extent.height = g_context().windowHeight;
     this->format = depthFormat;
     isDepthBuffer = true;
     return *this;
@@ -1421,14 +1427,18 @@ ImageBuilder & ImageBuilder::color() {
     bytes = nullptr;
     byteCount = 0;
     buildMipmaps = false;
-    extent.width = $context().windowWidth;
-    extent.height = $context().windowHeight;
-    this->format = $context().colorFormat;
+    extent.width = g_context().windowWidth;
+    extent.height = g_context().windowHeight;
+    this->format = g_context().colorFormat;
     isDepthBuffer = false;
     return *this;
 }
 ImageBuilder & ImageBuilder::multisample() {
-    sampleBits = getSampleBits($context().options.multisampleCount);
+    sampleBits = getSampleBits(g_context().options.multisampleCount);
+    return *this;
+}
+ImageBuilder & ImageBuilder::storage() {
+    usage |= VK_IMAGE_USAGE_STORAGE_BIT;
     return *this;
 }
 
@@ -1467,27 +1477,28 @@ Image::Image(ImageBuilder & builder) {
         if (builder.sampleBits != VK_SAMPLE_COUNT_1_BIT) {
             imageInfo.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; // multisample images are color attachments
         }
+        imageInfo.usage |= builder.usage; // Add any extra usage bits (e.g. STORAGE)
     }
 
     imageInfo.samples = builder.sampleBits;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (vkCreateImage($context().device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
+    if (vkCreateImage(g_context().device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
         throw std::runtime_error("failed to create Vulkan image");
     }
 
     VkMemoryRequirements memoryRequirements = {};
-    vkGetImageMemoryRequirements($context().device, image, &memoryRequirements);
+    vkGetImageMemoryRequirements(g_context().device, image, &memoryRequirements);
 
     VkMemoryAllocateInfo allocateInfo = {};
     allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocateInfo.allocationSize = memoryRequirements.size;
-    allocateInfo.memoryTypeIndex = findMemoryType($context().physicalDevice, memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    allocateInfo.memoryTypeIndex = findMemoryType(g_context().physicalDevice, memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    if (VK_SUCCESS != vkAllocateMemory($context().device, &allocateInfo, nullptr, &memory)) {
+    if (VK_SUCCESS != vkAllocateMemory(g_context().device, &allocateInfo, nullptr, &memory)) {
         throw std::runtime_error("failed to allocate image memory");
     }
-    if (VK_SUCCESS != vkBindImageMemory($context().device, image, memory, 0)) {
+    if (VK_SUCCESS != vkBindImageMemory(g_context().device, image, memory, 0)) {
         throw std::runtime_error("failed to bind memory to image");
     }
 
@@ -1499,27 +1510,27 @@ Image::Image(ImageBuilder & builder) {
     }
 
     // Vulkan spec says images MUST be created either undefined or preinitialized layout, so we can't jump straight to desired layout.
-    transitionImageLayout($context().device, $context().commandPool, $context().graphicsQueue, image, builder.format, 1, VK_IMAGE_LAYOUT_UNDEFINED, desiredLayout);
+    transitionImageLayout(image, 1, VK_IMAGE_LAYOUT_UNDEFINED, desiredLayout);
 
     if (builder.byteCount > 0) { 
         VkBuffer stagingBuffer;
         VkDeviceMemory stagingMemory;
 
         // put the image bytes into a buffer for transitioning
-        std::tie(stagingBuffer, stagingMemory) = createBuffer($context().physicalDevice, $context().device, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, builder.byteCount, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        std::tie(stagingBuffer, stagingMemory) = createBuffer(g_context().physicalDevice, g_context().device, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, builder.byteCount, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         void * stagingBytes;
-        vkMapMemory($context().device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &stagingBytes);
+        vkMapMemory(g_context().device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &stagingBytes);
         memcpy(stagingBytes, builder.bytes, (size_t)builder.byteCount);
-        vkUnmapMemory($context().device, stagingMemory);
+        vkUnmapMemory(g_context().device, stagingMemory);
 
         // Now the image is in DST_OPTIMAL layout and we can copy the image data to it.
-        copyBufferToImage($context().device, $context().commandPool, $context().graphicsQueue, stagingBuffer, image, builder.extent.width, builder.extent.height);
-        vkFreeMemory($context().device, stagingMemory, nullptr);
-        vkDestroyBuffer($context().device, stagingBuffer, nullptr);
+        copyBufferToImage(stagingBuffer, image, builder.extent.width, builder.extent.height);
+        vkFreeMemory(g_context().device, stagingMemory, nullptr);
+        vkDestroyBuffer(g_context().device, stagingBuffer, nullptr);
     }
 
     if (builder.buildMipmaps) {
-        generateMipmaps($context().device, image, $context().commandPool, $context().graphicsQueue, builder.extent.width, builder.extent.height, mipLevels);
+        generateMipmaps(image, builder.extent.width, builder.extent.height, mipLevels);
     } else {
         // todo: transition the single image to the optimal layout for sampling
     }
@@ -1531,19 +1542,19 @@ Image::Image(ImageBuilder & builder) {
         aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
     }
 
-    imageView = createImageView($context().device, image, builder.format, aspectFlags, mipLevels);
+    imageView = createImageView(g_context().device, image, builder.format, aspectFlags, mipLevels);
 }
 Image::~Image() {
     // these are all safe if they are already VK_NULL_HANDLE
-    vkDestroyImageView($context().device, imageView, nullptr);
-    vkFreeMemory($context().device, memory, nullptr);
-    vkDestroyImage($context().device, image, nullptr);
+    vkDestroyImageView(g_context().device, imageView, nullptr);
+    vkFreeMemory(g_context().device, memory, nullptr);
+    vkDestroyImage(g_context().device, image, nullptr);
 }
 
 VkSampler sampler;
-TextureSampler::TextureSampler() : sampler(createSampler($context().device)) {}
+TextureSampler::TextureSampler() : sampler(createSampler(g_context().device)) {}
 TextureSampler::~TextureSampler() {
-    vkDestroySampler($context().device, sampler, nullptr);
+    vkDestroySampler(g_context().device, sampler, nullptr);
 }
 TextureSampler::operator VkSampler() const {
     return sampler;
@@ -1597,7 +1608,7 @@ BufferBuilder & BufferBuilder::size(size_t byteCount) {
 }
 
 Buffer::Buffer(BufferBuilder & builder) : buffer(VK_NULL_HANDLE), memory(VK_NULL_HANDLE), size(builder.byteCount) {
-    std::tie(buffer, memory) = createBuffer($context().physicalDevice, $context().device, builder.usage, builder.byteCount, builder.properties);
+    std::tie(buffer, memory) = createBuffer(g_context().physicalDevice, g_context().device, builder.usage, builder.byteCount, builder.properties);
 }
 Buffer::Buffer(Buffer && other) : buffer(other.buffer), memory(other.memory), size(other.size) {
     other.buffer = VK_NULL_HANDLE;
@@ -1610,9 +1621,9 @@ void Buffer::setData(void * bytes, size_t size) {
     }
 
     void* mapped;
-    vkMapMemory($context().device, memory, 0, size, 0, &mapped);
+    vkMapMemory(g_context().device, memory, 0, size, 0, &mapped);
     memcpy(mapped, bytes, size);
-    vkUnmapMemory($context().device, memory);
+    vkUnmapMemory(g_context().device, memory);
 }
 void Buffer::getData(void * bytes, size_t size) {
     if (size > this->size) {
@@ -1620,12 +1631,12 @@ void Buffer::getData(void * bytes, size_t size) {
     }
 
     void* mapped;
-    vkMapMemory($context().device, memory, 0, size, 0, &mapped);
+    vkMapMemory(g_context().device, memory, 0, size, 0, &mapped);
     memcpy(bytes, mapped, size);
-    vkUnmapMemory($context().device, memory);
+    vkUnmapMemory(g_context().device, memory);
 }
 Buffer::~Buffer() {
-    VulkanContext & context = $context();
+    VulkanContext & context = g_context();
     context.destroyGenerations[context.frameInFlightIndex].memories.push_back(memory);
     context.destroyGenerations[context.frameInFlightIndex].buffers.push_back(buffer);
 }
@@ -1637,15 +1648,15 @@ Buffer::operator VkBuffer*() const {
 }
 
 DynamicBuffer::DynamicBuffer(BufferBuilder & builder):lastWriteIndex(0) {
-    buffers.reserve($context().swapchainImageCount);
-    for (size_t i = 0; i < $context().swapchainImageCount; ++i) {
+    buffers.reserve(g_context().swapchainImageCount);
+    for (size_t i = 0; i < g_context().swapchainImageCount; ++i) {
         buffers.emplace_back(builder);
     }
 }
 void DynamicBuffer::setData(void* data, size_t size) {
     // write to the "oldest" buffer.
     // warning: multiple writes per frame may modify frames in flight
-    ushort nextWriteIndex = (lastWriteIndex + 1) % $context().swapchainImageCount;
+    ushort nextWriteIndex = (lastWriteIndex + 1) % g_context().swapchainImageCount;
     buffers[nextWriteIndex].setData(data, size);
     lastWriteIndex = nextWriteIndex;
 }
@@ -1656,9 +1667,9 @@ DynamicBuffer::operator VkBuffer() const {
     return buffers[lastWriteIndex].buffer;
 }
 
-CommandBuffer::CommandBuffer() : buffer(createCommandBuffer($context().device, $context().commandPool)) {}
+CommandBuffer::CommandBuffer() : buffer(createCommandBuffer(g_context().device, g_context().commandPool)) {}
 CommandBuffer::~CommandBuffer() {
-    VulkanContext & context = $context();
+    VulkanContext & context = g_context();
     context.destroyGenerations[context.frameInFlightIndex].commandBuffers.push_back(buffer);
 }
 void CommandBuffer::reset() {
@@ -1668,33 +1679,28 @@ CommandBuffer::operator VkCommandBuffer() const {
     return buffer;
 }
 
-
 DescriptorLayoutBuilder::DescriptorLayoutBuilder() { }
+void DescriptorLayoutBuilder::addBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages, VkDescriptorType type) {
+  VkDescriptorSetLayoutBinding desc = {};
+  desc.binding = binding,
+  desc.descriptorType = type,
+  desc.descriptorCount = count, desc.stageFlags = stages;
+  bindings.push_back(desc);
+}
 DescriptorLayoutBuilder & DescriptorLayoutBuilder::addStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
-    VkDescriptorSetLayoutBinding desc = {};
-    desc.binding = binding,
-    desc.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-    desc.descriptorCount = count,
-    desc.stageFlags = stages;
-    bindings.push_back(desc);
+    addBuffer(binding, count, stages, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
     return *this;
 }
 DescriptorLayoutBuilder & DescriptorLayoutBuilder::addSampler(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
-    VkDescriptorSetLayoutBinding desc = {};
-    desc.binding = binding,
-    desc.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-    desc.descriptorCount = count,
-    desc.stageFlags = stages;
-    bindings.push_back(desc);
+    addBuffer(binding, count, stages, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
     return *this;
 }
 DescriptorLayoutBuilder & DescriptorLayoutBuilder::addUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
-    VkDescriptorSetLayoutBinding desc = {};
-    desc.binding = binding,
-    desc.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-    desc.descriptorCount = count,
-    desc.stageFlags = stages;
-    bindings.push_back(desc);
+    addBuffer(binding, count, stages, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    return *this;
+}
+DescriptorLayoutBuilder & DescriptorLayoutBuilder::addStorageImage(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
+    addBuffer(binding, count, stages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
     return *this;
 }
 VkDescriptorSetLayout DescriptorLayoutBuilder::build() {
@@ -1704,10 +1710,10 @@ VkDescriptorSetLayout DescriptorLayoutBuilder::build() {
     info.pBindings = bindings.data();
 
     VkDescriptorSetLayout layout;
-    if (vkCreateDescriptorSetLayout($context().device, &info, nullptr, &layout) != VK_SUCCESS) {
+    if (vkCreateDescriptorSetLayout(g_context().device, &info, nullptr, &layout) != VK_SUCCESS) {
         throw std::runtime_error("failed to create descriptor set layout");
     }
-    $context().layouts.emplace(layout);
+    g_context().layouts.emplace(layout);
     return layout;
 }
 void DescriptorLayoutBuilder::throwIfDuplicate(uint32_t binding) {
@@ -1734,6 +1740,10 @@ DescriptorPoolBuilder & DescriptorPoolBuilder::addUniformBuffer(uint32_t count) 
     sizes.push_back({VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count});
     return *this;
 }
+DescriptorPoolBuilder & DescriptorPoolBuilder::addStorageImage(uint32_t count) {
+    sizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, count});
+    return *this;
+}
 DescriptorPoolBuilder & DescriptorPoolBuilder::maxSets(uint32_t count) {
     _maxDescriptorSets = count;
     return *this;
@@ -1749,13 +1759,13 @@ DescriptorPool::DescriptorPool(DescriptorPoolBuilder & builder) {
     descriptorPoolCreateInfo.pPoolSizes = builder.sizes.data();
     descriptorPoolCreateInfo.maxSets = builder._maxDescriptorSets;
 
-    if (VK_SUCCESS != vkCreateDescriptorPool($context().device, &descriptorPoolCreateInfo, nullptr, &pool)) {
+    if (VK_SUCCESS != vkCreateDescriptorPool(g_context().device, &descriptorPoolCreateInfo, nullptr, &pool)) {
         throw std::runtime_error("Failed to create descriptor pool");
     }
 }
 void DescriptorPool::reset() {
     // freeing each descriptor individually requires the pool have the "free" bit. Look online for use cases for individual free.
-    vkResetDescriptorPool($context().device, pool, 0);
+    vkResetDescriptorPool(g_context().device, pool, 0);
 }
 VkDescriptorSet DescriptorPool::allocate(VkDescriptorSetLayout layout) {
     VkDescriptorSetAllocateInfo allocInfo = {};
@@ -1765,14 +1775,14 @@ VkDescriptorSet DescriptorPool::allocate(VkDescriptorSetLayout layout) {
     allocInfo.pSetLayouts = &layout;
 
     VkDescriptorSet descriptorSet;
-    if (VK_SUCCESS != vkAllocateDescriptorSets($context().device, &allocInfo, &descriptorSet)) {
+    if (VK_SUCCESS != vkAllocateDescriptorSets(g_context().device, &allocInfo, &descriptorSet)) {
         throw std::runtime_error("Failed to allocate descriptor set");
     }
     return descriptorSet;
 }
 DescriptorPool::~DescriptorPool() {
     reset();
-    vkDestroyDescriptorPool($context().device, pool, nullptr);
+    vkDestroyDescriptorPool(g_context().device, pool, nullptr);
 }
 
 DescriptorSetBinder::DescriptorSetBinder() {}
@@ -1800,7 +1810,7 @@ void DescriptorSetBinder::bindBuffer(VkDescriptorSet descriptorSet, uint32_t bin
     VkDescriptorBufferInfo bufferInfo = {};
     bufferInfo.buffer = buffer;
     bufferInfo.offset = 0;
-    bufferInfo.range = VK_WHOLE_SIZE;
+    bufferInfo.range = deviceSize;
     bufferInfos.push_back(bufferInfo);
 
     VkWriteDescriptorSet descriptorWrite = {};
@@ -1837,9 +1847,12 @@ void DescriptorSetBinder::updateSets() {
             case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
                 write.pImageInfo = &imageInfos[(size_t)write.pImageInfo];
                 break;
+            default:
+                throw std::runtime_error("unhandled descriptor type in DescriptorSetBinder::updateSets");
+                break;
         }
     }
-    vkUpdateDescriptorSets($context().device, descriptorWriteSets.size(), descriptorWriteSets.data(), 0, nullptr);
+    vkUpdateDescriptorSets(g_context().device, descriptorWriteSets.size(), descriptorWriteSets.data(), 0, nullptr);
     descriptorWriteSets.clear();
     imageInfos.clear();
     bufferInfos.clear();
@@ -1874,7 +1887,7 @@ void advancePostFrame(VulkanContext & context) {
 }
 
 Frame::Frame() :
-    context($context()),
+    context(g_context()),
     preparedOldResources(false),
     cleanedup(false),
     inFlightIndex(context.frameInFlightIndex),
@@ -1970,6 +1983,8 @@ bool Frame::tryPresentQueue() {
         case VK_ERROR_OUT_OF_DATE_KHR:
         case VK_SUBOPTIMAL_KHR:
             return false; // swap chain needs to be recreated
+        default:
+            throw std::runtime_error("failed to present queue" + std::to_string(result));
     }
 
     throw std::runtime_error("failed to present swap chain image");
@@ -1998,10 +2013,10 @@ VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> &
     pipelineLayoutCreateInfo.pPushConstantRanges = pushConstantRanges.empty() ? 0 : pushConstantRanges.data();
 
     VkPipelineLayout layout;
-    if (VK_SUCCESS != vkCreatePipelineLayout($context().device, &pipelineLayoutCreateInfo, nullptr, &layout)) {
+    if (VK_SUCCESS != vkCreatePipelineLayout(g_context().device, &pipelineLayoutCreateInfo, nullptr, &layout)) {
         throw std::runtime_error("failed to create pipeline layout");
     }
-    $context().pipelineLayouts.emplace(layout);
+    g_context().pipelineLayouts.emplace(layout);
     return layout;
 }
 
@@ -2073,7 +2088,7 @@ GraphicsPipelineBuilder & GraphicsPipelineBuilder::vertexFloats(size_t bindingIn
     return *this;
 }
 GraphicsPipelineBuilder & GraphicsPipelineBuilder::sampleCount(size_t sampleCount) {
-    if (sampleCount > $context().maxSamples) {
+    if (sampleCount > g_context().maxSamples) {
         throw std::runtime_error("requested sample count exceeds maximum supported by device");
     } else if (sampleCount == 0) {
         throw std::runtime_error("sample count must be greater than 0");
@@ -2098,14 +2113,14 @@ VkPipeline GraphicsPipelineBuilder::build() {
     VkViewport viewport = {};
     viewport.x = 0.0f;
     viewport.y = 0.0f;
-    viewport.width = $context().windowWidth;
-    viewport.height = $context().windowHeight;
+    viewport.width = g_context().windowWidth;
+    viewport.height = g_context().windowHeight;
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
 
     VkRect2D scissor = {};
     scissor.offset = {0, 0};
-    scissor.extent = VkExtent2D{(unsigned int)$context().windowWidth, (unsigned int)$context().windowHeight};
+    scissor.extent = VkExtent2D{(unsigned int)g_context().windowWidth, (unsigned int)g_context().windowHeight};
 
     VkPipelineViewportStateCreateInfo viewportState = {};
     viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -2139,7 +2154,7 @@ VkPipeline GraphicsPipelineBuilder::build() {
     if (sampleCountBit == VK_SAMPLE_COUNT_1_BIT) {
         multisampling.sampleShadingEnable = VK_FALSE;
     } else {
-        if ($context().options.shaderSampleRateShading > 0.0f) {
+        if (g_context().options.shaderSampleRateShading > 0.0f) {
             multisampling.sampleShadingEnable = VK_TRUE;
             multisampling.minSampleShading = 1.0f;
         }
@@ -2154,7 +2169,7 @@ VkPipeline GraphicsPipelineBuilder::build() {
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
 
-    VkFormat colorFormat = $context().colorFormat;
+    VkFormat colorFormat = g_context().colorFormat;
 
     VkPipelineRenderingCreateInfo renderingInfo = {};
     renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
@@ -2181,11 +2196,11 @@ VkPipeline GraphicsPipelineBuilder::build() {
     pipelineCreateInfo.pNext = &renderingInfo;
 
     VkPipeline pipeline;
-    if (vkCreateGraphicsPipelines($context().device,  VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(g_context().device,  VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create graphics pipeline");
     }
     
-    $context().pipelines.emplace(pipeline);
+    g_context().pipelines.emplace(pipeline);
     return pipeline;
 }
 
@@ -2199,11 +2214,11 @@ VkPipeline createComputePipeline(VkPipelineLayout pipelineLayout, VkShaderModule
     pipelineInfo.layout = pipelineLayout;
 
     VkPipeline computePipeline;
-    if (VK_SUCCESS != vkCreateComputePipelines($context().device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline)) {
+    if (VK_SUCCESS != vkCreateComputePipelines(g_context().device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline)) {
         throw std::runtime_error("failed to create compute pipeline");
     }
 
-    $context().pipelines.emplace(computePipeline);
+    g_context().pipelines.emplace(computePipeline);
     return computePipeline;
 }
 
@@ -2236,7 +2251,7 @@ MultisampleRenderingRecording::MultisampleRenderingRecording(
 
     VkRenderingInfo renderingInfo = {};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.renderArea = { 0, 0, (uint)$context().windowWidth, (uint)$context().windowHeight };
+    renderingInfo.renderArea = { 0, 0, (uint)g_context().windowWidth, (uint)g_context().windowHeight };
     renderingInfo.layerCount = 1;
     renderingInfo.pColorAttachments = &colorAttachment;
     renderingInfo.colorAttachmentCount = 1;
@@ -2254,7 +2269,7 @@ void RenderingRecording::init(std::vector<VkImageView> & colorImages, VkImageVie
     }
     VkRenderingInfo renderingInfo = {};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.renderArea = { 0, 0, (uint)$context().windowWidth, (uint)$context().windowHeight };
+    renderingInfo.renderArea = { 0, 0, (uint)g_context().windowWidth, (uint)g_context().windowHeight };
     renderingInfo.layerCount = 1;
 
     std::vector<VkRenderingAttachmentInfo> colorAttachments;
