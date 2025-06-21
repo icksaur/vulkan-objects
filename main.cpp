@@ -1,6 +1,7 @@
 #include <iostream>
 #include <istream>
 #include <fstream>
+#include <sys/types.h>
 #include <vector>
 #include <set>
 #include <assert.h>
@@ -77,10 +78,14 @@ Image createImageFromTGAFile(const char * filename) {
     // Read more by looking up sRGB to linear Vulkan conversions.
     VkFormat format = (bpp == 32) ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8_SRGB;
 
-    ImageBuilder builder;
-    builder.fromBytes(bytes, byteCount, width, height, format);
+    Buffer stagingBuffer(BufferBuilder(byteCount).transferSource().hostVisible());
+    stagingBuffer.setData(bytes, byteCount);
 
-    Image image(builder);
+    ScopedCommandBuffer commandBuffer;
+
+    Image image(ImageBuilder().fromStagingBuffer(stagingBuffer, width, height, format), commandBuffer);
+    commandBuffer.submitAndWait(); // image is not ready until the command buffer is submitted and completed
+
     free(bytes);
     return image;
 }
@@ -95,13 +100,14 @@ void record(
     VkImageView depthImage,
     VkBuffer vertexBuffer,
     VkPipelineLayout pipelineLayout,
-    VkDescriptorSet descriptorSet
+    VkDescriptorSet descriptorSet,
+    uint32_t dynamicOffset
 ) {
     CommandBufferRecording commandBufferRecording(commandBuffer);
 
     // bind and dispatch compute
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 1, &dynamicOffset);
     vkCmdDispatch(commandBuffer, 1, 1, 1);
 
     // start dynamic rendering to our presentation image and depth buffer
@@ -109,7 +115,7 @@ void record(
 
     // Bind the descriptor which contains the shader uniform buffer
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 1, &dynamicOffset);
 
     vkCmdBindVertexBuffers(commandBuffer, vertexBindingIndex, 1, &vertexBuffer, vertexOffsets);  // bind the vertex buffer
     vkCmdDraw(commandBuffer, 6 * computedQuadCount, 1, 0, 0); // draw the quads
@@ -128,6 +134,7 @@ int main(int argc, char *argv[]) {
 
     // Image and sampler.  The image class encapsulates the image, memory, and imageview.
     Image textureImage = createImageFromTGAFile("vulkan.tga");
+
     TextureSampler textureSampler;
  
     // uniform buffer data for our view projection matrix and z scale in compute
@@ -149,7 +156,13 @@ int main(int argc, char *argv[]) {
     // dynamic buffer means that it has multiple buffers so that we don't modify data being used by the GPU
     // dynamic buffers have as many buffers as swapchain image count
     // we will set the data above in the render loop
-    DynamicBuffer uniformBuffer(BufferBuilder(sizeof(UniformBufferData)).uniform());
+
+    // Dynamic buffers must be aligned to the minimum uniform buffer offset alignment.
+    size_t uniformBufferAlignment = context.limits.minUniformBufferOffsetAlignment;
+    while (uniformBufferAlignment < sizeof(UniformBufferData)) {
+        uniformBufferAlignment += context.limits.minUniformBufferOffsetAlignment; // make sure the alignment is at least as large as the data
+    }   
+    Buffer uniformBuffer(BufferBuilder(g_context().swapchainImageCount * uniformBufferAlignment).uniform());
 
     // buffer for writing in compute and reading in vertex
     // This single buffer strategy is incorrect.  If this program runs slow enough, previous frames may be reading the buffer
@@ -170,7 +183,7 @@ int main(int argc, char *argv[]) {
     // you may prefer to use multiple layouts, one for graphics pipeline and another for compute
     DescriptorLayoutBuilder desriptorLayoutBuilder;
     desriptorLayoutBuilder
-        .addUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_COMPUTE_BIT)
+        .addDynamicUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_COMPUTE_BIT)
         .addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT)
         .addStorageBuffer(2, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayout descriptorSetLayout = desriptorLayoutBuilder.build();
@@ -180,36 +193,24 @@ int main(int argc, char *argv[]) {
     // you might want to have two pools if you have different sizes of descriptor sets
     DescriptorPoolBuilder poolBuilder;
     poolBuilder
-        .addSampler(context.swapchainImageCount)
-        .addStorageBuffer(context.swapchainImageCount)
-        .addUniformBuffer(context.swapchainImageCount)
-        .maxSets(context.swapchainImageCount);
+        .addSampler(1)
+        .addStorageBuffer(1)
+        .addDynamicUniformBuffer(1)
+        .maxSets(1);
     DescriptorPool descriptorPool(poolBuilder);
     
-    // There are multiple uniform buffers in our dynamic buffer.  That means we need multiple descriptor sets
-    // where each one refers to a different buffer in the dynamic buffer.
-    // If we had multiple dynamic buffers there would be a need for a total of swapchainImageCount^dynamicBufferCount descriptor sets.
-    // A general-purpose solution is necessarily complex, and this is a simple solution.
-    std::vector<VkDescriptorSet> descriptorSets(context.swapchainImageCount);
-    DescriptorSetBinder descriptorSetBinder;
-    for (size_t i = 0; i < context.swapchainImageCount; i++) {
-        descriptorSets[i] = descriptorPool.allocate(descriptorSetLayout);
-        descriptorSetBinder.bindUniformBuffer(descriptorSets[i], 0, uniformBuffer.buffers[i]); // bind each buffer in the dynamic buffer
-        descriptorSetBinder.bindSampler(descriptorSets[i], 1, textureSampler, textureImage);
-        descriptorSetBinder.bindStorageBuffer(descriptorSets[i], 2, shaderStorageVertexBuffer);
-    }
-    descriptorSetBinder.updateSets();
-
-    // command buffers are recorded into and submitted to a queue
-    // we have one command buffer for each swapchain image, and cycle through them
-    // they must be reset before rewritten
-    std::vector<CommandBuffer> commandBuffers(context.swapchainImageCount);
+    VkDescriptorSet descriptorSet = descriptorPool.allocate(descriptorSetLayout);
+    DescriptorSetBinder binder(descriptorSet);
+    binder.bindDynamicUniformBuffer(0, uniformBuffer, 0, uniformBufferAlignment); // range is the range of one slice of the dynamic buffer
+    binder.bindSampler(1, textureSampler, textureImage);
+    binder.bindStorageBuffer(2, shaderStorageVertexBuffer);
+    binder.updateSets();
 
     // pipelines
     // Pipelines represent the configurable pipeline stages that define what shaders are used and how their results are combined.
     // Take a look at the build() function to see all the options that are necessary and configurable.
     VkPipelineLayout pipelineLayout = createPipelineLayout({descriptorSetLayout}); // context-owned
-    
+
     // vertex stage pipeline setup
     // You can have multiple vertex bindings for different use cases, and step through per vertex or per instance.
     // We only have one in this example.  See how we use vec3 position and vec2 UV in tri.vert
@@ -226,6 +227,11 @@ int main(int argc, char *argv[]) {
     VkPipeline graphicsPipeline = graphicsPipelineBuilder.build(); // context-owned
 
     VkPipeline computePipeline = createComputePipeline(pipelineLayout, compShaderModule); // context-owned
+
+    // command buffers are recorded into and submitted to a queue
+    // we have one command buffer for each swapchain image, and cycle through them
+    // they must be reset before rewritten
+    std::vector<CommandBuffer> commandBuffers(context.swapchainImageCount);
     
     // index of the swapchain resources to use for the next frame
     uint nextImage = 0;
@@ -234,8 +240,12 @@ int main(int argc, char *argv[]) {
     ImageBuilder depthImagebuilder;
     depthImagebuilder.depth();
     std::vector<Image> depthImages;
-    for (size_t i=0; i<context.swapchainImageCount; ++i) {
-        depthImages.emplace_back(depthImagebuilder);
+    {
+        ScopedCommandBuffer imageBuilderCommandBuffer;
+        for (size_t i=0; i<context.swapchainImageCount; ++i) {
+            depthImages.emplace_back(depthImagebuilder, imageBuilderCommandBuffer);
+        }
+        imageBuilderCommandBuffer.submitAndWait(); // wait for the depth images to be ready
     }
 
     // semaphore signaling when the next image has completed rendering
@@ -244,6 +254,7 @@ int main(int argc, char *argv[]) {
 
     Timer timer;
     bool done = false;
+    uint32_t nextResourceIndex = 0;
     while (!done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -270,7 +281,9 @@ int main(int argc, char *argv[]) {
         float seconds = (float)timer.elapsed()/1000.0f;
         camera.rotate(0.0f, 1.0f, 0.0f, M_PI*seconds/2.0);
         uniformBufferData.viewProjection = camera.getViewProjection();
-        uniformBuffer.setData(&uniformBufferData, sizeof(uniformBufferData));
+
+        // Update the uniform buffer at the offset for the next resource index.
+        uniformBuffer.setData(&uniformBufferData, sizeof(uniformBufferData), nextResourceIndex * uniformBufferAlignment);
     
         // get and reset the oldest command buffer
         CommandBuffer & commandBuffer = commandBuffers[context.frameInFlightIndex];
@@ -286,7 +299,8 @@ int main(int argc, char *argv[]) {
             depthImages[nextImage].imageView,
             shaderStorageVertexBuffer,
             pipelineLayout,
-            descriptorSets[uniformBuffer.lastWriteIndex]); // use the descriptor set associated with the most recent buffer written
+            descriptorSet,
+            nextResourceIndex * uniformBufferAlignment);
             
         // Submit the command buffer to the graphics queue
         frame.submitCommandBuffer(commandBuffer);
@@ -298,14 +312,19 @@ int main(int argc, char *argv[]) {
             // This usually happens after the first frame.
 
             std::cout << "swap chain out of date, trying to remake" << std::endl;
-            rebuildPresentationResources();
+
+            ScopedCommandBuffer rebuildCommandBuffer;
+            rebuildPresentationResources(rebuildCommandBuffer);
             depthImages.clear();
             for (size_t i=0; i<context.swapchainImageCount; ++i) {
-                depthImages.push_back(depthImagebuilder);
+                depthImages.emplace_back(depthImagebuilder, rebuildCommandBuffer);
             }
+
+            rebuildCommandBuffer.submitAndWait();
         }
 
         frame.cleanup(); // automatically called by destructor, but we call it explicitly here for clarity
+        nextResourceIndex = (nextResourceIndex + 1) % context.swapchainImageCount; // rotate the resource index for the next frame
     }
 
     // Wait until GPU is done with all work before cleaning up resources which could be in use.

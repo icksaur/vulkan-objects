@@ -32,11 +32,13 @@ struct VulkanContextOptions {
     bool enableMeshShaders;
     bool enableValidationLayers;
     float shaderSampleRateShading;
+    bool enableThrowOnValidationError;
     VulkanContextOptions();
     VulkanContextOptions & multisample(uint count);
     VulkanContextOptions & meshShaders();
     VulkanContextOptions & validation();
     VulkanContextOptions & sampleRateShading(float rate);
+    VulkanContextOptions & throwOnValidationError();
 };
 
 struct VulkanContext {
@@ -58,6 +60,7 @@ struct VulkanContext {
     VkQueue graphicsQueue;
     uint maxSamples;
     VulkanContextOptions options;
+    VkPhysicalDeviceLimits limits;
 
     // things that will change during the context lifetime
     size_t frameInFlightIndex;
@@ -114,8 +117,9 @@ VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool);
 struct ScopedCommandBuffer {
     VkCommandBuffer commandBuffer;
     ScopedCommandBuffer();
-    void bufferHostBarrier(VkBuffer buffer);
+    ScopedCommandBuffer(VkDevice device, VkCommandPool commandPool);
     void submit();
+    void reset();
     void submitAndWait();
     operator VkCommandBuffer();
     ~ScopedCommandBuffer();
@@ -165,15 +169,13 @@ VkCommandPool createCommandPool(VkDevice device, uint32_t queueFamilyIndex);
 
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t memoryTypeBits, VkMemoryPropertyFlags properties);
 
-void generateMipmaps(VkImage image, int width, int height, size_t mipLevelCount);
+void generateMipmaps(VkCommandBuffer commandBuffer, VkImage image, int width, int height, size_t mipLevelCount);
 
-void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
+void copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
 
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags imageAspects, size_t mipLevelCount);
 
-void transitionImageLayout(VkImage image, size_t mipLevels, VkImageLayout oldLayout, VkImageLayout newLayout);
-
-std::tuple<VkImageView, VkImage, VkDeviceMemory> createDepthBuffer(VkPhysicalDevice gpu, VkDevice device, uint32_t width, uint32_t height);
+void transitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, size_t mipLevels, VkImageLayout oldLayout, VkImageLayout newLayout);
 
 VkFence createFence();
 
@@ -185,7 +187,7 @@ void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT
 
 VkSampler createSampler(VkDevice device);
 
-void rebuildPresentationResources();
+void rebuildPresentationResources(VkCommandBuffer commandBuffer);
 
 struct ShaderBuilder {
     VkShaderStageFlagBits stage;
@@ -204,40 +206,6 @@ struct ShaderModule {
     ShaderModule(ShaderBuilder & builder);
     ~ShaderModule();
     operator VkShaderModule() const;
-};
-
-struct ImageBuilder {
-    bool buildMipmaps;
-    void * bytes;
-    int byteCount;
-    VkFormat format;
-    VkExtent2D extent; // width and height
-    bool isDepthBuffer;
-    VkSampleCountFlagBits sampleBits;
-    VkImageUsageFlags usage;
-    ImageBuilder();
-    ImageBuilder & createMipmaps(bool buildMipmaps);
-    ImageBuilder & depth();
-    ImageBuilder & fromBytes(void * bytes, int byteCount, int width, int height, VkFormat format);
-    ImageBuilder & color();
-    ImageBuilder & multisample();
-    ImageBuilder & storage();
-};
-
-struct Image {
-    VkImage image;
-    VkDeviceMemory memory;
-    VkImageView imageView;
-    Image(Image && other);
-    Image(ImageBuilder & builder);
-    ~Image();
-};
-
-struct TextureSampler {
-    VkSampler sampler;
-    TextureSampler();
-    ~TextureSampler();
-    operator VkSampler() const;
 };
 
 struct BufferBuilder {
@@ -265,12 +233,61 @@ struct Buffer {
     size_t size;
 
     void setData(void * bytes, size_t size);
+    void setData(void * bytes, size_t size, VkDeviceSize offset);
     void getData(void * bytes, size_t size);
     Buffer(BufferBuilder & builder);
     Buffer(Buffer && other);
     ~Buffer();
     operator VkBuffer() const;
     operator VkBuffer*() const;
+};
+
+struct ImageBuilder {
+    bool buildMipmaps;
+    void * bytes;
+    Buffer * stagingBuffer;
+    VkFormat format;
+    VkExtent2D extent; // width and height
+    bool isDepthBuffer;
+    VkSampleCountFlagBits sampleBits;
+    VkImageUsageFlags usage;
+    ImageBuilder();
+    ImageBuilder & createMipmaps(bool buildMipmaps);
+    ImageBuilder & depth();
+    ImageBuilder & fromStagingBuffer(Buffer & stagingBuffer, int width, int height, VkFormat format);
+    ImageBuilder & color();
+    ImageBuilder & multisample();
+    ImageBuilder & storage();
+    ImageBuilder & withFormat(VkFormat format);
+};
+
+struct Image {
+    VkImage image;
+    VkDeviceMemory memory;
+    VkImageView imageView;
+    Image(Image && other);
+    Image(ImageBuilder & builder, VkCommandBuffer commandBuffer);
+    operator VkImage() const;
+    ~Image();
+};
+
+struct ImageTransition {
+    VkImageMemoryBarrier barrier;
+    VkPipelineStageFlags srcStageFlags, dstStageFlags;
+    ImageTransition(VkImage image, size_t mipLevels, VkImageLayout oldLayout, VkImageLayout newLayout);
+    ImageTransition & srcStages(VkPipelineStageFlags stage);
+    ImageTransition & dstStages(VkPipelineStageFlags stage);
+    ImageTransition & srcAccess(VkAccessFlags access);
+    ImageTransition & dstAccess(VkAccessFlags access);
+    ImageTransition & aspectMask(VkImageAspectFlags aspectMask);
+    ImageTransition & record(VkCommandBuffer commandBuffer);
+};
+
+struct TextureSampler {
+    VkSampler sampler;
+    TextureSampler();
+    ~TextureSampler();
+    operator VkSampler() const;
 };
 
 // This class shows an incomplete understanding of Vulkan capabilities.
@@ -296,25 +313,27 @@ struct CommandBuffer {
     operator VkCommandBuffer() const;
 };
 
-struct DescriptorLayoutBuilder {
-    std::vector<VkDescriptorSetLayoutBinding> bindings;
-    DescriptorLayoutBuilder();
-    void addBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages, VkDescriptorType type);
-    DescriptorLayoutBuilder & addStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
-    DescriptorLayoutBuilder & addSampler(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
-    DescriptorLayoutBuilder & addUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
-    DescriptorLayoutBuilder & addStorageImage(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
-    VkDescriptorSetLayout build();
-    void reset();
-    void throwIfDuplicate(uint32_t binding);
-};
-
 struct PushConstantsBuilder {
     std::vector<VkPushConstantRange> ranges;
     VkShaderStageFlags currentBits;
     PushConstantsBuilder();
     PushConstantsBuilder & addRange(size_t offset, size_t size, VkShaderStageFlags stageBits);
     operator std::vector<VkPushConstantRange> & ();
+};
+
+struct DescriptorLayoutBuilder {
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    DescriptorLayoutBuilder();
+    void addDescriptor(uint32_t binding, uint32_t count, VkShaderStageFlags stages, VkDescriptorType type);
+    DescriptorLayoutBuilder & addStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
+    DescriptorLayoutBuilder & addSampler(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
+    DescriptorLayoutBuilder & addUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
+    DescriptorLayoutBuilder & addStorageImage(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
+    DescriptorLayoutBuilder & addDynamicStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
+    DescriptorLayoutBuilder & addDynamicUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
+    VkDescriptorSetLayout build();
+    void reset();
+    void throwIfDuplicate(uint32_t binding);
 };
 
 struct DescriptorPoolBuilder {
@@ -325,6 +344,8 @@ struct DescriptorPoolBuilder {
     DescriptorPoolBuilder & addSampler(uint32_t count);
     DescriptorPoolBuilder & addUniformBuffer(uint32_t count);
     DescriptorPoolBuilder & addStorageImage(uint32_t count);
+    DescriptorPoolBuilder & addDynamicStorageBuffer(uint32_t count);
+    DescriptorPoolBuilder & addDynamicUniformBuffer(uint32_t count);
     DescriptorPoolBuilder & maxSets(uint32_t count);
 };
 
@@ -337,16 +358,19 @@ struct DescriptorPool {
 };
 
 struct DescriptorSetBinder {
+    VkDescriptorSet descriptorSet;
     std::vector<VkWriteDescriptorSet> descriptorWriteSets;
     std::vector<VkDescriptorImageInfo> imageInfos;
     std::vector<VkDescriptorBufferInfo> bufferInfos;
-    DescriptorSetBinder();
-    void bindSampler(VkDescriptorSet descriptorSet, uint32_t bindingIndex, TextureSampler & sampler, Image & image);
-    void bindBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer, VkDescriptorType descriptorType, VkDeviceSize deviceSize = VK_WHOLE_SIZE);
-    void bindUniformBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer);
-    void bindStorageBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer);
-    void bindStorageBuffer(VkDescriptorSet descriptorSet, uint32_t bindingIndex, const Buffer & buffer, size_t size);
-    void bindStorageImage(VkDescriptorSet descriptorSet, uint32_t bindingIndex, Image & image);
+    DescriptorSetBinder(VkDescriptorSet descriptorSet);
+    void bindSampler(uint32_t bindingIndex, TextureSampler & sampler, Image & image);
+    void bindBuffer(uint32_t bindingIndex, const Buffer & buffer, VkDescriptorType descriptorType, VkDeviceSize offset = 0, VkDeviceSize deviceSize = VK_WHOLE_SIZE);
+    void bindUniformBuffer(uint32_t bindingIndex, const Buffer & buffer);
+    void bindStorageBuffer(uint32_t bindingIndex, const Buffer & buffer);
+    void bindStorageBuffer(uint32_t bindingIndex, const Buffer & buffer, size_t size);
+    void bindDynamicStorageBuffer(uint32_t bindingIndex, const Buffer & buffer, size_t offset, VkDeviceSize size);
+    void bindDynamicUniformBuffer(uint32_t bindingIndex, const Buffer & buffer, size_t offset, VkDeviceSize size);
+    void bindStorageImage(uint32_t bindingIndex, Image & image);
     void updateSets();
 };
 
@@ -428,10 +452,6 @@ struct CommandBufferRecording {
     operator VkCommandBuffer();
     ~CommandBufferRecording();
 };
-void bufferBarrier(VkCommandBuffer commandBuffer, VkBuffer buffer);
-void bufferBarrierComputeToFragment(VkCommandBuffer commandBuffer, VkBuffer buffer);
-void bufferBarrierFromHost(VkCommandBuffer commandBuffer, VkBuffer buffer);
-void bufferBarrierToHost(VkCommandBuffer commandBuffer, VkBuffer buffer);
 
 struct BufferBarrier {
     VkBufferMemoryBarrier barrier;
@@ -447,5 +467,21 @@ struct BufferBarrier {
     BufferBarrier & toCompute();
     BufferBarrier & toFragment();
     BufferBarrier & indirect();
+    void command();
+};
+
+struct ImageBarrier {
+    VkImageMemoryBarrier barrier;
+    VkPipelineStageFlags srcStageFlags;
+    VkPipelineStageFlags dstStageFlags;
+    VkCommandBuffer commandBuffer;
+    ImageBarrier(VkCommandBuffer commandBuffer);
+    ImageBarrier & fromLayout(VkImageLayout oldLayout);
+    ImageBarrier & toLayout(VkImageLayout newLayout);
+    ImageBarrier & image(VkImage image, size_t mipLevels);
+    ImageBarrier & srcAccess(VkAccessFlags access);
+    ImageBarrier & dstAccess(VkAccessFlags access);
+    ImageBarrier & srcStage(VkPipelineStageFlags stage);
+    ImageBarrier & dstStage(VkPipelineStageFlags stage);
     void command();
 };
