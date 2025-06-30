@@ -6,7 +6,7 @@ CXX := g++
 CC := gcc
 CXXFLAGS := -Wextra -Wpedantic -flto -std=c++20 -g -I./inc -I./inc/GL -D_GLIBCXX_DEBUG -fno-common
 CFLAGS := -Wall -I./inc -g -I./inc/GL -D_GLIBCXX_DEBUG -fno-common
-LDFLAGS := -flto -lvulkan -lSDL2 -lSDL2main
+LDFLAGS := -flto -lvulkan -lSDL3
 GLSLC := glslc
 
 # Detect source and header files

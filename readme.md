@@ -6,6 +6,6 @@ These objects help me write exploratory rendering programs, but will constrain w
 
 ## Requirements
 
-sdl2
+sdl3
 
 vulkan-tools

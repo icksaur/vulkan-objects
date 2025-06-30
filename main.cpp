@@ -7,8 +7,9 @@
 #include <assert.h>
 #include <memory>
 
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_vulkan.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
+#include <SDL3/SDL_main.h>
 #include "vkobjects.h"
 
 #include "tga.h"
@@ -27,10 +28,10 @@ const size_t vertexBindingIndex = 0;
 struct SDLWindow {
     SDL_Window *window;
     SDLWindow(const char * title, int w, int h) {
-        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
+        if (false == SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
             throw std::runtime_error("Failed to initialize SDL");
         }
-        window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h, SDL_WINDOW_VULKAN);
+        window = SDL_CreateWindow(title, w, h, SDL_WINDOW_VULKAN);
         if (window == nullptr) {
             throw std::runtime_error("Failed to create SDL window");
         }
@@ -258,7 +259,7 @@ int main(int argc, char *argv[]) {
     while (!done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_QUIT) {
+            if (event.type == SDL_EVENT_QUIT) {
                 done = true;
             }
         }

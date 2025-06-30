@@ -1,6 +1,7 @@
 #include "vkobjects.h"
 #include <cstddef>
 #include <vulkan/vulkan_core.h>
+#include <cmath>
 
 // useful defaults
 const char * appName = "VulkanExample";
@@ -152,15 +153,7 @@ void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& 
     // Figure out the amount of extensions vulkan needs to interface with the os windowing system
     // This is necessary because vulkan is a platform agnostic API and needs to know how to interface with the windowing system
     unsigned int extensionCount = 0;
-    if (SDL_TRUE != SDL_Vulkan_GetInstanceExtensions(window, &extensionCount, nullptr)) {
-        throw std::runtime_error("Unable to query the number of Vulkan instance extensions");
-    }
-
-    // Use the amount of extensions queried before to retrieve the names of the extensions
-    std::vector<const char*> windowingExtensionNames(extensionCount);
-    if (SDL_TRUE != SDL_Vulkan_GetInstanceExtensions(window, &extensionCount, windowingExtensionNames.data())) {
-        throw std::runtime_error("Unable to query the number of Vulkan instance extension names");
-    }
+    const char * const * windowingExtensionNames = SDL_Vulkan_GetInstanceExtensions(&extensionCount);
 
     std::cout << "found " << extensionCount << " Vulkan instance extensions:\n";
     for (unsigned int i = 0; i < extensionCount; i++) {
@@ -601,8 +594,8 @@ VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& p
 
 VkSurfaceKHR createSurface(SDL_Window* window, VkInstance instance, VkPhysicalDevice gpu, uint32_t graphicsFamilyQueueIndex) {
     VkSurfaceKHR surface; // SDL_Vulkan_DestroySurface doesn't seem to exist on my system.
-    if (SDL_TRUE != SDL_Vulkan_CreateSurface(window, instance, &surface)) {
-        throw std::runtime_error("Unable to create Vulkan compatible surface using SDL");
+    if (false == SDL_Vulkan_CreateSurface(window, instance, nullptr, &surface)) {
+        throw std::runtime_error("Unable to create Vulkan compatible surface using SDL: " + std::string(SDL_GetError()));
     }
 
     // Make sure the surface is compatible with the queue family and gpu
@@ -689,7 +682,7 @@ VkExtent2D getSwapImageSize(VulkanContext & context, const VkSurfaceCapabilities
     VkExtent2D size = { (uint32_t)context.windowWidth, (uint32_t)context.windowHeight };
 
     // This happens when the window scales based on the size of an image
-    if (capabilities.currentExtent.width == 0xFFFFFFF) {
+    if (capabilities.currentExtent.width == 0xFFFFFFFF) {
         size.width  = clamp(size.width,  capabilities.minImageExtent.width,  capabilities.maxImageExtent.width);
         size.height = clamp(size.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
     } else {
@@ -1534,7 +1527,7 @@ Image::Image(ImageBuilder & builder, VkCommandBuffer commandBuffer) {
     // Calculate mip levels respecting device limits
     size_t mipLevels;
     if (builder.buildMipmaps) {
-        size_t maxMipLevels = std::floor(log2(std::max(builder.extent.width, builder.extent.height))) + 1;
+        size_t maxMipLevels = std::floor(std::log2(std::max(builder.extent.width, builder.extent.height))) + 1;
         mipLevels = std::min(maxMipLevels, static_cast<size_t>(formatProps.maxMipLevels));
     } else {
         mipLevels = 1;
