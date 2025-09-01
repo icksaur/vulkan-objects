@@ -682,7 +682,7 @@ VkExtent2D getSwapImageSize(VulkanContext & context, const VkSurfaceCapabilities
     VkExtent2D size = { (uint32_t)context.windowWidth, (uint32_t)context.windowHeight };
 
     // This happens when the window scales based on the size of an image
-    if (capabilities.currentExtent.width == 0xFFFFFFFF) {
+    if (capabilities.currentExtent.width == UINT32_MAX) {
         size.width  = clamp(size.width,  capabilities.minImageExtent.width,  capabilities.maxImageExtent.width);
         size.height = clamp(size.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
     } else {
@@ -1685,6 +1685,7 @@ BufferBuilder & BufferBuilder::size(size_t byteCount) {
     this->byteCount = byteCount;
     return *this;
 }
+
 Buffer::Buffer(BufferBuilder & builder) : buffer(VK_NULL_HANDLE), memory(VK_NULL_HANDLE), size(builder.byteCount) {
     std::tie(buffer, memory) = createBuffer(g_context().physicalDevice, g_context().device, builder.usage, builder.byteCount, builder.properties);
 }
@@ -1768,7 +1769,7 @@ CommandBuffer::operator VkCommandBuffer() const {
 }
 
 DescriptorLayoutBuilder::DescriptorLayoutBuilder() { }
-void DescriptorLayoutBuilder::addDescriptor(uint32_t binding, uint32_t count, VkShaderStageFlags stages, VkDescriptorType type) {
+void DescriptorLayoutBuilder::addBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages, VkDescriptorType type) {
   VkDescriptorSetLayoutBinding desc = {};
   desc.binding = binding,
   desc.descriptorType = type,
@@ -1776,27 +1777,19 @@ void DescriptorLayoutBuilder::addDescriptor(uint32_t binding, uint32_t count, Vk
   bindings.push_back(desc);
 }
 DescriptorLayoutBuilder & DescriptorLayoutBuilder::addStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
-    addDescriptor(binding, count, stages, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-    return *this;
-}
-DescriptorLayoutBuilder & DescriptorLayoutBuilder::addDynamicStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
-    addDescriptor(binding, count, stages, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC);
+    addBuffer(binding, count, stages, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
     return *this;
 }
 DescriptorLayoutBuilder & DescriptorLayoutBuilder::addSampler(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
-    addDescriptor(binding, count, stages, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    addBuffer(binding, count, stages, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
     return *this;
 }
 DescriptorLayoutBuilder & DescriptorLayoutBuilder::addUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
-    addDescriptor(binding, count, stages, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-    return *this;
-}
-DescriptorLayoutBuilder & DescriptorLayoutBuilder::addDynamicUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
-    addDescriptor(binding, count, stages, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
+    addBuffer(binding, count, stages, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     return *this;
 }
 DescriptorLayoutBuilder & DescriptorLayoutBuilder::addStorageImage(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
-    addDescriptor(binding, count, stages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+    addBuffer(binding, count, stages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
     return *this;
 }
 VkDescriptorSetLayout DescriptorLayoutBuilder::build() {
