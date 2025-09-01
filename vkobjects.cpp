@@ -1769,7 +1769,7 @@ CommandBuffer::operator VkCommandBuffer() const {
 }
 
 DescriptorLayoutBuilder::DescriptorLayoutBuilder() { }
-void DescriptorLayoutBuilder::addBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages, VkDescriptorType type) {
+void DescriptorLayoutBuilder::addDescriptor(uint32_t binding, uint32_t count, VkShaderStageFlags stages, VkDescriptorType type) {
   VkDescriptorSetLayoutBinding desc = {};
   desc.binding = binding,
   desc.descriptorType = type,
@@ -1777,19 +1777,27 @@ void DescriptorLayoutBuilder::addBuffer(uint32_t binding, uint32_t count, VkShad
   bindings.push_back(desc);
 }
 DescriptorLayoutBuilder & DescriptorLayoutBuilder::addStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
-    addBuffer(binding, count, stages, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+    addDescriptor(binding, count, stages, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+    return *this;
+}
+DescriptorLayoutBuilder & DescriptorLayoutBuilder::addDynamicStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
+    addDescriptor(binding, count, stages, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC);
     return *this;
 }
 DescriptorLayoutBuilder & DescriptorLayoutBuilder::addSampler(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
-    addBuffer(binding, count, stages, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    addDescriptor(binding, count, stages, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
     return *this;
 }
 DescriptorLayoutBuilder & DescriptorLayoutBuilder::addUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
-    addBuffer(binding, count, stages, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    addDescriptor(binding, count, stages, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    return *this;
+}
+DescriptorLayoutBuilder & DescriptorLayoutBuilder::addDynamicUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
+    addDescriptor(binding, count, stages, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
     return *this;
 }
 DescriptorLayoutBuilder & DescriptorLayoutBuilder::addStorageImage(uint32_t binding, uint32_t count, VkShaderStageFlags stages) {
-    addBuffer(binding, count, stages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+    addDescriptor(binding, count, stages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
     return *this;
 }
 VkDescriptorSetLayout DescriptorLayoutBuilder::build() {

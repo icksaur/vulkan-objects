@@ -325,7 +325,6 @@ struct DescriptorLayoutBuilder {
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     DescriptorLayoutBuilder();
     void addDescriptor(uint32_t binding, uint32_t count, VkShaderStageFlags stages, VkDescriptorType type);
-    void addBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages, VkDescriptorType type);
     DescriptorLayoutBuilder & addStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
     DescriptorLayoutBuilder & addSampler(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
     DescriptorLayoutBuilder & addUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
