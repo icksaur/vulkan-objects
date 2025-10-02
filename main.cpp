@@ -132,6 +132,7 @@ int main(int argc, char *argv[]) {
     ShaderModule fragShaderModule(ShaderBuilder().fragment().fromFile("tri.frag.spv"));
     ShaderModule vertShaderModule(ShaderBuilder().vertex().fromFile("tri.vert.spv"));
     ShaderModule compShaderModule(ShaderBuilder().compute().fromFile("vertices.comp.spv"));
+    ShaderModule meshShaderModule(ShaderBuilder().mesh().fromFile("quad.mesh.spv"));
 
     // Image and sampler.  The image class encapsulates the image, memory, and imageview.
     Image textureImage = createImageFromTGAFile("vulkan.tga");

@@ -18,7 +18,9 @@ OBJECTS := $(addprefix $(OBJ_DIR)/,$(CPP_SOURCES:.cpp=.o)) $(addprefix $(OBJ_DIR
 VERTEX_SHADERS := $(wildcard *.vert)
 FRAGMENT_SHADERS := $(wildcard *.frag)
 COMPUTE_SHADERS := $(wildcard *.comp)
-SPIRV := $(VERTEX_SHADERS:.vert=.vert.spv) $(FRAGMENT_SHADERS:.frag=.frag.spv) $(COMPUTE_SHADERS:.comp=.comp.spv)
+MESH_SHADERS := $(wildcard *.mesh)
+GLSL_INCLUDES := $(wildcard *.glsl)
+SPIRV := $(VERTEX_SHADERS:.vert=.vert.spv) $(FRAGMENT_SHADERS:.frag=.frag.spv) $(COMPUTE_SHADERS:.comp=.comp.spv) $(MESH_SHADERS:.mesh=.mesh.spv)
 
 # Rules
 .PHONY: all clean
@@ -37,14 +39,17 @@ $(OBJ_DIR)/%.o: %.cpp $(HEADERS)
 $(OBJ_DIR)/%.o: %.c $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-%.vert.spv: %.vert
-	$(GLSLC) $< -o $@
+%.vert.spv: %.vert $(GLSL_INCLUDES)
+	$(GLSLC) $(GLSLCFLAGS) $< -o $@
 
-%.frag.spv: %.frag
-	$(GLSLC) $< -o $@
+%.frag.spv: %.frag $(GLSL_INCLUDES)
+	$(GLSLC) $(GLSLCFLAGS) $< -o $@
 
-%.comp.spv: %.comp
-	$(GLSLC) $< -o $@
+%.comp.spv: %.comp $(GLSL_INCLUDES)
+	$(GLSLC) $(GLSLCFLAGS) $< -o $@
+
+%.mesh.spv: %.mesh $(GLSL_INCLUDES)
+	$(GLSLC) $(GLSLCFLAGS) --target-env=vulkan1.2 -fshader-stage=mesh $< -o $@
 
 clean:
 	rm -rf $(TARGET) $(OBJ_DIR) *.spv

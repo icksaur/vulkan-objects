@@ -26,7 +26,6 @@
             "environment": [],
             "externalConsole": false,
             "logging": {"moduleLoad": false},
-            "preLaunchTask": "build",
         },
     ]
 }
