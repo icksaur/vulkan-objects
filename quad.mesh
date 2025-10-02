@@ -2,7 +2,7 @@
 #extension GL_EXT_mesh_shader : require
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
-layout(triangles, max_vertices = 4, max_primitives = 2) out;
+layout(triangles, max_vertices = 6, max_primitives = 2) out;
 
 layout(location = 1) out vec2 uv[];
 
@@ -11,31 +11,32 @@ layout(std140, binding = 0) uniform matrixBuffer {
     float zScale;
 };
 
+layout(std430, binding = 2) buffer VerticesSSBO {
+    float vertices[];
+};
+
 void main() {
     // Set the number of vertices and primitives to emit
-    SetMeshOutputsEXT(4, 2);
+    // The compute shader generates 6 vertices per quad (two triangles, non-indexed)
+    SetMeshOutputsEXT(6, 2);
     
-    // Define quad vertices (two triangles)
-    // Vertex 0: bottom-left
-    gl_MeshVerticesEXT[0].gl_Position = viewProjection * vec4(-0.5, -0.5, 0.0, 1.0);
-    uv[0] = vec2(0.0, 0.0);
+    // Read vertices from the storage buffer
+    // Each vertex has 5 floats: x, y, z, u, v
+    // Each quad has 6 vertices, so multiply by 6 * 5 = 30 floats per quad
+    uint baseOffset = gl_GlobalInvocationID.x * 6 * 5;
     
-    // Vertex 1: bottom-right
-    gl_MeshVerticesEXT[1].gl_Position = viewProjection * vec4(0.5, -0.5, 0.0, 1.0);
-    uv[1] = vec2(1.0, 0.0);
-    
-    // Vertex 2: top-right
-    gl_MeshVerticesEXT[2].gl_Position = viewProjection * vec4(0.5, 0.5, 0.0, 1.0);
-    uv[2] = vec2(1.0, 1.0);
-    
-    // Vertex 3: top-left
-    gl_MeshVerticesEXT[3].gl_Position = viewProjection * vec4(-0.5, 0.5, 0.0, 1.0);
-    uv[3] = vec2(0.0, 1.0);
+    for (uint i = 0; i < 6; i++) {
+        uint offset = baseOffset + i * 5;
+        vec3 pos = vec3(vertices[offset], vertices[offset + 1], vertices[offset + 2]);
+        gl_MeshVerticesEXT[i].gl_Position = viewProjection * vec4(pos, 1.0);
+        uv[i] = vec2(vertices[offset + 3], vertices[offset + 4]);
+    }
     
     // Define two triangles that make up the quad
-    // Triangle 0: bottom-left, bottom-right, top-right
+    // The compute shader emits vertices in order: 0, 1, 2, 3, 4, 5
+    // First triangle: vertices 0, 1, 2
     gl_PrimitiveTriangleIndicesEXT[0] = uvec3(0, 1, 2);
     
-    // Triangle 1: bottom-left, top-right, top-left
-    gl_PrimitiveTriangleIndicesEXT[1] = uvec3(0, 2, 3);
+    // Second triangle: vertices 3, 4, 5
+    gl_PrimitiveTriangleIndicesEXT[1] = uvec3(3, 4, 5);
 }

@@ -19,11 +19,7 @@
 // Global Settings
 int windowWidth = 1280;
 int windowHeight = 720;
-size_t computedQuadCount = 100;
-
-// You can have multiple vertex bindings in your vertex stage.  
-// A single binding is common.  They are zero-indexed so zero here.
-const size_t vertexBindingIndex = 0; 
+size_t computedQuadCount = 100; 
 
 struct SDLWindow {
     SDL_Window *window;
@@ -91,15 +87,12 @@ Image createImageFromTGAFile(const char * filename) {
     return image;
 }
 
-VkDeviceSize vertexOffsets[] = { 0 };
-
 void record(
     VkPipeline computePipeline,
     VkPipeline graphicsPipeline,
     VkCommandBuffer commandBuffer,
     VkImageView colorImage,
     VkImageView depthImage,
-    VkBuffer vertexBuffer,
     VkPipelineLayout pipelineLayout,
     VkDescriptorSet descriptorSet,
     uint32_t dynamicOffset
@@ -118,19 +111,19 @@ void record(
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 1, &dynamicOffset);
 
-    vkCmdBindVertexBuffers(commandBuffer, vertexBindingIndex, 1, &vertexBuffer, vertexOffsets);  // bind the vertex buffer
-    vkCmdDraw(commandBuffer, 6 * computedQuadCount, 1, 0, 0); // draw the quads
+    // Mesh shaders don't use vertex buffers - they read directly from storage buffers
+    // Draw mesh tasks - one task per quad
+    vkCmdDrawMeshTasks(commandBuffer, computedQuadCount, 1, 1);
 }
 
 int main(int argc, char *argv[]) {
     SDLWindow window("VulkanApp", windowWidth, windowHeight);
 
     // There can only be one context, and creating it is required for other objects to construct.
-    VulkanContext context(window, VulkanContextOptions().validation());
+    VulkanContext context(window, VulkanContextOptions().validation().meshShaders());
 
     // shaders
     ShaderModule fragShaderModule(ShaderBuilder().fragment().fromFile("tri.frag.spv"));
-    ShaderModule vertShaderModule(ShaderBuilder().vertex().fromFile("tri.vert.spv"));
     ShaderModule compShaderModule(ShaderBuilder().compute().fromFile("vertices.comp.spv"));
     ShaderModule meshShaderModule(ShaderBuilder().mesh().fromFile("quad.mesh.spv"));
 
@@ -185,9 +178,9 @@ int main(int argc, char *argv[]) {
     // you may prefer to use multiple layouts, one for graphics pipeline and another for compute
     DescriptorLayoutBuilder desriptorLayoutBuilder;
     desriptorLayoutBuilder
-        .addDynamicUniformBuffer(0, 1, VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_COMPUTE_BIT)
+        .addDynamicUniformBuffer(0, 1, VK_SHADER_STAGE_MESH_BIT_EXT|VK_SHADER_STAGE_COMPUTE_BIT)
         .addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT)
-        .addStorageBuffer(2, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+        .addStorageBuffer(2, 1, VK_SHADER_STAGE_MESH_BIT_EXT|VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayout descriptorSetLayout = desriptorLayoutBuilder.build();
 
     // descriptor pool for allocating descriptor sets
@@ -213,18 +206,13 @@ int main(int argc, char *argv[]) {
     // Take a look at the build() function to see all the options that are necessary and configurable.
     VkPipelineLayout pipelineLayout = createPipelineLayout({descriptorSetLayout}); // context-owned
 
-    // vertex stage pipeline setup
-    // You can have multiple vertex bindings for different use cases, and step through per vertex or per instance.
-    // We only have one in this example.  See how we use vec3 position and vec2 UV in tri.vert
-    // Locations have to be unique across the vertex shader in a pipeline.
-    // Mesh shaders much simpler than this, but for this example we're using the traditional vertex stage.
+    // mesh shader pipeline setup
+    // Mesh shaders are much simpler than vertex shaders - no vertex bindings or attributes needed.
+    // The mesh shader reads directly from the storage buffer and emits vertices.
     GraphicsPipelineBuilder graphicsPipelineBuilder(pipelineLayout);
     graphicsPipelineBuilder
-        .addVertexShader(vertShaderModule)
-        .addFragmentShader(fragShaderModule)
-        .vertexBinding(vertexBindingIndex, sizeof(float)*5) // vec3 location and vec2 UV is 5 floats
-        .vertexFloats(vertexBindingIndex, 0, 3, 0) // location 0: position vec3
-        .vertexFloats(vertexBindingIndex, 1, 2, sizeof(float)*3); // location 1: UV vec2, offset by the previous position vec3
+        .addMeshShader(meshShaderModule)
+        .addFragmentShader(fragShaderModule);
 
     VkPipeline graphicsPipeline = graphicsPipelineBuilder.build(); // context-owned
 
@@ -299,7 +287,6 @@ int main(int argc, char *argv[]) {
             commandBuffer,
             context.swapchainImageViews[nextImage], // use the next swapchain image
             depthImages[nextImage].imageView,
-            shaderStorageVertexBuffer,
             pipelineLayout,
             descriptorSet,
             nextResourceIndex * uniformBufferAlignment);
@@ -311,7 +298,7 @@ int main(int argc, char *argv[]) {
         if (!frame.tryPresentQueue()) {
             // This is a common Vulkan situation handled automatically by OpenGL.
             // We need to remake our swap chain and any images used in presentation, like the depth buffer.
-            // This usually happens after the first frame.
+            // This often happens once after the first frame.
 
             std::cout << "swap chain out of date, trying to remake" << std::endl;
 
