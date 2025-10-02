@@ -159,11 +159,11 @@ int main(int argc, char *argv[]) {
     }   
     Buffer uniformBuffer(BufferBuilder(g_context().swapchainImageCount * uniformBufferAlignment).uniform());
 
-    // buffer for writing in compute and reading in vertex
+    // buffer for writing in compute and reading in mesh shader
     // This single buffer strategy is incorrect.  If this program runs slow enough, previous frames may be reading the buffer
     // while the current frame is writing to it.  Either dispatch the compute first and never write again, or we need multiple buffers.
-    // This buffer is an example to show how we can write to and reuse a buffer.  Typically such a vertex buffer would be static anyhow.
-    Buffer shaderStorageVertexBuffer(BufferBuilder(sizeof(float) * 5 * 6 * computedQuadCount).storage().vertex());
+    // This buffer is an example to show how we can write to and reuse a buffer.
+    Buffer shaderStorageVertexBuffer(BufferBuilder(sizeof(float) * 5 * 6 * computedQuadCount).storage());
 
     // DESCRIPTOR SETS
     // These things are complex.  They describe what resources are bound to shader invocations.

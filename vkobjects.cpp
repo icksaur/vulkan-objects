@@ -1640,10 +1640,6 @@ TextureSampler::operator VkSampler() const {
 }
 
 BufferBuilder::BufferBuilder(size_t byteCount) : usage(0), byteCount(byteCount), properties(0) {}
-BufferBuilder & BufferBuilder::vertex() {
-    usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    return *this;
-}
 BufferBuilder & BufferBuilder::index() {
     usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     return *this;
@@ -2164,15 +2160,6 @@ VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> &
 }
 
 GraphicsPipelineBuilder::GraphicsPipelineBuilder(VkPipelineLayout layout) : pipelineLayout(layout), sampleCountBit(VK_SAMPLE_COUNT_1_BIT) {}
-GraphicsPipelineBuilder & GraphicsPipelineBuilder::addVertexShader(ShaderModule & vertexShaderModule, const char * entryPoint) {
-    VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
-    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vertShaderStageInfo.module = vertexShaderModule.module;
-    vertShaderStageInfo.pName = entryPoint;
-    shaderStages.push_back(vertShaderStageInfo);
-    return *this;
-}
 GraphicsPipelineBuilder & GraphicsPipelineBuilder::addMeshShader(ShaderModule & meshShaderModule, const char * entryPoint) {
     VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
     vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -2191,40 +2178,6 @@ GraphicsPipelineBuilder & GraphicsPipelineBuilder::addFragmentShader(ShaderModul
     shaderStages.push_back(fragShaderStageInfo);
     return *this;
 }
-GraphicsPipelineBuilder & GraphicsPipelineBuilder::vertexBinding(size_t bindingIndex, size_t stride) {
-    VkVertexInputBindingDescription bindingDescription = {};
-    bindingDescription.binding = bindingIndex;
-    bindingDescription.stride = stride;
-    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    bindingDescriptions.push_back(bindingDescription);
-    return *this;
-}
-GraphicsPipelineBuilder & GraphicsPipelineBuilder::instanceVertexBinding(size_t bindingIndex, size_t stride) {
-    VkVertexInputBindingDescription bindingDescription = {};
-    bindingDescription.binding = bindingIndex;
-    bindingDescription.stride = stride;
-    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
-    bindingDescriptions.push_back(bindingDescription);
-    return *this;
-}
-GraphicsPipelineBuilder & GraphicsPipelineBuilder::vertexFloats(size_t bindingIndex, size_t location, size_t floatCount, size_t offset) {
-    VkVertexInputAttributeDescription attributeDescription = {};
-    attributeDescription.binding = bindingIndex;
-    attributeDescription.location = location;
-    attributeDescription.offset = offset;
-    switch(floatCount) {
-        case 3:
-            attributeDescription.format = VK_FORMAT_R32G32B32_SFLOAT;
-            break;
-        case 2:
-            attributeDescription.format = VK_FORMAT_R32G32_SFLOAT;
-            break;
-        default:
-            throw std::invalid_argument("unsupported float count");
-    }
-    vertexAttributeDescriptions.push_back(attributeDescription);
-    return *this;
-}
 GraphicsPipelineBuilder & GraphicsPipelineBuilder::sampleCount(size_t sampleCount) {
     if (sampleCount > g_context().maxSamples) {
         throw std::runtime_error("requested sample count exceeds maximum supported by device");
@@ -2235,18 +2188,7 @@ GraphicsPipelineBuilder & GraphicsPipelineBuilder::sampleCount(size_t sampleCoun
     return *this;
 }
 VkPipeline GraphicsPipelineBuilder::build() {
-    // Pipeline vertex input state
-    VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
-    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount = bindingDescriptions.size();
-    vertexInputInfo.pVertexBindingDescriptions = bindingDescriptions.data();
-    vertexInputInfo.vertexAttributeDescriptionCount = vertexAttributeDescriptions.size();
-    vertexInputInfo.pVertexAttributeDescriptions = vertexAttributeDescriptions.data();
-
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
-    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    inputAssembly.primitiveRestartEnable = VK_FALSE;
+    // Mesh shaders don't use vertex input state or input assembly state
 
     VkViewport viewport = {};
     viewport.x = 0.0f;
@@ -2320,8 +2262,8 @@ VkPipeline GraphicsPipelineBuilder::build() {
     pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipelineCreateInfo.stageCount = shaderStages.size();
     pipelineCreateInfo.pStages = shaderStages.data();
-    pipelineCreateInfo.pVertexInputState = &vertexInputInfo;
-    pipelineCreateInfo.pInputAssemblyState = &inputAssembly;
+    pipelineCreateInfo.pVertexInputState = nullptr;  // Mesh shaders don't use vertex input
+    pipelineCreateInfo.pInputAssemblyState = nullptr;  // Mesh shaders don't use input assembly
     pipelineCreateInfo.pViewportState = &viewportState;
     pipelineCreateInfo.pRasterizationState = &rasterizer;
     pipelineCreateInfo.pMultisampleState = &multisampling;

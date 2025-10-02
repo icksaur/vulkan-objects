@@ -214,7 +214,6 @@ struct BufferBuilder {
     size_t byteCount;
 
     BufferBuilder(size_t byteCount);
-    BufferBuilder & vertex();
     BufferBuilder & index();
     BufferBuilder & uniform();
     BufferBuilder & storage();
@@ -409,17 +408,11 @@ VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> &
 
 struct GraphicsPipelineBuilder {
     VkPipelineLayout pipelineLayout;
-    std::vector<VkVertexInputBindingDescription> bindingDescriptions;
-    std::vector<VkVertexInputAttributeDescription> vertexAttributeDescriptions;
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
     VkSampleCountFlagBits sampleCountBit;
     GraphicsPipelineBuilder(VkPipelineLayout layout);
-    GraphicsPipelineBuilder & addVertexShader(ShaderModule & vertexShaderModule, const char * entryPoint = "main");
     GraphicsPipelineBuilder & addMeshShader(ShaderModule & meshShaderModule, const char * entryPoint = "main");
     GraphicsPipelineBuilder & addFragmentShader(ShaderModule & fragmentShaderModule, const char *entryPoint = "main");
-    GraphicsPipelineBuilder & vertexBinding(size_t bindingIndex, size_t stride);
-    GraphicsPipelineBuilder & instanceVertexBinding(size_t bindingIndex, size_t stride);
-    GraphicsPipelineBuilder & vertexFloats(size_t bindingIndex, size_t location, size_t floatCount, size_t offset);
     GraphicsPipelineBuilder & sampleCount(size_t sampleCount);
     VkPipeline build();
 };
