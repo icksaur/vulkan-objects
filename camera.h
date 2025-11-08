@@ -22,7 +22,7 @@ class Camera {
 
 public:
     Camera();
-    Camera& perspective(float angleViewPiRadians, int xrez, int yrez, float zNear, float zFar);\
+    Camera& perspective(float angleViewPiRadians, int xrez, int yrez, float zNear, float zFar);
     Camera& orthographic(float halfWidth, float halfHeight, float zNear, float zFar);
 
     Camera& rotate(float x, float y, float z, float angleRadians);

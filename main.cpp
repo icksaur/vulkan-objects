@@ -111,7 +111,6 @@ void record(
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 1, &dynamicOffset);
 
-    // Mesh shaders don't use vertex buffers - they read directly from storage buffers
     // Draw mesh tasks - one task per quad
     vkCmdDrawMeshTasks(commandBuffer, computedQuadCount, 1, 1);
 }

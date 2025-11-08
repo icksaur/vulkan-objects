@@ -109,86 +109,6 @@ struct VulkanContextSingleton {
 // Declare the global instance as extern
 extern VulkanContextSingleton g_context;
 
-VkSampleCountFlagBits getSampleBits(uint sampleCount);
-
-VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool);
-
-// a helper to start and end a command buffer which can be submitted and waited
-struct ScopedCommandBuffer {
-    VkCommandBuffer commandBuffer;
-    ScopedCommandBuffer();
-    ScopedCommandBuffer(VkDevice device, VkCommandPool commandPool);
-    void submit();
-    void reset();
-    void submitAndWait();
-    operator VkCommandBuffer();
-    ~ScopedCommandBuffer();
-};
-
-void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& outExtensions);
-
-void getAvailableVulkanLayers(std::vector<std::string>& outLayers);
-
-const std::set<std::string>& getRequestedLayerNames(VulkanContextOptions & options);
-
-void createVulkanInstance(const std::vector<std::string>& layerNameStrings, const std::vector<std::string>& extensionNameStrings, VkInstance& outInstance);
-
-bool setupDebugCallback(VkInstance instance, VkDebugReportCallbackEXT& callback);
-
-VkSampleCountFlagBits getMaximumSampleSize(VkSampleCountFlags sampleCountBits, uint & count);
-
-void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& outQueueFamilyIndex, uint & maxSampleCount);
-
-VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& physicalDevice, unsigned int queueFamilyIndex, const std::vector<std::string>& layerNameStrings);
-
-VkSurfaceKHR createSurface(SDL_Window* window, VkInstance instance, VkPhysicalDevice gpu, uint32_t graphicsFamilyQueueIndex);
-
-const char * getPresentationModeString(VkPresentModeKHR mode);
-
-bool getPresentationMode(VkSurfaceKHR surface, VkPhysicalDevice device, VkPresentModeKHR& ioMode);
-
-VkQueue getPresentationQueue(VkPhysicalDevice gpu, VkDevice logicalDevice, uint graphicsQueueIndex, VkSurfaceKHR presentation_surface);
-
-unsigned int getNumberOfSwapImages(const VkSurfaceCapabilitiesKHR& capabilities);
-
-VkExtent2D getSwapImageSize(VulkanContext & context, const VkSurfaceCapabilitiesKHR& capabilities);
-
-bool getImageUsage(const VkSurfaceCapabilitiesKHR& capabilities, VkImageUsageFlags& foundUsages);
-
-VkSurfaceTransformFlagBitsKHR getSurfaceTransform(const VkSurfaceCapabilitiesKHR& capabilities);
-
-bool getSurfaceFormat(VkPhysicalDevice device, VkSurfaceKHR surface, VkSurfaceFormatKHR& outFormat);
-
-void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, VkDevice device, VkSwapchainKHR& outSwapChain);
-
-void getSwapChainImageHandles(VkDevice device, VkSwapchainKHR chain, std::vector<VkImage>& outImageHandles);
-
-void makeChainImageViews(VkDevice device, VkFormat colorFormat, std::vector<VkImage> & images, std::vector<VkImageView> & imageViews);
-
-VkCommandPool createCommandPool(VkDevice device, uint32_t queueFamilyIndex);
-
-uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t memoryTypeBits, VkMemoryPropertyFlags properties);
-
-void generateMipmaps(VkCommandBuffer commandBuffer, VkImage image, int width, int height, size_t mipLevelCount);
-
-void copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
-
-VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags imageAspects, size_t mipLevelCount);
-
-void transitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, size_t mipLevels, VkImageLayout oldLayout, VkImageLayout newLayout);
-
-VkFence createFence();
-
-VkSemaphore createSemaphore();
-
-std::tuple<VkBuffer, VkDeviceMemory> createBuffer(VkPhysicalDevice gpu, VkDevice device, VkBufferUsageFlags usageFlags, size_t byteCount);
-
-void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator);
-
-VkSampler createSampler(VkDevice device);
-
-void rebuildPresentationResources(VkCommandBuffer commandBuffer);
-
 struct ShaderBuilder {
     VkShaderStageFlagBits stage;
     std::vector<char> code;
@@ -478,3 +398,83 @@ struct ImageBarrier {
     ImageBarrier & dstStage(VkPipelineStageFlags stage);
     void command();
 };
+
+// a helper to start and end a command buffer which can be submitted and waited
+struct ScopedCommandBuffer {
+    VkCommandBuffer commandBuffer;
+    ScopedCommandBuffer();
+    ScopedCommandBuffer(VkDevice device, VkCommandPool commandPool);
+    void submit();
+    void reset();
+    void submitAndWait();
+    operator VkCommandBuffer();
+    ~ScopedCommandBuffer();
+};
+
+VkSampleCountFlagBits getSampleBits(uint sampleCount);
+
+VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool);
+
+void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& outExtensions);
+
+void getAvailableVulkanLayers(std::vector<std::string>& outLayers);
+
+const std::set<std::string>& getRequestedLayerNames(VulkanContextOptions & options);
+
+void createVulkanInstance(const std::vector<std::string>& layerNameStrings, const std::vector<std::string>& extensionNameStrings, VkInstance& outInstance);
+
+bool setupDebugCallback(VkInstance instance, VkDebugReportCallbackEXT& callback);
+
+VkSampleCountFlagBits getMaximumSampleSize(VkSampleCountFlags sampleCountBits, uint & count);
+
+void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& outQueueFamilyIndex, uint & maxSampleCount);
+
+VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& physicalDevice, unsigned int queueFamilyIndex, const std::vector<std::string>& layerNameStrings);
+
+VkSurfaceKHR createSurface(SDL_Window* window, VkInstance instance, VkPhysicalDevice gpu, uint32_t graphicsFamilyQueueIndex);
+
+const char * getPresentationModeString(VkPresentModeKHR mode);
+
+bool getPresentationMode(VkSurfaceKHR surface, VkPhysicalDevice device, VkPresentModeKHR& ioMode);
+
+VkQueue getPresentationQueue(VkPhysicalDevice gpu, VkDevice logicalDevice, uint graphicsQueueIndex, VkSurfaceKHR presentation_surface);
+
+unsigned int getNumberOfSwapImages(const VkSurfaceCapabilitiesKHR& capabilities);
+
+VkExtent2D getSwapImageSize(VulkanContext & context, const VkSurfaceCapabilitiesKHR& capabilities);
+
+bool getImageUsage(const VkSurfaceCapabilitiesKHR& capabilities, VkImageUsageFlags& foundUsages);
+
+VkSurfaceTransformFlagBitsKHR getSurfaceTransform(const VkSurfaceCapabilitiesKHR& capabilities);
+
+bool getSurfaceFormat(VkPhysicalDevice device, VkSurfaceKHR surface, VkSurfaceFormatKHR& outFormat);
+
+void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, VkDevice device, VkSwapchainKHR& outSwapChain);
+
+void getSwapChainImageHandles(VkDevice device, VkSwapchainKHR chain, std::vector<VkImage>& outImageHandles);
+
+void makeChainImageViews(VkDevice device, VkFormat colorFormat, std::vector<VkImage> & images, std::vector<VkImageView> & imageViews);
+
+VkCommandPool createCommandPool(VkDevice device, uint32_t queueFamilyIndex);
+
+uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t memoryTypeBits, VkMemoryPropertyFlags properties);
+
+void generateMipmaps(VkCommandBuffer commandBuffer, VkImage image, int width, int height, size_t mipLevelCount);
+
+void copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
+
+VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags imageAspects, size_t mipLevelCount);
+
+void transitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, size_t mipLevels, VkImageLayout oldLayout, VkImageLayout newLayout);
+
+VkFence createFence();
+
+VkSemaphore createSemaphore();
+
+std::tuple<VkBuffer, VkDeviceMemory> createBuffer(VkPhysicalDevice gpu, VkDevice device, VkBufferUsageFlags usageFlags, size_t byteCount);
+
+void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator);
+
+VkSampler createSampler(VkDevice device);
+
+void rebuildPresentationResources(VkCommandBuffer commandBuffer);
