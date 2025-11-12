@@ -11,6 +11,7 @@
 #include <SDL3/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
+#include <cstdint>
 
 // A set of resources scheduled for destruction.
 struct DestroyGeneration {
@@ -28,13 +29,13 @@ extern PFN_vkCmdEndRendering vkEndRendering;
 
 struct VulkanContextOptions {
     bool enableMultisampling;
-    uint multisampleCount;
+    uint32_t multisampleCount;
     bool enableMeshShaders;
     bool enableValidationLayers;
     float shaderSampleRateShading;
     bool enableThrowOnValidationError;
     VulkanContextOptions();
-    VulkanContextOptions & multisample(uint count);
+    VulkanContextOptions & multisample(uint32_t count);
     VulkanContextOptions & meshShaders();
     VulkanContextOptions & validation();
     VulkanContextOptions & sampleRateShading(float rate);
@@ -58,7 +59,7 @@ struct VulkanContext {
     size_t swapchainImageCount;
     VkCommandPool commandPool;
     VkQueue graphicsQueue;
-    uint maxSamples;
+    uint32_t maxSamples;
     VulkanContextOptions options;
     VkPhysicalDeviceLimits limits;
 
@@ -111,14 +112,14 @@ extern VulkanContextSingleton g_context;
 
 struct ShaderBuilder {
     VkShaderStageFlagBits stage;
-    std::vector<char> code;
+    std::vector<uint8_t> code;
     ShaderBuilder();
     ShaderBuilder& vertex();
     ShaderBuilder& fragment();
     ShaderBuilder& compute();
     ShaderBuilder& mesh();
     ShaderBuilder& fromFile(const char * fileName);
-    ShaderBuilder& fromBuffer(const char * data, size_t size);
+    ShaderBuilder& fromBuffer(const uint8_t * data, size_t size);
 };
 
 struct ShaderModule {
@@ -217,7 +218,7 @@ struct TextureSampler {
 // bound by each descriptor set in the binding command.
 struct DynamicBuffer {
     std::vector<Buffer> buffers;
-    ushort lastWriteIndex;
+    uint16_t lastWriteIndex;
     DynamicBuffer(BufferBuilder & builder);
     void setData(void* data, size_t size);
     operator const Buffer&() const;
@@ -411,7 +412,7 @@ struct ScopedCommandBuffer {
     ~ScopedCommandBuffer();
 };
 
-VkSampleCountFlagBits getSampleBits(uint sampleCount);
+VkSampleCountFlagBits getSampleBits(uint32_t sampleCount);
 
 VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool);
 
@@ -425,9 +426,9 @@ void createVulkanInstance(const std::vector<std::string>& layerNameStrings, cons
 
 bool setupDebugCallback(VkInstance instance, VkDebugReportCallbackEXT& callback);
 
-VkSampleCountFlagBits getMaximumSampleSize(VkSampleCountFlags sampleCountBits, uint & count);
+VkSampleCountFlagBits getMaximumSampleSize(VkSampleCountFlags sampleCountBits, uint32_t & count);
 
-void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& outQueueFamilyIndex, uint & maxSampleCount);
+void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& outQueueFamilyIndex, uint32_t & maxSampleCount);
 
 VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& physicalDevice, unsigned int queueFamilyIndex, const std::vector<std::string>& layerNameStrings);
 
@@ -437,7 +438,7 @@ const char * getPresentationModeString(VkPresentModeKHR mode);
 
 bool getPresentationMode(VkSurfaceKHR surface, VkPhysicalDevice device, VkPresentModeKHR& ioMode);
 
-VkQueue getPresentationQueue(VkPhysicalDevice gpu, VkDevice logicalDevice, uint graphicsQueueIndex, VkSurfaceKHR presentation_surface);
+VkQueue getPresentationQueue(VkPhysicalDevice gpu, VkDevice logicalDevice, uint32_t graphicsQueueIndex, VkSurfaceKHR presentation_surface);
 
 unsigned int getNumberOfSwapImages(const VkSurfaceCapabilitiesKHR& capabilities);
 

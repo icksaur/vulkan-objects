@@ -13,7 +13,7 @@ VkImageUsageFlags desiredImageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 VkSurfaceTransformFlagBitsKHR desiredTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 VkFormat surfaceFormat = VK_FORMAT_B8G8R8A8_SRGB;
 VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-VkFormat depthFormat = VK_FORMAT_D24_UNORM_S8_UINT; // some options are VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT
+VkFormat depthFormat = VK_FORMAT_D32_SFLOAT_S8_UINT; // some options are VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT
 
 PFN_vkCmdDrawMeshTasksEXT vkCmdDrawMeshTasks;
 PFN_vkCmdBeginRendering vkBeginRendering;
@@ -25,7 +25,7 @@ VulkanContextOptions::VulkanContextOptions() :
     enableMeshShaders(false),
     enableValidationLayers(false),
     shaderSampleRateShading(0.0f) {}
-VulkanContextOptions & VulkanContextOptions::multisample(uint count) {
+VulkanContextOptions & VulkanContextOptions::multisample(uint32_t count) {
     multisampleCount = count;
     enableMultisampling = count > 1;
     return *this;
@@ -73,7 +73,7 @@ DestroyGeneration::~DestroyGeneration() {
     destroy();
 }
 
-VkSampleCountFlagBits getSampleBits(uint sampleCount) {
+VkSampleCountFlagBits getSampleBits(uint32_t sampleCount) {
     switch (sampleCount) {
         case 1: return VK_SAMPLE_COUNT_1_BIT;
         case 2: return VK_SAMPLE_COUNT_2_BIT;
@@ -152,11 +152,11 @@ ScopedCommandBuffer::~ScopedCommandBuffer() {
 void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& outExtensions) {
     // Figure out the amount of extensions vulkan needs to interface with the os windowing system
     // This is necessary because vulkan is a platform agnostic API and needs to know how to interface with the windowing system
-    unsigned int extensionCount = 0;
+    uint32_t extensionCount = 0;
     const char * const * windowingExtensionNames = SDL_Vulkan_GetInstanceExtensions(&extensionCount);
 
     std::cout << "found " << extensionCount << " Vulkan instance extensions:\n";
-    for (unsigned int i = 0; i < extensionCount; i++) {
+    for (uint32_t i = 0; i < extensionCount; i++) {
         outExtensions.emplace_back(windowingExtensionNames[i]);
         std::cout << i << ": " << windowingExtensionNames[i] << std::endl;
     }
@@ -173,7 +173,7 @@ void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& 
     }
 
     std::cout << "found " << extensionCount << " instance extensions:\n";
-    for (unsigned int i = 0; i < extensionCount; i++) {
+    for (uint32_t i = 0; i < extensionCount; i++) {
         std::cout << i << ": " << instanceExtensionNames[i].extensionName << std::endl;
     }
 
@@ -188,7 +188,7 @@ void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& 
 void getAvailableVulkanLayers(std::vector<std::string>& outLayers) {
     // Figure out the amount of available layers
     // Layers are used for debugging / validation etc / profiling..
-    unsigned int instanceLayerCount = 0;
+    uint32_t instanceLayerCount = 0;
     if (VK_SUCCESS != vkEnumerateInstanceLayerProperties(&instanceLayerCount, NULL)) {
         throw std::runtime_error("unable to query vulkan instance layer property count");
     }
@@ -233,7 +233,7 @@ void createVulkanInstance(const std::vector<std::string>& layerNameStrings, cons
         extensionNames.emplace_back(ext.c_str());
 
     // Get the suppoerted vulkan instance version
-    unsigned int api_version;
+    uint32_t api_version;
     vkEnumerateInstanceVersion(&api_version);
 
     // initialize the VkApplicationInfo structure
@@ -349,7 +349,7 @@ bool setupDebugCallback(VkInstance instance, VkDebugReportCallbackEXT& callback)
     return true;
 }
 
-VkSampleCountFlagBits getMaximumSampleSize(VkSampleCountFlags sampleCountBits, uint & count) {
+VkSampleCountFlagBits getMaximumSampleSize(VkSampleCountFlags sampleCountBits, uint32_t & count) {
     if (sampleCountBits & VK_SAMPLE_COUNT_64_BIT) { count = 64; return VK_SAMPLE_COUNT_64_BIT; }
     if (sampleCountBits & VK_SAMPLE_COUNT_32_BIT) { count = 32; return VK_SAMPLE_COUNT_32_BIT; }
     if (sampleCountBits & VK_SAMPLE_COUNT_16_BIT) { count = 16; return VK_SAMPLE_COUNT_16_BIT; }
@@ -360,9 +360,9 @@ VkSampleCountFlagBits getMaximumSampleSize(VkSampleCountFlags sampleCountBits, u
     return VK_SAMPLE_COUNT_1_BIT;
 }
 
-void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& outQueueFamilyIndex, uint & maxSampleCount, VkPhysicalDeviceLimits & limits) {
+void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, uint32_t & outQueueFamilyIndex, uint32_t & maxSampleCount, VkPhysicalDeviceLimits & limits) {
     // Get number of available physical devices, needs to be at least 1
-    unsigned int physicalDeviceCount = 0;
+    uint32_t physicalDeviceCount = 0;
     vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, nullptr);
     if (physicalDeviceCount == 0) {
         throw std::runtime_error("No physical devices found");
@@ -383,7 +383,7 @@ void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& o
     }
 
     // Select one if more than 1 is available
-    unsigned int selectionId = 0;
+    uint32_t selectionId = 0;
 
     if (physicalDeviceCount > 1)  {
         while (true) {
@@ -413,7 +413,7 @@ void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& o
     std::cout << "min storage buffer offset alignment: " << limits.minStorageBufferOffsetAlignment << std::endl;
 
     // Find the number queues this device supports, we want to make sure that we have a queue that supports graphics commands
-    unsigned int familyQueueCount = 0;
+    uint32_t familyQueueCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(selectedDevice, &familyQueueCount, nullptr);
     if (familyQueueCount == 0) {
         throw std::runtime_error("device has no family of queues associated with it");
@@ -450,7 +450,7 @@ void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& o
 
     // Make sure the family of commands contains an option to issue graphical commands.
     int queueNodeIndex = -1;
-    for (unsigned int i = 0; i < familyQueueCount; i++) {
+    for (uint32_t i = 0; i < familyQueueCount; i++) {
         if (queueProperties[i].queueCount > 0
         && (queueProperties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
         && (queueProperties[i].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
@@ -470,7 +470,7 @@ void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& o
     outQueueFamilyIndex = queueNodeIndex;
 }
 
-VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& physicalDevice, unsigned int queueFamilyIndex, const std::vector<std::string>& layerNameStrings) {
+VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& physicalDevice, uint32_t queueFamilyIndex, const std::vector<std::string>& layerNameStrings) {
     // Copy layer names
     std::vector<const char*> layerNames;
     for (const auto& layer : layerNameStrings) {
@@ -608,7 +608,7 @@ VkSurfaceKHR createSurface(SDL_Window* window, VkInstance instance, VkPhysicalDe
     return surface;
 }
 
-VkQueue getPresentationQueue(VkPhysicalDevice gpu, VkDevice logicalDevice, uint graphicsQueueIndex, VkSurfaceKHR presentation_surface) {
+VkQueue getPresentationQueue(VkPhysicalDevice gpu, VkDevice logicalDevice, uint32_t graphicsQueueIndex, VkSurfaceKHR presentation_surface) {
     VkBool32 presentSupport = false;
     vkGetPhysicalDeviceSurfaceSupportKHR(gpu, graphicsQueueIndex, presentation_surface, &presentSupport);
     if (VK_FALSE == presentSupport) {
@@ -667,8 +667,8 @@ bool getPresentationMode(VkSurfaceKHR surface, VkPhysicalDevice device, VkPresen
     return true;
 }
 
-unsigned int getNumberOfSwapImages(const VkSurfaceCapabilitiesKHR& capabilities) {
-    unsigned int number = capabilities.minImageCount + 1;
+uint32_t getNumberOfSwapImages(const VkSurfaceCapabilitiesKHR& capabilities) {
+    uint32_t number = capabilities.minImageCount + 1;
     return number > capabilities.maxImageCount ? capabilities.minImageCount : number;
 }
 
@@ -719,7 +719,7 @@ VkSurfaceTransformFlagBitsKHR getSurfaceTransform(const VkSurfaceCapabilitiesKHR
 }
 
 bool getSurfaceFormat(VkPhysicalDevice device, VkSurfaceKHR surface, VkSurfaceFormatKHR& outFormat) {
-    unsigned int count(0);
+    uint32_t count(0);
     if (vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &count, nullptr) != VK_SUCCESS) {
         std::cout << "unable to query number of supported surface formats";
         return false;
@@ -781,7 +781,7 @@ void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDe
     }
 
     // Get other swap chain related features
-    unsigned int swapImageCount = getNumberOfSwapImages(surfaceCapabilities);
+    uint32_t swapImageCount = getNumberOfSwapImages(surfaceCapabilities);
     std::cout << "swap chain image count: " << swapImageCount << std::endl;
 
     // Size of the images
@@ -845,7 +845,7 @@ void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDe
 }
 
 void getSwapChainImageHandles(VkDevice device, VkSwapchainKHR chain, std::vector<VkImage>& outImageHandles) {
-    unsigned int imageCount = 0;
+    uint32_t imageCount = 0;
     if (VK_SUCCESS != vkGetSwapchainImagesKHR(device, chain, &imageCount, nullptr)) {
         throw std::runtime_error("unable to get number of images in swap chain");
     }
@@ -1396,7 +1396,7 @@ ShaderBuilder& ShaderBuilder::mesh() {
 }
 
 ShaderBuilder& ShaderBuilder::fromFile(const char * fileName) {
-    std::ifstream file(fileName, std::ios::ate);
+    std::ifstream file(fileName, std::ios::ate|std::ios::binary);
     if (!file.is_open()) {
         throw std::runtime_error("failed to open shader file");
     }
@@ -1408,7 +1408,7 @@ ShaderBuilder& ShaderBuilder::fromFile(const char * fileName) {
     file.close();
     return *this;
 }
-ShaderBuilder& ShaderBuilder::fromBuffer(const char * data, size_t size) {
+ShaderBuilder& ShaderBuilder::fromBuffer(const uint8_t * data, size_t size) {
     code.clear();
     code.insert(code.end(), data, data + size);
     return *this;
@@ -1512,7 +1512,7 @@ Image::Image(ImageBuilder & builder, VkCommandBuffer commandBuffer) {
     if (result != VK_SUCCESS) {
         switch (result) {
             case VK_ERROR_FORMAT_NOT_SUPPORTED:
-                throw std::runtime_error("format not supported for this image type and usage: " + std::to_string(builder.format));
+                throw std::runtime_error("format not supported for this image type and usage: " + std::to_string(builder.format) + ", usage: " + std::to_string(usageFlags));
             case VK_ERROR_FEATURE_NOT_PRESENT:
                 throw std::runtime_error("requested features not supported for this image format and usage");
             case VK_ERROR_OUT_OF_DEVICE_MEMORY:
@@ -1741,7 +1741,7 @@ DynamicBuffer::DynamicBuffer(BufferBuilder & builder):lastWriteIndex(0) {
 void DynamicBuffer::setData(void* data, size_t size) {
     // write to the "oldest" buffer.
     // warning: multiple writes per frame may modify frames in flight
-    ushort nextWriteIndex = (lastWriteIndex + 1) % g_context().swapchainImageCount;
+    uint16_t nextWriteIndex = (lastWriteIndex + 1) % g_context().swapchainImageCount;
     buffers[nextWriteIndex].setData(data, size);
     lastWriteIndex = nextWriteIndex;
 }
@@ -2101,7 +2101,7 @@ bool Frame::tryPresentQueue() {
         throw std::runtime_error("next image index has not been acquired");
     }
 
-    uint nextImage = nextImageIndex;
+    uint32_t nextImage = nextImageIndex;
     VkSwapchainKHR swapChains[] = {context.swapchain};
     VkPresentInfoKHR presentInfo = {};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -2200,7 +2200,7 @@ VkPipeline GraphicsPipelineBuilder::build() {
 
     VkRect2D scissor = {};
     scissor.offset = {0, 0};
-    scissor.extent = VkExtent2D{(unsigned int)g_context().windowWidth, (unsigned int)g_context().windowHeight};
+    scissor.extent = VkExtent2D{(uint32_t )g_context().windowWidth, (uint32_t )g_context().windowHeight};
 
     VkPipelineViewportStateCreateInfo viewportState = {};
     viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -2331,7 +2331,7 @@ MultisampleRenderingRecording::MultisampleRenderingRecording(
 
     VkRenderingInfo renderingInfo = {};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.renderArea = { 0, 0, (uint)g_context().windowWidth, (uint)g_context().windowHeight };
+    renderingInfo.renderArea = { 0, 0, (uint32_t)g_context().windowWidth, (uint32_t)g_context().windowHeight };
     renderingInfo.layerCount = 1;
     renderingInfo.pColorAttachments = &colorAttachment;
     renderingInfo.colorAttachmentCount = 1;
@@ -2349,7 +2349,7 @@ void RenderingRecording::init(std::vector<VkImageView> & colorImages, VkImageVie
     }
     VkRenderingInfo renderingInfo = {};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.renderArea = { 0, 0, (uint)g_context().windowWidth, (uint)g_context().windowHeight };
+    renderingInfo.renderArea = { 0, 0, (uint32_t)g_context().windowWidth, (uint32_t)g_context().windowHeight };
     renderingInfo.layerCount = 1;
 
     std::vector<VkRenderingAttachmentInfo> colorAttachments;

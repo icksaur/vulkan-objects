@@ -8,13 +8,6 @@
             "name": "debug ",
             "type":"lldb",
             "linux": {
-                "setupCommands": [
-                    {
-                      "description": "Enable pretty-printing for gdb",
-                      "text": "-enable-pretty-printing",
-                      "ignoreFailures": true
-                    }
-                ],
                 "cwd": "${workspaceFolder}",
                 "program": "${workspaceFolder}/vulkan"
             },
@@ -22,10 +15,8 @@
             "program": "${workspaceFolder}/vulkan",
             "request": "launch",
             "args": [""],
-            "stopAtEntry": false,
-            "environment": [],
-            "externalConsole": false,
-            "logging": {"moduleLoad": false},
+            "stopOnEntry": false,
+            "preLaunchTask": "build"
         },
     ]
 }

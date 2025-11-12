@@ -5,6 +5,10 @@ ipch/*
 x86/*
 x64/*
 obj/*
+*.o
+*.dll
+*.exe
+*.zip
 .*\.aps$
 .*\.sdf$
 .*\.user$

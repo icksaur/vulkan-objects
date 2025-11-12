@@ -6,6 +6,7 @@
 #include <set>
 #include <assert.h>
 #include <memory>
+#include <cstdint>
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -53,8 +54,8 @@ struct Timer {
 };
 
 Image createImageFromTGAFile(const char * filename) {
-    std::ifstream file(filename);
-    std::vector<char> fileBytes = std::vector<char>(
+    std::ifstream file(filename, std::ios::binary);
+    std::vector<uint8_t> fileBytes = std::vector<uint8_t>(
         std::istreambuf_iterator<char>(file),
         std::istreambuf_iterator<char>());
 
@@ -223,7 +224,7 @@ int main(int argc, char *argv[]) {
     std::vector<CommandBuffer> commandBuffers(context.swapchainImageCount);
     
     // index of the swapchain resources to use for the next frame
-    uint nextImage = 0;
+    uint32_t nextImage = 0;
 
     // depth buffer images, used for depth testing
     ImageBuilder depthImagebuilder;

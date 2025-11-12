@@ -4,26 +4,29 @@
 #include <fstream>
 #include <string>
 #include <cstring>
+#include <cstdint>
 
 short le_short(unsigned char * bytes)
 {
-	return bytes[0] | ((char)bytes[1] << 8);
+	return bytes[0] | ((uint8_t)bytes[1] << 8);
 }
 
+#pragma pack(push, 1)
 struct tga_header {
-	char  id_length; // byte 0
-	char  color_map_type;
-	char  data_type_code; // 2 for uncompressed truecolor, 10 for RLE truecolor
-	unsigned char  color_map_origin[2];
-	unsigned char  color_map_length[2];
-	char  color_map_depth;
-	unsigned char  x_origin[2]; // byte 8
-	unsigned char  y_origin[2];
-	unsigned char  width[2];
-	unsigned char  height[2];
-	char  bits_per_pixel; // byte 16
-	char  image_descriptor;
+	uint8_t id_length; // byte 0
+	uint8_t color_map_type;
+	uint8_t data_type_code; // 2 for uncompressed truecolor, 10 for RLE truecolor
+	uint8_t color_map_origin[2];
+	uint8_t color_map_length[2];
+	uint8_t color_map_depth;
+	uint8_t x_origin[2]; // byte 8
+	uint8_t y_origin[2];
+	uint8_t width[2];
+	uint8_t height[2];
+	uint8_t bits_per_pixel; // byte 16
+	uint8_t image_descriptor;
 };
+#pragma pack(pop)
 
 bool write_tga(const char * filename, unsigned width, unsigned height, const unsigned char * data) {
 	tga_header header;
@@ -69,7 +72,7 @@ void fail(const char * reason) {
     throw std::runtime_error(reason);
 }
 
-void * read_tga(const std::vector<char> & bytes, unsigned & width, unsigned & height, int & bpp) {
+void * read_tga(const std::vector<uint8_t> & bytes, unsigned & width, unsigned & height, int & bpp) {
 	int color_map_size, pixels_size;
     bool rle;
 	void *pixels;
@@ -87,7 +90,7 @@ void * read_tga(const std::vector<char> & bytes, unsigned & width, unsigned & he
 	}
 
     bpp = header.bits_per_pixel;
-    u_char pixelSize = bpp / 8;
+    uint8_t pixelSize = bpp / 8;
     rle = header.data_type_code == 2 ? false : true;
 
     int remainingBytes = bytes.size() - sizeof(tga_header);
@@ -111,23 +114,23 @@ void * read_tga(const std::vector<char> & bytes, unsigned & width, unsigned & he
     }
 
 	pixels = malloc(pixels_size);
-    const u_char rleChunkFlag = 0x80;
-    const char * currentByte = &bytes[0] + (bytes.size() - remainingBytes);
+    const uint8_t rleChunkFlag = 0x80;
+    const uint8_t * currentByte = &bytes[0] + (bytes.size() - remainingBytes);
     if (!rle) {
         memcpy(pixels, currentByte, pixels_size);
     } else {
-        u_char * pixelCursor = (u_char*)pixels;
-        u_char * end = pixelCursor + (width  * height * pixelSize);
-        u_char chunkHeader = *currentByte++;
+        uint8_t * pixelCursor = (uint8_t*)pixels;
+        uint8_t * end = pixelCursor + (width  * height * pixelSize);
+        uint8_t chunkHeader = *currentByte++;
         do {
             if (chunkHeader & rleChunkFlag) { // rle compressed chunk
-                u_char pixelCount = (chunkHeader ^ rleChunkFlag) + 1; // remove flag
+                uint8_t pixelCount = (chunkHeader ^ rleChunkFlag) + 1; // remove flag
                 for (int i = 0; i < pixelCount; i++) {
                     memcpy(pixelCursor, currentByte, pixelSize);
                     pixelCursor += pixelSize;
                 }
             } else {
-                u_char pixelCount = chunkHeader + 1;
+                uint8_t pixelCount = chunkHeader + 1;
                 memcpy(pixelCursor, currentByte, pixelCount * pixelSize);
                 pixelCursor += (pixelCount * pixelSize);
                 currentByte += (pixelCount * pixelSize);
@@ -135,12 +138,12 @@ void * read_tga(const std::vector<char> & bytes, unsigned & width, unsigned & he
         } while (pixelCursor < end);
     }
 
-    const unsigned char SCREEN_ORIGIN_BIT = 0x20;
+    const uint8_t SCREEN_ORIGIN_BIT = 0x20;
 
-    if (header.image_descriptor & SCREEN_ORIGIN_BIT == 0) {
+    if ((header.image_descriptor & SCREEN_ORIGIN_BIT) == 0) {
         // origin is in bottom-left, which is opposite of Vulkan convention, so flip the image rows
-        u_char * source = (u_char*)pixels;
-        u_char * flipped = (u_char*)malloc(pixels_size);
+        uint8_t * source = (uint8_t*)pixels;
+        uint8_t * flipped = (uint8_t*)malloc(pixels_size);
         unsigned rowSize = pixelSize * width;
         for (size_t i = 0; i < height; i++) {
             memcpy(flipped + i * rowSize, source + ((height - 1 - i) * rowSize), rowSize);
