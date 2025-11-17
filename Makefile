@@ -2,20 +2,20 @@
 TARGET := vulkan
 
 # Variables
-CXX := g++
-CC := gcc
+CXX := ccache g++
+CC := ccache gcc
 
 # Build configuration (debug by default, use 'make release' for optimized build)
 BUILD_TYPE ?= debug
 
 ifeq ($(BUILD_TYPE),release)
-    CXXFLAGS := -Wextra -Wpedantic -flto -std=c++20 -Os -I./inc -I./inc/GL -ffunction-sections -fdata-sections -fno-common
+    CXXFLAGS := -Wextra -Wpedantic -std=c++20 -Os -I./inc -I./inc/GL -ffunction-sections -fdata-sections -fno-common -include pch.h
     CFLAGS := -Wall -Os -I./inc -I./inc/GL -ffunction-sections -fdata-sections -fno-common
-    LDFLAGS := -flto -lvulkan -lSDL3 -s -Wl,--gc-sections
+    LDFLAGS := -fuse-ld=mold -lvulkan -lSDL3 -s -Wl,--gc-sections
 else
-    CXXFLAGS := -Wextra -Wpedantic -flto -std=c++20 -g -I./inc -I./inc/GL -D_GLIBCXX_DEBUG -fno-common
+    CXXFLAGS := -Wextra -Wpedantic -std=c++20 -g -I./inc -I./inc/GL -D_GLIBCXX_DEBUG -fno-common -include pch.h
     CFLAGS := -Wall -I./inc -g -I./inc/GL -D_GLIBCXX_DEBUG -fno-common
-    LDFLAGS := -flto -lvulkan -lSDL3
+    LDFLAGS := -fuse-ld=mold -lvulkan -lSDL3
 endif
 
 GLSLC := glslc
@@ -26,6 +26,8 @@ C_SOURCES := $(wildcard *.c)
 HEADERS := $(wildcard *.h)
 OBJ_DIR := obj
 OBJECTS := $(addprefix $(OBJ_DIR)/,$(CPP_SOURCES:.cpp=.o)) $(addprefix $(OBJ_DIR)/,$(C_SOURCES:.c=.o))
+PCH := pch.h
+PCH_GCH := $(OBJ_DIR)/pch.h.gch
 
 # Shader files
 VERTEX_SHADERS := $(wildcard *.vert)
@@ -43,9 +45,9 @@ WIN_OBJ_DIR := obj-win
 WIN_OBJECTS := $(addprefix $(WIN_OBJ_DIR)/,$(CPP_SOURCES:.cpp=.o)) $(addprefix $(WIN_OBJ_DIR)/,$(C_SOURCES:.c=.o))
 
 ifeq ($(BUILD_TYPE),release)
-    WIN_LDFLAGS := -static-libgcc -static-libstdc++ -flto -Wl,-Bstatic -lSDL3 /usr/x86_64-w64-mingw32/lib/libwinpthread.a -Wl,-Bdynamic -lvulkan-1 -lwinmm -limm32 -lversion -lsetupapi -lole32 -loleaut32 -luuid -lgdi32 -lcfgmgr32 -s -Wl,--gc-sections
+    WIN_LDFLAGS := -static-libgcc -static-libstdc++ -Wl,-Bstatic -lSDL3 /usr/x86_64-w64-mingw32/lib/libwinpthread.a -Wl,-Bdynamic -lvulkan-1 -lwinmm -limm32 -lversion -lsetupapi -lole32 -loleaut32 -luuid -lgdi32 -lcfgmgr32 -s -Wl,--gc-sections
 else
-    WIN_LDFLAGS := -static-libgcc -static-libstdc++ -flto -Wl,-Bstatic -lSDL3 /usr/x86_64-w64-mingw32/lib/libwinpthread.a -Wl,-Bdynamic -lvulkan-1 -lwinmm -limm32 -lversion -lsetupapi -lole32 -loleaut32 -luuid -lgdi32 -lcfgmgr32
+    WIN_LDFLAGS := -static-libgcc -static-libstdc++ -Wl,-Bstatic -lSDL3 /usr/x86_64-w64-mingw32/lib/libwinpthread.a -Wl,-Bdynamic -lvulkan-1 -lwinmm -limm32 -lversion -lsetupapi -lole32 -loleaut32 -luuid -lgdi32 -lcfgmgr32
 endif
 
 # Rules
@@ -70,10 +72,13 @@ windows-distrib: windows
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
 
+$(OBJ_DIR)/pch.h.gch: $(PCH) | $(OBJ_DIR)
+	$(CXX) -Wextra -Wpedantic -std=c++20 -g -I./inc -I./inc/GL -D_GLIBCXX_DEBUG -fno-common -x c++-header $(PCH) -o $@
+
 $(TARGET): $(OBJECTS)
 	$(CXX) $^ $(LDFLAGS) -o $@
 
-$(OBJ_DIR)/%.o: %.cpp $(HEADERS)
+$(OBJ_DIR)/%.o: %.cpp $(HEADERS) $(PCH_GCH)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/%.o: %.c $(HEADERS)
