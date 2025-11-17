@@ -88,34 +88,6 @@ Image createImageFromTGAFile(const char * filename) {
     return image;
 }
 
-void record(
-    VkPipeline computePipeline,
-    VkPipeline graphicsPipeline,
-    VkCommandBuffer commandBuffer,
-    VkImageView colorImage,
-    VkImageView depthImage,
-    VkPipelineLayout pipelineLayout,
-    VkDescriptorSet descriptorSet,
-    uint32_t dynamicOffset
-) {
-    CommandBufferRecording commandBufferRecording(commandBuffer);
-
-    // bind and dispatch compute
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 1, &dynamicOffset);
-    vkCmdDispatch(commandBuffer, 1, 1, 1);
-
-    // start dynamic rendering to our presentation image and depth buffer
-    RenderingRecording renderingRecording(commandBuffer, colorImage, depthImage);
-
-    // Bind the descriptor which contains the shader uniform buffer
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 1, &dynamicOffset);
-
-    // Draw mesh tasks - one task per quad
-    vkCmdDrawMeshTasks(commandBuffer, computedQuadCount, 1, 1);
-}
-
 int main(int argc, char *argv[]) {
     SDLWindow window("VulkanApp", windowWidth, windowHeight);
 
@@ -129,7 +101,6 @@ int main(int argc, char *argv[]) {
 
     // Image and sampler.  The image class encapsulates the image, memory, and imageview.
     Image textureImage = createImageFromTGAFile("vulkan.tga");
-
     TextureSampler textureSampler;
  
     // uniform buffer data for our view projection matrix and z scale in compute
@@ -148,26 +119,23 @@ int main(int argc, char *argv[]) {
     uniformBufferData.viewProjection = camera.getViewProjection();
     uniformBufferData.zScale = 0.2f;
 
-    // dynamic buffer means that it has multiple buffers so that we don't modify data being used by the GPU
-    // dynamic buffers have as many buffers as swapchain image count
-    // we will set the data above in the render loop
+    // "Dynamic offsets" are for buffers that you want to read during one swapchain image while writing to another.
+    // The purpose of the buffer is meant to be identical between frames, but the contents differ.
 
     // Dynamic buffers must be aligned to the minimum uniform buffer offset alignment.
-    size_t uniformBufferAlignment = context.limits.minUniformBufferOffsetAlignment;
-    while (uniformBufferAlignment < sizeof(UniformBufferData)) {
-        uniformBufferAlignment += context.limits.minUniformBufferOffsetAlignment; // make sure the alignment is at least as large as the data
+    size_t uniformBufferSize = context.limits.minUniformBufferOffsetAlignment;
+    while (uniformBufferSize < sizeof(UniformBufferData)) {
+        uniformBufferSize += context.limits.minUniformBufferOffsetAlignment; // make sure the alignment is at least as large as the data
     }   
-    Buffer uniformBuffer(BufferBuilder(g_context().swapchainImageCount * uniformBufferAlignment).uniform());
+    Buffer uniformBuffer(BufferBuilder(g_context().swapchainImageCount * uniformBufferSize).uniform());
 
     // buffer for writing in compute and reading in mesh shader
-    // This single buffer strategy is incorrect.  If this program runs slow enough, previous frames may be reading the buffer
-    // while the current frame is writing to it.  Either dispatch the compute first and never write again, or we need multiple buffers.
     // This buffer is an example to show how we can write to and reuse a buffer.
     Buffer shaderStorageVertexBuffer(BufferBuilder(sizeof(float) * 5 * 6 * computedQuadCount).storage());
 
     // DESCRIPTOR SETS
     // These things are complex.  They describe what resources are bound to shader invocations.
-    // We need layouts, pools matching the layout for allocating them, then to allocate them,
+    // We need layouts, pools matching the layout, then to allocate them,
     // then bind the actual resources to the descriptor sets, and use the right descriptor set.
     // This example does all of that with a one dynamic buffer which adds enough complexity for an example.
     // There's a way around a lot of this: vkCmdPushDescriptorSet in the extension VK_KHR_push_descriptor.
@@ -176,59 +144,51 @@ int main(int argc, char *argv[]) {
     // descriptor layout of uniforms in our pipeline
     // we're going to use a single descriptor set layout that is used by both pipelines
     // you may prefer to use multiple layouts, one for graphics pipeline and another for compute
-    DescriptorLayoutBuilder desriptorLayoutBuilder;
-    desriptorLayoutBuilder
+    VkDescriptorSetLayout descriptorSetLayout = DescriptorLayoutBuilder()
         .addDynamicUniformBuffer(0, 1, VK_SHADER_STAGE_MESH_BIT_EXT|VK_SHADER_STAGE_COMPUTE_BIT)
         .addSampler(1, 1, VK_SHADER_STAGE_FRAGMENT_BIT)
-        .addStorageBuffer(2, 1, VK_SHADER_STAGE_MESH_BIT_EXT|VK_SHADER_STAGE_COMPUTE_BIT);
-    VkDescriptorSetLayout descriptorSetLayout = desriptorLayoutBuilder.build();
+        .addStorageBuffer(2, 1, VK_SHADER_STAGE_MESH_BIT_EXT|VK_SHADER_STAGE_COMPUTE_BIT)
+        .build();
 
     // descriptor pool for allocating descriptor sets
     // we've only got one pool here that can build the combined descriptor set above
     // you might want to have two pools if you have different sizes of descriptor sets
-    DescriptorPoolBuilder poolBuilder;
-    poolBuilder
+    DescriptorPool descriptorPool = DescriptorPoolBuilder()
         .addSampler(1)
         .addStorageBuffer(1)
         .addDynamicUniformBuffer(1)
-        .maxSets(1);
-    DescriptorPool descriptorPool(poolBuilder);
+        .maxSets(1)
+        .build();
     
     VkDescriptorSet descriptorSet = descriptorPool.allocate(descriptorSetLayout);
-    DescriptorSetBinder binder(descriptorSet);
-    binder.bindDynamicUniformBuffer(0, uniformBuffer, 0, uniformBufferAlignment); // range is the range of one slice of the dynamic buffer
-    binder.bindSampler(1, textureSampler, textureImage);
-    binder.bindStorageBuffer(2, shaderStorageVertexBuffer);
-    binder.updateSets();
+    DescriptorSetBinder(descriptorSet)
+        .bindDynamicUniformBuffer(0, uniformBuffer, 0, uniformBufferSize) // range is the range of one slice of the dynamic buffer
+        .bindSampler(1, textureSampler, textureImage)
+        .bindStorageBuffer(2, shaderStorageVertexBuffer)
+        .updateSets();
 
-    // pipelines
     // Pipelines represent the configurable pipeline stages that define what shaders are used and how their results are combined.
-    // Take a look at the build() function to see all the options that are necessary and configurable.
+    // Take a look at the GraphicsPipelineBuilder::build() function to see all the options that are necessary and configurable.
     VkPipelineLayout pipelineLayout = createPipelineLayout({descriptorSetLayout}); // context-owned
 
-    // mesh shader pipeline setup
-    // Mesh shaders are much simpler than vertex shaders - no vertex bindings or attributes needed.
     // The mesh shader reads directly from the storage buffer and emits vertices.
-    GraphicsPipelineBuilder graphicsPipelineBuilder(pipelineLayout);
-    graphicsPipelineBuilder
+    VkPipeline graphicsPipeline = GraphicsPipelineBuilder(pipelineLayout)
         .addMeshShader(meshShaderModule)
-        .addFragmentShader(fragShaderModule);
-
-    VkPipeline graphicsPipeline = graphicsPipelineBuilder.build(); // context-owned
+        .addFragmentShader(fragShaderModule)
+        .build();
 
     VkPipeline computePipeline = createComputePipeline(pipelineLayout, compShaderModule); // context-owned
 
-    // command buffers are recorded into and submitted to a queue
-    // we have one command buffer for each swapchain image, and cycle through them
-    // they must be reset before rewritten
+    // Command buffers are recorded into and submitted to a queue.
+    // We have one command buffer for each swapchain image, and cycle through them.
+    // They must be reset before rewritten
     std::vector<CommandBuffer> commandBuffers(context.swapchainImageCount);
     
     // index of the swapchain resources to use for the next frame
     uint32_t nextImage = 0;
 
     // depth buffer images, used for depth testing
-    ImageBuilder depthImagebuilder;
-    depthImagebuilder.depth();
+    ImageBuilder depthImagebuilder = ImageBuilder().depth();
     std::vector<Image> depthImages;
     {
         ScopedCommandBuffer imageBuilderCommandBuffer;
@@ -244,7 +204,6 @@ int main(int argc, char *argv[]) {
 
     Timer timer;
     bool done = false;
-    uint32_t nextResourceIndex = 0;
     while (!done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -273,24 +232,34 @@ int main(int argc, char *argv[]) {
         uniformBufferData.viewProjection = camera.getViewProjection();
 
         // Update the uniform buffer at the offset for the next resource index.
-        uniformBuffer.setData(&uniformBufferData, sizeof(uniformBufferData), nextResourceIndex * uniformBufferAlignment);
+        // context.nextResourceIndex is important. It tracks which resources we are using this frame.
+        // in this case, it's used to calculate the dynamic offset into the uniform buffer.
+        uniformBuffer.setData(&uniformBufferData, sizeof(uniformBufferData), context.nextResourceIndex * uniformBufferSize);
     
         // get and reset the oldest command buffer
         CommandBuffer & commandBuffer = commandBuffers[context.frameInFlightIndex];
         commandBuffer.reset();
+        uint32_t dynamicOffset = context.nextResourceIndex * uniformBufferSize;
     
-        // This program has no dynamic commands, but we record in
-        // the loop as an example of how you'd record a dynamic frame.
-        record(
-            computePipeline,
-            graphicsPipeline,
-            commandBuffer,
-            context.swapchainImageViews[nextImage], // use the next swapchain image
-            depthImages[nextImage].imageView,
-            pipelineLayout,
-            descriptorSet,
-            nextResourceIndex * uniformBufferAlignment);
-            
+        {
+            CommandBufferRecording commandBufferRecording(commandBuffer);
+
+            // bind and dispatch compute, generating our polygon vertex data into the storage buffer
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 1, &dynamicOffset);
+            vkCmdDispatch(commandBuffer, 1, 1, 1);
+
+            // start dynamic rendering to our presentation image and depth buffer
+            RenderingRecording renderingRecording(commandBuffer, context.swapchainImageViews[nextImage], depthImages[nextImage].imageView);
+
+            // Bind the descriptor which contains the shader uniform buffer
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 1, &dynamicOffset);
+
+            // Draw mesh tasks.  One task per quad isn't ideal, you'd want to group more in a real program.
+            vkCmdDrawMeshTasks(commandBuffer, computedQuadCount, 1, 1);
+        }
+                
         // Submit the command buffer to the graphics queue
         frame.submitCommandBuffer(commandBuffer);
        
@@ -299,7 +268,6 @@ int main(int argc, char *argv[]) {
             // This is a common Vulkan situation handled automatically by OpenGL.
             // We need to remake our swap chain and any images used in presentation, like the depth buffer.
             // This often happens once after the first frame.
-
             std::cout << "swap chain out of date, trying to remake" << std::endl;
 
             ScopedCommandBuffer rebuildCommandBuffer;
@@ -310,14 +278,9 @@ int main(int argc, char *argv[]) {
             }
 
             rebuildCommandBuffer.submitAndWait();
-        }
-
-        frame.cleanup(); // automatically called by destructor, but we call it explicitly here for clarity
-        nextResourceIndex = (nextResourceIndex + 1) % context.swapchainImageCount; // rotate the resource index for the next frame
-    }
+        }}
 
     // Wait until GPU is done with all work before cleaning up resources which could be in use.
-
     if (VK_SUCCESS != vkQueueWaitIdle(context.graphicsQueue)) {
         throw std::runtime_error("failed to wait for the graphics queue to be idle");
     }

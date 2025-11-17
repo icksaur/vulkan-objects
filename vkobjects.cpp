@@ -360,6 +360,19 @@ VkSampleCountFlagBits getMaximumSampleSize(VkSampleCountFlags sampleCountBits, u
     return VK_SAMPLE_COUNT_1_BIT;
 }
 
+static VkPhysicalDeviceMeshShaderPropertiesEXT getMeshShaderProperties(VkPhysicalDevice physicalDevice) {
+    VkPhysicalDeviceMeshShaderPropertiesEXT meshShaderProperties{};
+    meshShaderProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT;
+
+    VkPhysicalDeviceProperties2 deviceProperties2{};
+    deviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    deviceProperties2.pNext = &meshShaderProperties;
+
+    vkGetPhysicalDeviceProperties2(physicalDevice, &deviceProperties2);
+
+    return meshShaderProperties;
+}
+
 void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, uint32_t & outQueueFamilyIndex, uint32_t & maxSampleCount, VkPhysicalDeviceLimits & limits) {
     // Get number of available physical devices, needs to be at least 1
     uint32_t physicalDeviceCount = 0;
@@ -1153,7 +1166,7 @@ VkSemaphore createSemaphore() {
 }
 
 VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions & options)
-    : options(options), window(window), frameInFlightIndex(0), currentFrame(nullptr) {
+    : options(options), window(window), frameInFlightIndex(0), nextResourceIndex(0) {
     if (g_context.contextInstance != nullptr) {
         throw std::runtime_error("VulkanContext already exists");
     }
@@ -1206,6 +1219,9 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions & options
     // Create a logical device that interfaces with the physical device
     this->device = createLogicalDevice(options, this->physicalDevice, this->graphicsQueueIndex, foundLayers);
 
+    // Get mesh shader properties
+    this->meshShaderProperties = getMeshShaderProperties(this->physicalDevice);
+
     // Create the surface we want to render to, associated with the window we created before
     // This call also checks if the created surface is compatible with the previously selected physical device and associated render queue
     this->presentationSurface = createSurface(window, this->instance, this->physicalDevice, this->graphicsQueueIndex);
@@ -1223,6 +1239,7 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions & options
     this->swapchainImageCount = this->swapchainImages.size();
     makeChainImageViews(this->device, this->colorFormat, this->swapchainImages, this->swapchainImageViews);
 
+    // internal pool for initializing swapchain images
     this->commandPool = createCommandPool(this->device, this->graphicsQueueIndex);
 
     // preallocate our scheduled destruction generations
@@ -1251,6 +1268,8 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions & options
     vkCmdDrawMeshTasks = (PFN_vkCmdDrawMeshTasksEXT)vkGetDeviceProcAddr(g_context().device, "vkCmdDrawMeshTasksEXT");
     vkBeginRendering = (PFN_vkCmdBeginRendering)vkGetDeviceProcAddr(g_context().device, "vkCmdBeginRendering");
     vkEndRendering = (PFN_vkCmdEndRendering)vkGetDeviceProcAddr(g_context().device, "vkCmdEndRendering");
+
+    Frame::currentGuard = nullptr; // no frame is being used
 }
 
 void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator) {
@@ -1732,26 +1751,6 @@ Buffer::operator VkBuffer*() const {
     return (VkBuffer*)&buffer;
 }
 
-DynamicBuffer::DynamicBuffer(BufferBuilder & builder):lastWriteIndex(0) {
-    buffers.reserve(g_context().swapchainImageCount);
-    for (size_t i = 0; i < g_context().swapchainImageCount; ++i) {
-        buffers.emplace_back(builder);
-    }
-}
-void DynamicBuffer::setData(void* data, size_t size) {
-    // write to the "oldest" buffer.
-    // warning: multiple writes per frame may modify frames in flight
-    uint16_t nextWriteIndex = (lastWriteIndex + 1) % g_context().swapchainImageCount;
-    buffers[nextWriteIndex].setData(data, size);
-    lastWriteIndex = nextWriteIndex;
-}
-DynamicBuffer::operator const Buffer&() const {
-    return buffers[lastWriteIndex];
-}
-DynamicBuffer::operator VkBuffer() const {
-    return buffers[lastWriteIndex].buffer;
-}
-
 CommandBuffer::CommandBuffer() : buffer(createCommandBuffer(g_context().device, g_context().commandPool)) {}
 CommandBuffer::~CommandBuffer() {
     VulkanContext & context = g_context();
@@ -1849,6 +1848,9 @@ DescriptorPoolBuilder & DescriptorPoolBuilder::maxSets(uint32_t count) {
     _maxDescriptorSets = count;
     return *this;
 }
+DescriptorPool DescriptorPoolBuilder::build() {
+    return DescriptorPool(*this);
+}
 
 DescriptorPool::DescriptorPool(DescriptorPoolBuilder & builder) {
     if (builder.sizes.empty()) {
@@ -1891,7 +1893,7 @@ DescriptorSetBinder::DescriptorSetBinder(VkDescriptorSet descriptorSet):descript
         throw std::runtime_error("DescriptorSetBinder created with null descriptor set");
     }
 }
-void DescriptorSetBinder::bindSampler(uint32_t bindingIndex, TextureSampler & sampler, Image & image) {
+DescriptorSetBinder & DescriptorSetBinder::bindSampler(uint32_t bindingIndex, TextureSampler & sampler, Image & image) {
     VkDescriptorImageInfo imageInfo = {};
     imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imageInfo.imageView = image.imageView;
@@ -1908,10 +1910,10 @@ void DescriptorSetBinder::bindSampler(uint32_t bindingIndex, TextureSampler & sa
 
     // store index into info vector since pointer may become invalidated
     descriptorWrite.pImageInfo = (VkDescriptorImageInfo*)(imageInfos.size()-1);
-
     descriptorWriteSets.push_back(descriptorWrite);
+    return *this;
 }
-void DescriptorSetBinder::bindBuffer(uint32_t bindingIndex, const Buffer & buffer, VkDescriptorType descriptorType, VkDeviceSize offset, VkDeviceSize deviceSize) {
+DescriptorSetBinder & DescriptorSetBinder::bindBuffer(uint32_t bindingIndex, const Buffer & buffer, VkDescriptorType descriptorType, VkDeviceSize offset, VkDeviceSize deviceSize) {
     VkDescriptorBufferInfo bufferInfo = {};
     bufferInfo.buffer = buffer;
     bufferInfo.offset = offset;
@@ -1929,23 +1931,24 @@ void DescriptorSetBinder::bindBuffer(uint32_t bindingIndex, const Buffer & buffe
     descriptorWrite.pBufferInfo = (VkDescriptorBufferInfo*)(bufferInfos.size()-1);
 
     descriptorWriteSets.push_back(descriptorWrite);
+    return *this;
 }
-void DescriptorSetBinder::bindUniformBuffer(uint32_t bindingIndex, const Buffer & buffer) {
-    bindBuffer(bindingIndex, buffer, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+DescriptorSetBinder & DescriptorSetBinder::bindUniformBuffer(uint32_t bindingIndex, const Buffer & buffer) {
+    return bindBuffer(bindingIndex, buffer, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 }
-void DescriptorSetBinder::bindStorageBuffer(uint32_t bindingIndex, const Buffer & buffer) {
-    bindBuffer(bindingIndex, buffer, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+DescriptorSetBinder & DescriptorSetBinder::bindStorageBuffer(uint32_t bindingIndex, const Buffer & buffer) {
+    return bindBuffer(bindingIndex, buffer, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 }
-void DescriptorSetBinder::bindStorageBuffer(uint32_t bindingIndex, const Buffer & buffer, size_t size) {
-    bindBuffer(bindingIndex, buffer, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0, size);
+DescriptorSetBinder & DescriptorSetBinder::bindStorageBuffer(uint32_t bindingIndex, const Buffer & buffer, size_t size) {
+    return bindBuffer(bindingIndex, buffer, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0, size);
 }
-void DescriptorSetBinder::bindDynamicStorageBuffer(uint32_t bindingIndex, const Buffer & buffer, VkDeviceSize offset, VkDeviceSize size) {
-    bindBuffer(bindingIndex, buffer, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, offset, size);
+DescriptorSetBinder & DescriptorSetBinder::bindDynamicStorageBuffer(uint32_t bindingIndex, const Buffer & buffer, VkDeviceSize offset, VkDeviceSize size) {
+    return bindBuffer(bindingIndex, buffer, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, offset, size);
 }
-void DescriptorSetBinder::bindDynamicUniformBuffer(uint32_t bindingIndex, const Buffer & buffer, VkDeviceSize offset, VkDeviceSize size) {
-    bindBuffer(bindingIndex, buffer, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, offset, size);
+DescriptorSetBinder & DescriptorSetBinder::bindDynamicUniformBuffer(uint32_t bindingIndex, const Buffer & buffer, VkDeviceSize offset, VkDeviceSize size) {
+    return bindBuffer(bindingIndex, buffer, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, offset, size);
 }
-void DescriptorSetBinder::bindStorageImage(uint32_t bindingIndex, Image & image) {
+DescriptorSetBinder & DescriptorSetBinder::bindStorageImage(uint32_t bindingIndex, Image & image) {
     VkDescriptorImageInfo imageInfo = {};
     imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL; // storage images are written to
     imageInfo.imageView = image.imageView;
@@ -1963,6 +1966,7 @@ void DescriptorSetBinder::bindStorageImage(uint32_t bindingIndex, Image & image)
     descriptorWrite.pImageInfo = (VkDescriptorImageInfo*)(imageInfos.size()-1);
 
     descriptorWriteSets.push_back(descriptorWrite);
+    return *this;
 }
 void DescriptorSetBinder::updateSets() {
     // we can't keep pointers into the vectors because vectors can resize
@@ -2018,7 +2022,7 @@ void advancePostFrame(VulkanContext & context) {
     context.destroyGenerations[oldestGenerationIndex(context)].destroy();
     context.frameInFlightIndex = (context.frameInFlightIndex + 1) % context.swapchainImageCount;
 }
-
+Frame * Frame::currentGuard = nullptr;
 Frame::Frame() :
     context(g_context()),
     preparedOldResources(false),
@@ -2029,10 +2033,10 @@ Frame::Frame() :
     submittedBuffersFinishedFence(context.submittedBuffersFinishedFences[inFlightIndex]),
     nextImageIndex(UnacquiredIndex)
 {
-    if (context.currentFrame != nullptr) {
+    if (Frame::currentGuard != nullptr) {
         throw std::runtime_error("multiple frames in flight, only one frame is allowed at a time");
     }
-    context.currentFrame = this;
+    Frame::currentGuard = this;
 }
 void Frame::prepareOldestFrameResources() {
     if (preparedOldResources) {
@@ -2125,8 +2129,8 @@ bool Frame::tryPresentQueue() {
 }
 void Frame::cleanup() {
     if (!cleanedup) {
-        advancePostFrame(context);
-        context.currentFrame = nullptr;
+        Frame::currentGuard = nullptr;
+        context.nextResourceIndex = (context.nextResourceIndex + 1) % context.swapchainImageCount;
         cleanedup = true;
     }
 }

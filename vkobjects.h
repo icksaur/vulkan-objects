@@ -62,10 +62,11 @@ struct VulkanContext {
     uint32_t maxSamples;
     VulkanContextOptions options;
     VkPhysicalDeviceLimits limits;
+    VkPhysicalDeviceMeshShaderPropertiesEXT meshShaderProperties;
+    uint32_t nextResourceIndex;
 
     // things that will change during the context lifetime
     size_t frameInFlightIndex;
-    struct Frame * currentFrame;
 
     // presentation loop sync primitives
     std::vector<VkSemaphore> imageAvailableSemaphores;
@@ -210,21 +211,6 @@ struct TextureSampler {
     operator VkSampler() const;
 };
 
-// This class shows an incomplete understanding of Vulkan capabilities.
-// A "dynamic buffer" is one which has enough storage to be read at one location while being written at another.
-// VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC and VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC
-// means the descriptor write set has an offset into a large buffer.
-// When binding descriptor sets in a command buffer, we pass "dynamic offsets" which is a set of offsets for each dynamic buffer
-// bound by each descriptor set in the binding command.
-struct DynamicBuffer {
-    std::vector<Buffer> buffers;
-    uint16_t lastWriteIndex;
-    DynamicBuffer(BufferBuilder & builder);
-    void setData(void* data, size_t size);
-    operator const Buffer&() const;
-    operator VkBuffer() const;
-};
-
 struct CommandBuffer {
     VkCommandBuffer buffer;
     CommandBuffer();
@@ -256,6 +242,14 @@ struct DescriptorLayoutBuilder {
     void throwIfDuplicate(uint32_t binding);
 };
 
+struct DescriptorPool {
+    VkDescriptorPool pool;
+    DescriptorPool(struct DescriptorPoolBuilder & builder);
+    void reset();
+    VkDescriptorSet allocate(VkDescriptorSetLayout layout);
+    ~DescriptorPool();
+};
+
 struct DescriptorPoolBuilder {
     std::vector<VkDescriptorPoolSize> sizes;
     uint32_t _maxDescriptorSets;
@@ -267,14 +261,7 @@ struct DescriptorPoolBuilder {
     DescriptorPoolBuilder & addDynamicStorageBuffer(uint32_t count);
     DescriptorPoolBuilder & addDynamicUniformBuffer(uint32_t count);
     DescriptorPoolBuilder & maxSets(uint32_t count);
-};
-
-struct DescriptorPool {
-    VkDescriptorPool pool;
-    DescriptorPool(DescriptorPoolBuilder & builder);
-    void reset();
-    VkDescriptorSet allocate(VkDescriptorSetLayout layout);
-    ~DescriptorPool();
+    DescriptorPool build();
 };
 
 struct DescriptorSetBinder {
@@ -283,25 +270,21 @@ struct DescriptorSetBinder {
     std::vector<VkDescriptorImageInfo> imageInfos;
     std::vector<VkDescriptorBufferInfo> bufferInfos;
     DescriptorSetBinder(VkDescriptorSet descriptorSet);
-    void bindSampler(uint32_t bindingIndex, TextureSampler & sampler, Image & image);
-    void bindBuffer(uint32_t bindingIndex, const Buffer & buffer, VkDescriptorType descriptorType, VkDeviceSize offset = 0, VkDeviceSize deviceSize = VK_WHOLE_SIZE);
-    void bindUniformBuffer(uint32_t bindingIndex, const Buffer & buffer);
-    void bindStorageBuffer(uint32_t bindingIndex, const Buffer & buffer);
-    void bindStorageBuffer(uint32_t bindingIndex, const Buffer & buffer, size_t size);
-    void bindDynamicStorageBuffer(uint32_t bindingIndex, const Buffer & buffer, size_t offset, VkDeviceSize size);
-    void bindDynamicUniformBuffer(uint32_t bindingIndex, const Buffer & buffer, size_t offset, VkDeviceSize size);
-    void bindStorageImage(uint32_t bindingIndex, Image & image);
+    DescriptorSetBinder & bindSampler(uint32_t bindingIndex, TextureSampler & sampler, Image & image);
+    DescriptorSetBinder & bindBuffer(uint32_t bindingIndex, const Buffer & buffer, VkDescriptorType descriptorType, VkDeviceSize offset = 0, VkDeviceSize deviceSize = VK_WHOLE_SIZE);
+    DescriptorSetBinder & bindUniformBuffer(uint32_t bindingIndex, const Buffer & buffer);
+    DescriptorSetBinder & bindStorageBuffer(uint32_t bindingIndex, const Buffer & buffer);
+    DescriptorSetBinder & bindStorageBuffer(uint32_t bindingIndex, const Buffer & buffer, size_t size);
+    DescriptorSetBinder & bindDynamicStorageBuffer(uint32_t bindingIndex, const Buffer & buffer, size_t offset, VkDeviceSize size);
+    DescriptorSetBinder & bindDynamicUniformBuffer(uint32_t bindingIndex, const Buffer & buffer, size_t offset, VkDeviceSize size);
+    DescriptorSetBinder & bindStorageImage(uint32_t bindingIndex, Image & image);
     void updateSets();
 };
 
 void advancePostFrame(VulkanContext & context);
 
 // Help to advance the frame and do post-frame generational resource cleanup scheduling.
-// This class does too much and its methods MUST be called in order to work properly.
-// We could go off the deep end with objects and have a chain of objects that require one another:
-// Frame currentFrame;
-// FrameCommands frameCommands(currentFrame);
-// FramePresentation framePresentation(frameCommands);
+// This class does too much and its methods MUST be called in order to work properly. :(
 struct Frame {
     VulkanContext & context;
     bool preparedOldResources;
@@ -312,6 +295,8 @@ struct Frame {
     VkFence submittedBuffersFinishedFence;
     int nextImageIndex;
     static const int UnacquiredIndex = -1;
+
+    static Frame * currentGuard;
 
     Frame();
     ~Frame();
@@ -411,71 +396,5 @@ struct ScopedCommandBuffer {
     operator VkCommandBuffer();
     ~ScopedCommandBuffer();
 };
-
-VkSampleCountFlagBits getSampleBits(uint32_t sampleCount);
-
-VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool);
-
-void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& outExtensions);
-
-void getAvailableVulkanLayers(std::vector<std::string>& outLayers);
-
-const std::set<std::string>& getRequestedLayerNames(VulkanContextOptions & options);
-
-void createVulkanInstance(const std::vector<std::string>& layerNameStrings, const std::vector<std::string>& extensionNameStrings, VkInstance& outInstance);
-
-bool setupDebugCallback(VkInstance instance, VkDebugReportCallbackEXT& callback);
-
-VkSampleCountFlagBits getMaximumSampleSize(VkSampleCountFlags sampleCountBits, uint32_t & count);
-
-void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, unsigned int& outQueueFamilyIndex, uint32_t & maxSampleCount);
-
-VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& physicalDevice, unsigned int queueFamilyIndex, const std::vector<std::string>& layerNameStrings);
-
-VkSurfaceKHR createSurface(SDL_Window* window, VkInstance instance, VkPhysicalDevice gpu, uint32_t graphicsFamilyQueueIndex);
-
-const char * getPresentationModeString(VkPresentModeKHR mode);
-
-bool getPresentationMode(VkSurfaceKHR surface, VkPhysicalDevice device, VkPresentModeKHR& ioMode);
-
-VkQueue getPresentationQueue(VkPhysicalDevice gpu, VkDevice logicalDevice, uint32_t graphicsQueueIndex, VkSurfaceKHR presentation_surface);
-
-unsigned int getNumberOfSwapImages(const VkSurfaceCapabilitiesKHR& capabilities);
-
-VkExtent2D getSwapImageSize(VulkanContext & context, const VkSurfaceCapabilitiesKHR& capabilities);
-
-bool getImageUsage(const VkSurfaceCapabilitiesKHR& capabilities, VkImageUsageFlags& foundUsages);
-
-VkSurfaceTransformFlagBitsKHR getSurfaceTransform(const VkSurfaceCapabilitiesKHR& capabilities);
-
-bool getSurfaceFormat(VkPhysicalDevice device, VkSurfaceKHR surface, VkSurfaceFormatKHR& outFormat);
-
-void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, VkDevice device, VkSwapchainKHR& outSwapChain);
-
-void getSwapChainImageHandles(VkDevice device, VkSwapchainKHR chain, std::vector<VkImage>& outImageHandles);
-
-void makeChainImageViews(VkDevice device, VkFormat colorFormat, std::vector<VkImage> & images, std::vector<VkImageView> & imageViews);
-
-VkCommandPool createCommandPool(VkDevice device, uint32_t queueFamilyIndex);
-
-uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t memoryTypeBits, VkMemoryPropertyFlags properties);
-
-void generateMipmaps(VkCommandBuffer commandBuffer, VkImage image, int width, int height, size_t mipLevelCount);
-
-void copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
-
-VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags imageAspects, size_t mipLevelCount);
-
-void transitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, size_t mipLevels, VkImageLayout oldLayout, VkImageLayout newLayout);
-
-VkFence createFence();
-
-VkSemaphore createSemaphore();
-
-std::tuple<VkBuffer, VkDeviceMemory> createBuffer(VkPhysicalDevice gpu, VkDevice device, VkBufferUsageFlags usageFlags, size_t byteCount);
-
-void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator);
-
-VkSampler createSampler(VkDevice device);
 
 void rebuildPresentationResources(VkCommandBuffer commandBuffer);
