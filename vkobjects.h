@@ -281,15 +281,13 @@ struct DescriptorSetBinder {
     void updateSets();
 };
 
-void advancePostFrame(VulkanContext & context);
-
 // Help to advance the frame and do post-frame generational resource cleanup scheduling.
 // This class does too much and its methods MUST be called in order to work properly. :(
 struct Frame {
     VulkanContext & context;
+    size_t inFlightIndex;
     bool preparedOldResources;
     bool cleanedup;
-    size_t inFlightIndex;
     VkSemaphore imageAvailableSemaphore;
     VkSemaphore renderFinishedSemaphore;
     VkFence submittedBuffersFinishedFence;
@@ -306,11 +304,10 @@ struct Frame {
     void submitCommandBuffer(VkCommandBuffer commandBuffer);
     void submitCommandBuffer(VkCommandBuffer commandBuffer, std::vector<VkSemaphore> & additionalWaitSemaphores, std::vector<VkSemaphore> & additionalSignalSemaphores);
     bool tryPresentQueue();
+    void rebuildPresentationResources(VkCommandBuffer commandBuffer);
     void cleanup();
 };
 
-VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> & descriptorSetLayouts, const std::vector<VkPushConstantRange> & pushConstantRanges);
-VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> & descriptorSetLayouts);
 
 struct GraphicsPipelineBuilder {
     VkPipelineLayout pipelineLayout;
@@ -322,8 +319,6 @@ struct GraphicsPipelineBuilder {
     GraphicsPipelineBuilder & sampleCount(size_t sampleCount);
     VkPipeline build();
 };
-
-VkPipeline createComputePipeline(VkPipelineLayout pipelineLayout, VkShaderModule computeShaderModule, const char * entryPoint = "main");
 
 struct MultisampleRenderingRecording {
     VkCommandBuffer commandBuffer;
@@ -397,4 +392,6 @@ struct ScopedCommandBuffer {
     ~ScopedCommandBuffer();
 };
 
-void rebuildPresentationResources(VkCommandBuffer commandBuffer);
+VkPipeline createComputePipeline(VkPipelineLayout pipelineLayout, VkShaderModule computeShaderModule, const char * entryPoint = "main");
+VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> & descriptorSetLayouts, const std::vector<VkPushConstantRange> & pushConstantRanges);
+VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> & descriptorSetLayouts);

@@ -136,7 +136,7 @@ void ScopedCommandBuffer::reset() {
 void ScopedCommandBuffer::submitAndWait() {
     submit();
     
-    // TODO: waiting on the primary graphics queue is not ideal. We can use a parallel queue and sync primitives instead.
+    // area of improvement: waiting on the primary graphics queue is not ideal. We can use a parallel queue and sync primitives instead.
     // The primary use of this struct is transitioning images, which would be satisfied with a command buffer supporting only VK_QUEUE_TRANSFER_BIT.
     if (VK_SUCCESS != vkQueueWaitIdle(g_context().graphicsQueue)) {
         throw std::runtime_error("failed wait for queue to be idle");
@@ -150,6 +150,7 @@ ScopedCommandBuffer::~ScopedCommandBuffer() {
 }
 
 void getAvailableVulkanExtensions(SDL_Window* window, std::vector<std::string>& outExtensions) {
+    (void)window;
     // Figure out the amount of extensions vulkan needs to interface with the os windowing system
     // This is necessary because vulkan is a platform agnostic API and needs to know how to interface with the windowing system
     uint32_t extensionCount = 0;
@@ -307,6 +308,11 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     const char* msg,
     void* userData)
 {
+    (void)objectType;
+    (void)object;
+    (void)location;
+    (void)messageCode;
+    (void)userData;
     if (flags & (VK_DEBUG_REPORT_WARNING_BIT_EXT | VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT | VK_DEBUG_REPORT_ERROR_BIT_EXT)) {
         std::cout << layerPrefix << ": " << msg << std::endl;
         if (g_context().options.enableThrowOnValidationError) {
@@ -414,7 +420,7 @@ void selectGPU(VkInstance instance, VkPhysicalDevice& outDevice, uint32_t & outQ
     VkPhysicalDevice selectedDevice = physicalDevices[selectionId];
 
     VkSampleCountFlags counts = physicalDeviceProperties[selectionId].limits.framebufferColorSampleCounts & physicalDeviceProperties[selectionId].limits.framebufferDepthSampleCounts;
-    VkSampleCountFlagBits maxSampleBits = getMaximumSampleSize(counts, maxSampleCount);
+    getMaximumSampleSize(counts, maxSampleCount);
     std::cout << "max sample count: " << maxSampleCount << std::endl;
 
     limits = physicalDeviceProperties[selectionId].limits;
@@ -921,7 +927,7 @@ uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t memoryTypeBits
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
-void generateMipmaps(VkCommandBuffer commandBuffer, VkImage image, int width, int height, size_t mipLevelCount) {
+void recordMipmapGeneration(VkCommandBuffer commandBuffer, VkImage image, int width, int height, size_t mipLevelCount) {
     VkImageMemoryBarrier writeToReadBarrier = {};
     writeToReadBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     writeToReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1059,7 +1065,7 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
 // This is a misguided function.  Image transitions happen during memory barriers when command buffers are submitted.
 // This function manages the source and destination stages and access masks, but it submits to a queue and only does a single transition.
 // The stages and masks have no purpose.
-void transitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, size_t mipLevels, VkImageLayout oldLayout, VkImageLayout newLayout) {
+void recordTransitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, size_t mipLevels, VkImageLayout oldLayout, VkImageLayout newLayout) {
     VkImageMemoryBarrier barrier = {};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.oldLayout = oldLayout;
@@ -1166,7 +1172,7 @@ VkSemaphore createSemaphore() {
 }
 
 VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions & options)
-    : options(options), window(window), frameInFlightIndex(0), nextResourceIndex(0) {
+    : window(window), options(options), nextResourceIndex(0), frameInFlightIndex(0) {
     if (g_context.contextInstance != nullptr) {
         throw std::runtime_error("VulkanContext already exists");
     }
@@ -1253,7 +1259,7 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions & options
     
     // dynamic rendering swapchain images must be transitioned to VK_IMAGE_LAYOUT_PRESENT_SRC_KHR or VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR
     for (VkImage & image : this->swapchainImages) {
-        transitionImageLayout(imageInitCommandBuffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        recordTransitionImageLayout(imageInitCommandBuffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     }
 
     imageInitCommandBuffer.submitAndWait(); // not fast, but this is only done once
@@ -1337,26 +1343,6 @@ VkSampler createSampler(VkDevice device) {
     }
 
     return textureSampler;
-}
-
-void rebuildPresentationResources(VkCommandBuffer commandBuffer) {
-    VulkanContext & context = g_context();
-    vkDeviceWaitIdle(context.device);
-    for (VkImageView view : context.swapchainImageViews) {
-        vkDestroyImageView(context.device, view, nullptr);
-    }
-    vkDestroySwapchainKHR(context.device, context.swapchain, nullptr);
-
-    context.swapchain = VK_NULL_HANDLE;
-    createSwapChain(context, context.presentationSurface, context.physicalDevice, context.device, context.swapchain);
-    getSwapChainImageHandles(context.device, context.swapchain, context.swapchainImages);
-
-    makeChainImageViews(context.device, context.colorFormat, context.swapchainImages, context.swapchainImageViews);
-
-    // dynamic rendering swapchain images must be transitioned to VK_IMAGE_LAYOUT_PRESENT_SRC_KHR or VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR
-    for (VkImage & image : context.swapchainImages) {
-        transitionImageLayout(commandBuffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-    }
 }
 
 VulkanContext::~VulkanContext() {
@@ -1448,7 +1434,7 @@ ShaderModule::~ShaderModule() {
 }
 ShaderModule::operator VkShaderModule() const { return module; }
 
-ImageBuilder::ImageBuilder() : buildMipmaps(true), bytes(nullptr), isDepthBuffer(false), sampleBits(VK_SAMPLE_COUNT_1_BIT), usage(0), stagingBuffer(nullptr) {}
+ImageBuilder::ImageBuilder() : buildMipmaps(true), bytes(nullptr), stagingBuffer(nullptr), isDepthBuffer(false), sampleBits(VK_SAMPLE_COUNT_1_BIT), usage(0) {}
 ImageBuilder & ImageBuilder::createMipmaps(bool buildMipmaps) {
     this->buildMipmaps = buildMipmaps;
     return *this;
@@ -1616,7 +1602,7 @@ Image::Image(ImageBuilder & builder, VkCommandBuffer commandBuffer) {
     undefinedToWriteBarrier.record(commandBuffer);
 
     // Vulkan spec says images MUST be created either undefined or preinitialized layout, so we can't jump straight to desired layout.
-    transitionImageLayout(commandBuffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED, desiredLayout);
+    recordTransitionImageLayout(commandBuffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED, desiredLayout);
 
     // If we have data to upload, we need to copy it into the image.
     if (builder.stagingBuffer != nullptr) {
@@ -1625,9 +1611,11 @@ Image::Image(ImageBuilder & builder, VkCommandBuffer commandBuffer) {
     }
 
     if (builder.buildMipmaps) {
-        generateMipmaps(commandBuffer, image, builder.extent.width, builder.extent.height, mipLevels);
-    } else {
-        // todo: transition the single image to the optimal layout for sampling
+        recordMipmapGeneration(commandBuffer, image, builder.extent.width, builder.extent.height, mipLevels);
+    } else if (!builder.isDepthBuffer) {
+        // for depth stencil, we should be ok, but for non-mipmapped maybe shader read optimal
+        // this is a guess and not tested
+        recordTransitionImageLayout(commandBuffer, image, mipLevels, desiredLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
     VkImageAspectFlags aspectFlags;
@@ -1658,7 +1646,7 @@ TextureSampler::operator VkSampler() const {
     return sampler;
 }
 
-BufferBuilder::BufferBuilder(size_t byteCount) : usage(0), byteCount(byteCount), properties(0) {}
+BufferBuilder::BufferBuilder(size_t byteCount) : usage(0), properties(0), byteCount(byteCount) {}
 BufferBuilder & BufferBuilder::index() {
     usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     return *this;
@@ -2014,20 +2002,12 @@ PushConstantsBuilder::operator std::vector<VkPushConstantRange> & () {
     return ranges;
 }
 
-size_t oldestGenerationIndex(VulkanContext & context) {
-    return (context.frameInFlightIndex + 1) % context.swapchainImageCount;
-}
-
-void advancePostFrame(VulkanContext & context) {
-    context.destroyGenerations[oldestGenerationIndex(context)].destroy();
-    context.frameInFlightIndex = (context.frameInFlightIndex + 1) % context.swapchainImageCount;
-}
 Frame * Frame::currentGuard = nullptr;
 Frame::Frame() :
     context(g_context()),
+    inFlightIndex(context.frameInFlightIndex),
     preparedOldResources(false),
     cleanedup(false),
-    inFlightIndex(context.frameInFlightIndex),
     imageAvailableSemaphore(context.imageAvailableSemaphores[inFlightIndex]),
     renderFinishedSemaphore(VK_NULL_HANDLE),
     submittedBuffersFinishedFence(context.submittedBuffersFinishedFences[inFlightIndex]),
@@ -2044,6 +2024,10 @@ void Frame::prepareOldestFrameResources() {
     }
     vkWaitForFences(context.device, 1, &submittedBuffersFinishedFence, VK_TRUE, UINT64_MAX);
     vkResetFences(context.device, 1, &submittedBuffersFinishedFence);
+
+    // Anything discarded THIS frame will go into this generation and we'll loop around and clean them in N frames.
+    // So inFlightIndex at the beginning of a new frame is the oldest generation to clean up.
+    context.destroyGenerations[inFlightIndex].destroy();
     preparedOldResources = true;
 }
 void Frame::acquireNextImageIndex(uint32_t & nextImage, VkSemaphore & renderFinishedSemaphore) {
@@ -2127,10 +2111,30 @@ bool Frame::tryPresentQueue() {
             throw std::runtime_error("failed to present queue" + std::to_string(result));
     }
 }
+void Frame::rebuildPresentationResources(VkCommandBuffer commandBuffer) {
+    VulkanContext & context = g_context();
+    vkDeviceWaitIdle(context.device); // we're about to destroy all swapchain resources, make sure nothing is using them
+    for (VkImageView view : context.swapchainImageViews) {
+        vkDestroyImageView(context.device, view, nullptr);
+    }
+    vkDestroySwapchainKHR(context.device, context.swapchain, nullptr);
+
+    context.swapchain = VK_NULL_HANDLE;
+    createSwapChain(context, context.presentationSurface, context.physicalDevice, context.device, context.swapchain);
+    getSwapChainImageHandles(context.device, context.swapchain, context.swapchainImages);
+
+    makeChainImageViews(context.device, context.colorFormat, context.swapchainImages, context.swapchainImageViews);
+
+    // dynamic rendering swapchain images must be transitioned to VK_IMAGE_LAYOUT_PRESENT_SRC_KHR or VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR
+    for (VkImage & image : context.swapchainImages) {
+        recordTransitionImageLayout(commandBuffer, image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    }
+}
 void Frame::cleanup() {
     if (!cleanedup) {
         Frame::currentGuard = nullptr;
         context.nextResourceIndex = (context.nextResourceIndex + 1) % context.swapchainImageCount;
+        context.frameInFlightIndex = (context.frameInFlightIndex + 1) % context.swapchainImageCount;
         cleanedup = true;
     }
 }
@@ -2431,7 +2435,7 @@ CommandBufferRecording::~CommandBufferRecording() {
     }
 }
 
-BufferBarrier::BufferBarrier(VkCommandBuffer commandBuffer) : commandBuffer(commandBuffer), toIndirect(false) {
+BufferBarrier::BufferBarrier(VkCommandBuffer commandBuffer) : toIndirect(false), commandBuffer(commandBuffer) {
     barrier = {};
     barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;

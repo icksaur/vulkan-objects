@@ -53,7 +53,7 @@ struct Timer {
     }
 };
 
-Image createImageFromTGAFile(const char * filename) {
+Image createImageFromTGAFile(VkCommandBuffer commandBuffer, const char * filename) {
     std::ifstream file(filename, std::ios::binary);
     std::vector<uint8_t> fileBytes = std::vector<uint8_t>(
         std::istreambuf_iterator<char>(file),
@@ -78,17 +78,15 @@ Image createImageFromTGAFile(const char * filename) {
 
     Buffer stagingBuffer(BufferBuilder(byteCount).transferSource().hostVisible());
     stagingBuffer.setData(bytes, byteCount);
-
-    ScopedCommandBuffer commandBuffer;
+    free(bytes);
 
     Image image(ImageBuilder().fromStagingBuffer(stagingBuffer, width, height, format), commandBuffer);
-    commandBuffer.submitAndWait(); // image is not ready until the command buffer is submitted and completed
-
-    free(bytes);
-    return image;
+    return image; // images are not ready until the command buffer is submitted and done
 }
 
 int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
     SDLWindow window("VulkanApp", windowWidth, windowHeight);
 
     // There can only be one context, and creating it is required for other objects to construct.
@@ -98,9 +96,17 @@ int main(int argc, char *argv[]) {
     ShaderModule fragShaderModule(ShaderBuilder().fragment().fromFile("tri.frag.spv"));
     ShaderModule compShaderModule(ShaderBuilder().compute().fromFile("vertices.comp.spv"));
     ShaderModule meshShaderModule(ShaderBuilder().mesh().fromFile("quad.mesh.spv"));
+    
+    // depth buffer images, used for depth testing
+    ImageBuilder depthImagebuilder = ImageBuilder().depth();
+    ScopedCommandBuffer imageBuilderCommandBuffer;
+    Image textureImage = createImageFromTGAFile(imageBuilderCommandBuffer, "vulkan.tga");
+    std::vector<Image> depthImages;
+    for (size_t i=0; i<context.swapchainImageCount; ++i) {
+        depthImages.emplace_back(depthImagebuilder, imageBuilderCommandBuffer);
+    }
+    imageBuilderCommandBuffer.submitAndWait(); // all images are ready after this
 
-    // Image and sampler.  The image class encapsulates the image, memory, and imageview.
-    Image textureImage = createImageFromTGAFile("vulkan.tga");
     TextureSampler textureSampler;
  
     // uniform buffer data for our view projection matrix and z scale in compute
@@ -181,27 +187,16 @@ int main(int argc, char *argv[]) {
 
     // Command buffers are recorded into and submitted to a queue.
     // We have one command buffer for each swapchain image, and cycle through them.
-    // They must be reset before rewritten
+    // They must be reset before rewritten.
+    // You might want various static or dynamic command buffers in a real program.
     std::vector<CommandBuffer> commandBuffers(context.swapchainImageCount);
-    
-    // index of the swapchain resources to use for the next frame
-    uint32_t nextImage = 0;
-
-    // depth buffer images, used for depth testing
-    ImageBuilder depthImagebuilder = ImageBuilder().depth();
-    std::vector<Image> depthImages;
-    {
-        ScopedCommandBuffer imageBuilderCommandBuffer;
-        for (size_t i=0; i<context.swapchainImageCount; ++i) {
-            depthImages.emplace_back(depthImagebuilder, imageBuilderCommandBuffer);
-        }
-        imageBuilderCommandBuffer.submitAndWait(); // wait for the depth images to be ready
-    }
 
     // semaphore signaling when the next image has completed rendering
     // This is not used in this example.
     VkSemaphore unusedRenderFinishedSemaphore;
 
+    // index of the swapchain resources to use for the next frame
+    uint32_t nextImage = 0;
     Timer timer;
     bool done = false;
     while (!done) {
@@ -212,12 +207,12 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Frame objects provide convenient per-frame sync resources and track cleanup of destroyed buffer data.
+        // Frame objects provide per-frame sync resources and track cleanup of destroyed buffer data.
         // Only one one frame object can exist at a time.
         Frame frame;
 
         // The previous frame's resources might be in flight.  The oldest frame-in-flight's resources are what we will reuse.
-        // Acquire them into the frame object, and also block await that they are 
+        // Acquire them into the frame object and also block until they are ready.
         frame.prepareOldestFrameResources();
 
         // Acquire a new image from the swapchain.  The next image index has no guaranteed order.
@@ -270,14 +265,14 @@ int main(int argc, char *argv[]) {
             // This often happens once after the first frame.
             std::cout << "swap chain out of date, trying to remake" << std::endl;
 
-            ScopedCommandBuffer rebuildCommandBuffer;
-            rebuildPresentationResources(rebuildCommandBuffer);
+            imageBuilderCommandBuffer.reset();
+            frame.rebuildPresentationResources(imageBuilderCommandBuffer);
             depthImages.clear();
             for (size_t i=0; i<context.swapchainImageCount; ++i) {
-                depthImages.emplace_back(depthImagebuilder, rebuildCommandBuffer);
+                depthImages.emplace_back(depthImagebuilder, imageBuilderCommandBuffer);
             }
 
-            rebuildCommandBuffer.submitAndWait();
+            imageBuilderCommandBuffer.submitAndWait();
         }}
 
     // Wait until GPU is done with all work before cleaning up resources which could be in use.
