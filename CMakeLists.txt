@@ -86,7 +86,7 @@ foreach(SHADER ${FRAGMENT_SHADERS})
     set(SHADER_OUTPUT ${SHADER_BINARY_DIR}/${SHADER}.spv)
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
-        COMMAND ${GLSLC} ${SHADER_SOURCE} -o ${SHADER_OUTPUT}
+        COMMAND ${GLSLC} --target-env=vulkan1.2 ${SHADER_SOURCE} -o ${SHADER_OUTPUT}
         DEPENDS ${SHADER_SOURCE}
         COMMENT "Compiling fragment shader ${SHADER}"
     )
@@ -99,7 +99,7 @@ foreach(SHADER ${COMPUTE_SHADERS})
     set(SHADER_OUTPUT ${SHADER_BINARY_DIR}/${SHADER}.spv)
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
-        COMMAND ${GLSLC} ${SHADER_SOURCE} -o ${SHADER_OUTPUT}
+        COMMAND ${GLSLC} --target-env=vulkan1.2 ${SHADER_SOURCE} -o ${SHADER_OUTPUT}
         DEPENDS ${SHADER_SOURCE}
         COMMENT "Compiling compute shader ${SHADER}"
     )

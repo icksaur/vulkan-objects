@@ -1,4 +1,4 @@
-# Vulkan Objects Example
+# Vulkan Objects
 
 This code may help C++ developers learn Vulkan a bit.  The code doesn't remove the requirement to understand Vulkan concepts.
 

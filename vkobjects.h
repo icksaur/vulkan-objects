@@ -7,25 +7,85 @@
 #include <iostream>
 #include <fstream>
 #include <ranges>
+#include <functional>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
 #include <cstdint>
 
-// A set of resources scheduled for destruction.
-struct DestroyGeneration {
-    std::vector<VkBuffer> buffers;
-    std::vector<VkDeviceMemory> memories;
-    std::vector<VkCommandBuffer> commandBuffers;
-    void destroy();
-    ~DestroyGeneration();
-};
-
 // function pointers for extensions
 extern PFN_vkCmdDrawMeshTasksEXT vkCmdDrawMeshTasks;
 extern PFN_vkCmdBeginRendering vkBeginRendering;
 extern PFN_vkCmdEndRendering vkEndRendering;
+
+// --- Synchronization2 enum wrappers ---
+
+enum class Stage : uint64_t {
+    None        = VK_PIPELINE_STAGE_2_NONE,
+    Transfer    = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+    Compute     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+    Fragment    = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+    MeshShader  = VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT,
+    ColorOutput = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+    EarlyFragment = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+    LateFragment  = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+    AllCommands = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+    AllGraphics = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+    Host        = VK_PIPELINE_STAGE_2_HOST_BIT,
+    DrawIndirect = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+};
+inline Stage operator|(Stage a, Stage b) {
+    return static_cast<Stage>(static_cast<uint64_t>(a) | static_cast<uint64_t>(b));
+}
+
+enum class Access : uint64_t {
+    None              = VK_ACCESS_2_NONE,
+    ShaderRead        = VK_ACCESS_2_SHADER_READ_BIT,
+    ShaderWrite       = VK_ACCESS_2_SHADER_WRITE_BIT,
+    TransferRead      = VK_ACCESS_2_TRANSFER_READ_BIT,
+    TransferWrite     = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+    HostRead          = VK_ACCESS_2_HOST_READ_BIT,
+    HostWrite         = VK_ACCESS_2_HOST_WRITE_BIT,
+    MemoryRead        = VK_ACCESS_2_MEMORY_READ_BIT,
+    MemoryWrite       = VK_ACCESS_2_MEMORY_WRITE_BIT,
+    ColorAttachmentRead  = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+    ColorAttachmentWrite = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+    DepthStencilRead     = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+    DepthStencilWrite    = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+    IndirectCommandRead  = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
+};
+inline Access operator|(Access a, Access b) {
+    return static_cast<Access>(static_cast<uint64_t>(a) | static_cast<uint64_t>(b));
+}
+
+enum class Layout : int32_t {
+    Undefined            = VK_IMAGE_LAYOUT_UNDEFINED,
+    General              = VK_IMAGE_LAYOUT_GENERAL,
+    ColorAttachment      = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    DepthStencilAttachment = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    ShaderReadOnly       = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    TransferSrc          = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    TransferDst          = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+    PresentSrc           = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    Attachment           = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+    ReadOnly             = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+};
+
+// --- Resource destruction ---
+
+struct DestroyGeneration {
+    std::vector<VkBuffer> buffers;
+    std::vector<VkDeviceMemory> memories;
+    std::vector<VkCommandBuffer> commandBuffers;
+    std::vector<VkImage> images;
+    std::vector<VkImageView> imageViews;
+    std::vector<VkSampler> samplers;
+    void destroy();
+    ~DestroyGeneration();
+};
+
+// --- Context ---
 
 struct VulkanContextOptions {
     bool enableMultisampling;
@@ -42,8 +102,37 @@ struct VulkanContextOptions {
     VulkanContextOptions & throwOnValidationError();
 };
 
+struct BindlessTable {
+    static constexpr uint32_t MAX_STORAGE_BUFFERS = 16384;
+    static constexpr uint32_t MAX_SAMPLERS = 16384;
+    static constexpr uint32_t MAX_STORAGE_IMAGES = 4096;
+
+    VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+
+    std::vector<uint32_t> freeStorageBufferIndices;
+    std::vector<uint32_t> freeSamplerIndices;
+    std::vector<uint32_t> freeStorageImageIndices;
+    uint32_t nextStorageBufferIndex = 0;
+    uint32_t nextSamplerIndex = 0;
+    uint32_t nextStorageImageIndex = 0;
+
+    void init(VkDevice device);
+    void destroy(VkDevice device);
+
+    uint32_t registerStorageBuffer(VkDevice device, VkBuffer buffer, VkDeviceSize size);
+    uint32_t registerSampler(VkDevice device, VkImageView imageView, VkSampler sampler);
+    uint32_t registerStorageImage(VkDevice device, VkImageView imageView);
+    void releaseStorageBuffer(uint32_t index);
+    void releaseSampler(uint32_t index);
+    void releaseStorageImage(uint32_t index);
+};
+
+struct Commands;
+
 struct VulkanContext {
-    // things that will not change during the context lifetime
     SDL_Window * window;
     size_t windowWidth;
     size_t windowHeight;
@@ -63,44 +152,33 @@ struct VulkanContext {
     VulkanContextOptions options;
     VkPhysicalDeviceLimits limits;
     VkPhysicalDeviceMeshShaderPropertiesEXT meshShaderProperties;
-    uint32_t nextResourceIndex;
 
-    // things that will change during the context lifetime
+    BindlessTable bindlessTable;
+    std::function<void(Commands &, VkExtent2D)> resizeCallback;
+    std::vector<VkCommandBuffer> frameCommandBuffers;
+
     size_t frameInFlightIndex;
 
-    // presentation loop sync primitives
     std::vector<VkSemaphore> imageAvailableSemaphores;
     std::vector<VkSemaphore> renderFinishedSemaphores;
     std::vector<VkFence> submittedBuffersFinishedFences;
 
-    // presentation loop resources that may need to be rebuilt
     std::vector<VkImage> swapchainImages;
     std::vector<VkImageView> swapchainImageViews;
 
-    // managed resource collections that will be auto-cleaned when the context is destroyed
     std::vector<VkSemaphore> semaphores;
     std::vector<VkFence> fences;
-    std::set<VkDescriptorSetLayout> layouts;
-    std::set<VkPipelineLayout> pipelineLayouts;
     std::set<VkPipeline> pipelines;
 
-    // managed resource collections that will be auto-cleaned after swapchain frames have passed
     std::vector<DestroyGeneration> destroyGenerations;
+
     VulkanContext(SDL_Window * window, VulkanContextOptions & options);
     ~VulkanContext();
     VulkanContext & operator=(const VulkanContext & other) = delete;
     VulkanContext(const VulkanContext & other) = delete;
-    VulkanContext(VulkanContext && other) = delete; 
+    VulkanContext(VulkanContext && other) = delete;
 
-    // What's NOT automatically created and why not?
-/*
-    Command Buffers
-    We need one per swapchain image.  The program may want static ones, or more 
-    with complex semaphore dependencies, or others that are running concurrently.  All are outside the context.
-
-    Pipelines
-    Pipelines configuration will be unique to your program.  There's no one-size-fits-all or we'd have the OpenGL fixed-function pipeline!
-*/
+    void onSwapchainResize(std::function<void(Commands &, VkExtent2D)> callback);
 };
 
 struct VulkanContextSingleton {
@@ -108,8 +186,9 @@ struct VulkanContextSingleton {
     VulkanContext& operator()();
 };
 
-// Declare the global instance as extern
 extern VulkanContextSingleton g_context;
+
+// --- Shaders ---
 
 struct ShaderBuilder {
     VkShaderStageFlagBits stage;
@@ -129,6 +208,8 @@ struct ShaderModule {
     ~ShaderModule();
     operator VkShaderModule() const;
 };
+
+// --- Buffers ---
 
 struct BufferBuilder {
     VkBufferUsageFlags usage;
@@ -152,7 +233,9 @@ struct Buffer {
     VkBuffer buffer;
     VkDeviceMemory memory;
     size_t size;
+    uint32_t rid_;
 
+    uint32_t rid() const;
     void setData(void * bytes, size_t size);
     void setData(void * bytes, size_t size, VkDeviceSize offset);
     void getData(void * bytes, size_t size);
@@ -163,12 +246,14 @@ struct Buffer {
     operator VkBuffer*() const;
 };
 
+// --- Images ---
+
 struct ImageBuilder {
     bool buildMipmaps;
     void * bytes;
     Buffer * stagingBuffer;
     VkFormat format;
-    VkExtent2D extent; // width and height
+    VkExtent2D extent;
     bool isDepthBuffer;
     VkSampleCountFlagBits sampleBits;
     VkImageUsageFlags usage;
@@ -186,212 +271,98 @@ struct Image {
     VkImage image;
     VkDeviceMemory memory;
     VkImageView imageView;
+    VkSampler sampler;
+    uint32_t rid_;
+    bool isStorageImage;
+
+    uint32_t rid() const;
     Image(Image && other);
     Image(ImageBuilder & builder, VkCommandBuffer commandBuffer);
     operator VkImage() const;
     ~Image();
 };
 
-struct ImageTransition {
-    VkImageMemoryBarrier barrier;
-    VkPipelineStageFlags srcStageFlags, dstStageFlags;
-    ImageTransition(VkImage image, size_t mipLevels, VkImageLayout oldLayout, VkImageLayout newLayout);
-    ImageTransition & srcStages(VkPipelineStageFlags stage);
-    ImageTransition & dstStages(VkPipelineStageFlags stage);
-    ImageTransition & srcAccess(VkAccessFlags access);
-    ImageTransition & dstAccess(VkAccessFlags access);
-    ImageTransition & aspectMask(VkImageAspectFlags aspectMask);
-    ImageTransition & record(VkCommandBuffer commandBuffer);
+// --- Barrier ---
+
+struct Barrier {
+    VkCommandBuffer commandBuffer;
+    bool hasBuffer;
+    bool hasImage;
+    VkBufferMemoryBarrier2 bufBarrier;
+    VkImageMemoryBarrier2 imgBarrier;
+
+    Barrier(VkCommandBuffer cmd);
+    Barrier & buffer(VkBuffer buf);
+    Barrier & image(VkImage img, uint32_t mipLevels = 1);
+    Barrier & from(Stage stage, Access access);
+    Barrier & from(Stage stage, Access access, Layout layout);
+    Barrier & to(Stage stage, Access access);
+    Barrier & to(Stage stage, Access access, Layout layout);
+    Barrier & aspectMask(VkImageAspectFlags aspects);
+    void record();
 };
 
-struct TextureSampler {
-    VkSampler sampler;
-    TextureSampler();
-    ~TextureSampler();
-    operator VkSampler() const;
-};
+// --- Frame & Commands ---
 
-struct CommandBuffer {
-    VkCommandBuffer buffer;
-    CommandBuffer();
-    ~CommandBuffer();
-    void reset();
-    operator VkCommandBuffer() const;
-};
-
-struct PushConstantsBuilder {
-    std::vector<VkPushConstantRange> ranges;
-    VkShaderStageFlags currentBits;
-    PushConstantsBuilder();
-    PushConstantsBuilder & addRange(size_t offset, size_t size, VkShaderStageFlags stageBits);
-    operator std::vector<VkPushConstantRange> & ();
-};
-
-struct DescriptorLayoutBuilder {
-    std::vector<VkDescriptorSetLayoutBinding> bindings;
-    DescriptorLayoutBuilder();
-    void addDescriptor(uint32_t binding, uint32_t count, VkShaderStageFlags stages, VkDescriptorType type);
-    DescriptorLayoutBuilder & addStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
-    DescriptorLayoutBuilder & addSampler(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
-    DescriptorLayoutBuilder & addUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
-    DescriptorLayoutBuilder & addStorageImage(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
-    DescriptorLayoutBuilder & addDynamicStorageBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
-    DescriptorLayoutBuilder & addDynamicUniformBuffer(uint32_t binding, uint32_t count, VkShaderStageFlags stages);
-    VkDescriptorSetLayout build();
-    void reset();
-    void throwIfDuplicate(uint32_t binding);
-};
-
-struct DescriptorPool {
-    VkDescriptorPool pool;
-    DescriptorPool(struct DescriptorPoolBuilder & builder);
-    void reset();
-    VkDescriptorSet allocate(VkDescriptorSetLayout layout);
-    ~DescriptorPool();
-};
-
-struct DescriptorPoolBuilder {
-    std::vector<VkDescriptorPoolSize> sizes;
-    uint32_t _maxDescriptorSets;
-    DescriptorPoolBuilder();
-    DescriptorPoolBuilder & addStorageBuffer(uint32_t count);
-    DescriptorPoolBuilder & addSampler(uint32_t count);
-    DescriptorPoolBuilder & addUniformBuffer(uint32_t count);
-    DescriptorPoolBuilder & addStorageImage(uint32_t count);
-    DescriptorPoolBuilder & addDynamicStorageBuffer(uint32_t count);
-    DescriptorPoolBuilder & addDynamicUniformBuffer(uint32_t count);
-    DescriptorPoolBuilder & maxSets(uint32_t count);
-    DescriptorPool build();
-};
-
-struct DescriptorSetBinder {
-    VkDescriptorSet descriptorSet;
-    std::vector<VkWriteDescriptorSet> descriptorWriteSets;
-    std::vector<VkDescriptorImageInfo> imageInfos;
-    std::vector<VkDescriptorBufferInfo> bufferInfos;
-    DescriptorSetBinder(VkDescriptorSet descriptorSet);
-    DescriptorSetBinder & bindSampler(uint32_t bindingIndex, TextureSampler & sampler, Image & image);
-    DescriptorSetBinder & bindBuffer(uint32_t bindingIndex, const Buffer & buffer, VkDescriptorType descriptorType, VkDeviceSize offset = 0, VkDeviceSize deviceSize = VK_WHOLE_SIZE);
-    DescriptorSetBinder & bindUniformBuffer(uint32_t bindingIndex, const Buffer & buffer);
-    DescriptorSetBinder & bindStorageBuffer(uint32_t bindingIndex, const Buffer & buffer);
-    DescriptorSetBinder & bindStorageBuffer(uint32_t bindingIndex, const Buffer & buffer, size_t size);
-    DescriptorSetBinder & bindDynamicStorageBuffer(uint32_t bindingIndex, const Buffer & buffer, size_t offset, VkDeviceSize size);
-    DescriptorSetBinder & bindDynamicUniformBuffer(uint32_t bindingIndex, const Buffer & buffer, size_t offset, VkDeviceSize size);
-    DescriptorSetBinder & bindStorageImage(uint32_t bindingIndex, Image & image);
-    void updateSets();
-};
-
-// Help to advance the frame and do post-frame generational resource cleanup scheduling.
-// This class does too much and its methods MUST be called in order to work properly. :(
 struct Frame {
     VulkanContext & context;
     size_t inFlightIndex;
-    bool preparedOldResources;
-    bool cleanedup;
     VkSemaphore imageAvailableSemaphore;
     VkSemaphore renderFinishedSemaphore;
     VkFence submittedBuffersFinishedFence;
-    int nextImageIndex;
-    static const int UnacquiredIndex = -1;
+    uint32_t imageIndex;
+    bool submitted;
 
     static Frame * currentGuard;
 
     Frame();
     ~Frame();
-    void prepareOldestFrameResources();
-    void acquireNextImageIndex(uint32_t & nextImage, VkSemaphore & renderFinishedSemaphore);
-    uint32_t acquireNextImageIndex();
-    void submitCommandBuffer(VkCommandBuffer commandBuffer);
-    void submitCommandBuffer(VkCommandBuffer commandBuffer, std::vector<VkSemaphore> & additionalWaitSemaphores, std::vector<VkSemaphore> & additionalSignalSemaphores);
-    bool tryPresentQueue();
-    void rebuildPresentationResources(VkCommandBuffer commandBuffer);
-    void cleanup();
+
+    uint32_t swapchainImageIndex() const;
+    VkImageView swapchainImageView() const;
+    Commands beginCommands();
+    void submit(Commands & cmd);
 };
 
+struct Commands {
+    VkCommandBuffer commandBuffer;
+    bool ended;
+    bool ownsBuffer;
+
+    Commands(VkCommandBuffer cmd, bool owns = false);
+    Commands(Commands && other);
+    Commands(const Commands &) = delete;
+    Commands & operator=(const Commands &) = delete;
+    ~Commands();
+
+    static Commands oneShot();
+
+    void bindCompute(VkPipeline pipeline);
+    void bindGraphics(VkPipeline pipeline);
+    void dispatch(uint32_t x, uint32_t y, uint32_t z);
+    void drawMeshTasks(uint32_t x, uint32_t y, uint32_t z);
+    void pushConstants(const void * data, uint32_t size);
+    void beginRendering(VkImageView colorImage, VkImageView depthImage);
+    void endRendering();
+    void bufferBarrier(VkBuffer buffer, Stage srcStage, Stage dstStage);
+    void imageBarrier(VkImage image, Stage srcStage, Access srcAccess, Layout oldLayout,
+                      Stage dstStage, Access dstAccess, Layout newLayout, uint32_t mipLevels = 1);
+    void submitAndWait();
+    void end();
+
+    operator VkCommandBuffer();
+};
+
+// --- Pipelines ---
 
 struct GraphicsPipelineBuilder {
-    VkPipelineLayout pipelineLayout;
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
     VkSampleCountFlagBits sampleCountBit;
-    GraphicsPipelineBuilder(VkPipelineLayout layout);
+    GraphicsPipelineBuilder();
     GraphicsPipelineBuilder & addMeshShader(ShaderModule & meshShaderModule, const char * entryPoint = "main");
     GraphicsPipelineBuilder & addFragmentShader(ShaderModule & fragmentShaderModule, const char *entryPoint = "main");
     GraphicsPipelineBuilder & sampleCount(size_t sampleCount);
     VkPipeline build();
 };
 
-struct MultisampleRenderingRecording {
-    VkCommandBuffer commandBuffer;
-    MultisampleRenderingRecording(
-        VkCommandBuffer commandBuffer,
-        VkImageView multisampleColor,
-        VkImageView multisampleResolveImage,
-        VkImageView depthImage);
-    ~MultisampleRenderingRecording();
-};
-
-struct RenderingRecording {
-    std::vector<VkRenderingAttachmentInfo> colorAttachments;
-    VkRenderingAttachmentInfo depthAttachment;
-    VkCommandBuffer commandBuffer;
-    void init(std::vector<VkImageView> & colorImages, VkImageView depthImage);
-    RenderingRecording(VkCommandBuffer commandBuffer, std::vector<VkImageView> & colorImages, VkImageView depthImage);
-    RenderingRecording(VkCommandBuffer commandBuffer, VkImageView colorImage, VkImageView depthImage);
-    ~RenderingRecording();
-};
-
-struct CommandBufferRecording {
-    VkCommandBuffer commandBuffer;
-    CommandBufferRecording(VkCommandBuffer commandBuffer);
-    operator VkCommandBuffer();
-    ~CommandBufferRecording();
-};
-
-struct BufferBarrier {
-    VkBufferMemoryBarrier barrier;
-    VkPipelineStageFlags srcStage;
-    VkPipelineStageFlags dstStage;
-    bool toIndirect;
-    VkCommandBuffer commandBuffer;
-    BufferBarrier(VkCommandBuffer commandBuffer);
-    BufferBarrier & buffer(VkBuffer buffer);
-    BufferBarrier & fromHost();
-    BufferBarrier & toHost();
-    BufferBarrier & fromCompute();
-    BufferBarrier & toCompute();
-    BufferBarrier & toFragment();
-    BufferBarrier & indirect();
-    void command();
-};
-
-struct ImageBarrier {
-    VkImageMemoryBarrier barrier;
-    VkPipelineStageFlags srcStageFlags;
-    VkPipelineStageFlags dstStageFlags;
-    VkCommandBuffer commandBuffer;
-    ImageBarrier(VkCommandBuffer commandBuffer);
-    ImageBarrier & fromLayout(VkImageLayout oldLayout);
-    ImageBarrier & toLayout(VkImageLayout newLayout);
-    ImageBarrier & image(VkImage image, size_t mipLevels);
-    ImageBarrier & srcAccess(VkAccessFlags access);
-    ImageBarrier & dstAccess(VkAccessFlags access);
-    ImageBarrier & srcStage(VkPipelineStageFlags stage);
-    ImageBarrier & dstStage(VkPipelineStageFlags stage);
-    void command();
-};
-
-// a helper to start and end a command buffer which can be submitted and waited
-struct ScopedCommandBuffer {
-    VkCommandBuffer commandBuffer;
-    ScopedCommandBuffer();
-    ScopedCommandBuffer(VkDevice device, VkCommandPool commandPool);
-    void submit();
-    void reset();
-    void submitAndWait();
-    operator VkCommandBuffer();
-    ~ScopedCommandBuffer();
-};
-
-VkPipeline createComputePipeline(VkPipelineLayout pipelineLayout, VkShaderModule computeShaderModule, const char * entryPoint = "main");
-VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> & descriptorSetLayouts, const std::vector<VkPushConstantRange> & pushConstantRanges);
-VkPipelineLayout createPipelineLayout(const std::vector<VkDescriptorSetLayout> & descriptorSetLayouts);
+VkPipeline createComputePipeline(VkShaderModule computeShaderModule, const char * entryPoint = "main");

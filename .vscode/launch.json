@@ -7,12 +7,8 @@
         {
             "name": "debug ",
             "type":"lldb",
-            "linux": {
-                "cwd": "${workspaceFolder}",
-                "program": "${workspaceFolder}/vulkan"
-            },
             "cwd": "${workspaceFolder}",
-            "program": "${workspaceFolder}/vulkan",
+            "program": "${workspaceFolder}/build/vulkan",
             "request": "launch",
             "args": [""],
             "stopOnEntry": false,
