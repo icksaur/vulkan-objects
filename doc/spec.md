@@ -122,15 +122,17 @@ The existing `depthImages` vector establishes the per-frame pattern. Shadow maps
 
 ### rendering overloads
 
-`Commands::beginRendering` has three overloads covering the common cases:
+`Commands::beginRendering` has five overloads covering the common cases:
 
 | Overload | Color target | Depth target | Use case |
 |----------|-------------|-------------|----------|
+| `()` | Swapchain (from frame) | None | Fullscreen blit / overlay |
 | `(VkImageView depth)` | Swapchain (from frame) | Provided depth view | Main scene pass |
 | `(VkImageView depth, VkExtent2D extent)` | None | Provided depth view | Shadow map pass |
-| `(VkImageView color, VkImageView depth, VkExtent2D extent)` | Provided color view | Provided depth view | Offscreen color+depth |
+| `(VkImageView color, VkImageView depth, VkExtent2D extent)` | Provided color view | Provided depth view | Single offscreen color+depth |
+| `(span<VkImageView> colors, VkImageView depth, VkExtent2D extent)` | Provided color views | Provided depth view | Multi-color-attachment offscreen |
 
-All use `VK_ATTACHMENT_LOAD_OP_CLEAR` and `VK_ATTACHMENT_STORE_OP_STORE`. The depth-only overload (no color attachment) is essential for shadow map passes where no fragment shader runs.
+All use `VK_ATTACHMENT_LOAD_OP_CLEAR` and `VK_ATTACHMENT_STORE_OP_STORE`. All overloads set viewport/scissor before `vkBeginRendering` (dynamic state persists across passes — must be set explicitly each time). The depth-only overload (no color attachment) is essential for shadow map passes where no fragment shader runs.
 
 ### depth-sampled images
 
@@ -164,13 +166,56 @@ Pipeline shadowPipeline = GraphicsPipelineBuilder()
     .build();
 ```
 
-### future: multi-color-attachment rendering
+### color render targets
 
-G-buffer / deferred rendering requires multiple color attachments (position, normal, albedo). This needs:
-- A `beginRendering` overload accepting a span of color image views
-- Pipeline builder support for multiple color attachment formats
+Regular color images (from `ImageBuilder().fromStagingBuffer(...)`) are textures — they have sampler/RID but no attachment usage. Plain `ImageBuilder().color()` creates a window-sized image with no explicit attachment support.
 
-This is not needed for shadow maps and is deferred to the backlog.
+Color render targets (`ImageBuilder().colorTarget(w, h)`) serve double duty: color attachment during an offscreen pass, then sampled texture in a later pass. They:
+
+- Use the swapchain color format by default, or an explicit format via `colorTarget(w, h, format)`
+- Have usage flags `COLOR_ATTACHMENT | SAMPLED` (plus TRANSFER bits added automatically)
+- Create a standard sampler and register in the bindless table (RID)
+- Initial layout: `ColorAttachment` (ready for rendering)
+
+After rendering to a color target, a barrier transitions it to `ShaderReadOnly` for sampling, then back to `ColorAttachment` for the next frame.
+
+### multi-color-attachment rendering
+
+`Commands::beginRendering(std::span<const VkImageView> colors, VkImageView depth, VkExtent2D extent)` accepts N color attachments for MRT (multiple render target) rendering. Each color attachment is cleared and stored.
+
+`GraphicsPipelineBuilder::colorFormats(std::vector<VkFormat>)` specifies the color attachment formats. When not called, defaults to a single attachment with the swapchain color format (preserving existing behavior). The color blend state automatically creates one blend attachment per format.
+
+```cpp
+// Offscreen rendering to a single color target
+Image offscreen(ImageBuilder().colorTarget(1280, 720), setupCmd);
+
+cmd.beginRendering(offscreen.imageView, depthImage.imageView, {1280, 720});
+cmd.bindGraphics(pipeline);
+cmd.drawMeshTasks(count, 1, 1);
+cmd.endRendering();
+
+// Barrier: color attachment → shader readable
+Barrier(cmd).image(offscreen, 1)
+    .from(Stage::ColorOutput, Access::ColorAttachmentWrite, Layout::ColorAttachment)
+    .to(Stage::Fragment, Access::ShaderRead, Layout::ShaderReadOnly)
+    .record();
+
+// Sample the offscreen image via RID in a later pass
+push.textureRID = offscreen.rid();
+```
+
+For MRT / G-buffer passes (future use):
+
+```cpp
+Pipeline gbufferPipeline = GraphicsPipelineBuilder()
+    .meshShader(meshShader)
+    .fragmentShader(gbufferFrag)
+    .colorFormats({VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM})
+    .build();
+
+std::array colorViews = { albedo.imageView, normals.imageView };
+cmd.beginRendering(colorViews, depthImage.imageView, extent);
+```
 
 ## synchronization model
 
@@ -242,9 +287,10 @@ Render targets that are written each frame need one per `swapchainImageCount` (s
 
 ### render to offscreen image ✓
 
-Two offscreen overloads of `Commands::beginRendering()`:
+Three offscreen overloads of `Commands::beginRendering()`:
 - `beginRendering(depthView, extent)` — depth-only offscreen (shadow maps)
-- `beginRendering(colorView, depthView, extent)` — color + depth offscreen
+- `beginRendering(colorView, depthView, extent)` — single color + depth offscreen
+- `beginRendering(span<colorViews>, depthView, extent)` — multi-color + depth offscreen
 
 ### indirect dispatch/draw ✓
 

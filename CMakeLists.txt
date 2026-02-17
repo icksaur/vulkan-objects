@@ -69,9 +69,9 @@ find_program(GLSLC glslc REQUIRED)
 # Shader compilation — SPV output next to source
 set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders)
 
-set(FRAGMENT_SHADERS shadow.frag)
+set(FRAGMENT_SHADERS shadow.frag blit.frag)
 set(COMPUTE_SHADERS cubes.comp)
-set(MESH_SHADERS cube.mesh shadow.mesh)
+set(MESH_SHADERS cube.mesh shadow.mesh fullscreen.mesh)
 
 # Compile fragment shaders
 foreach(SHADER ${FRAGMENT_SHADERS})

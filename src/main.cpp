@@ -115,26 +115,32 @@ int main(int argc, char *argv[]) {
     ShaderModule shadowMeshModule(ShaderBuilder().mesh().fromFile("src/shaders/shadow.mesh.spv"));
     ShaderModule shadowFragModule(ShaderBuilder().fragment().fromFile("src/shaders/shadow.frag.spv"));
     ShaderModule cubeCompModule(ShaderBuilder().compute().fromFile("src/shaders/cubes.comp.spv"));
+    ShaderModule fullscreenMeshModule(ShaderBuilder().mesh().fromFile("src/shaders/fullscreen.mesh.spv"));
+    ShaderModule blitFragModule(ShaderBuilder().fragment().fromFile("src/shaders/blit.frag.spv"));
 
     // One-shot setup
     auto setupCmd = Commands::oneShot();
     Image textureImage = createImageFromTGAFile(setupCmd, "vulkan.tga");
 
-    // Per-swapchain depth images (main pass) and shadow maps
+    // Per-swapchain render targets
     std::vector<Image> depthImages;
     std::vector<Image> shadowMaps;
+    std::vector<Image> offscreenColors;
     for (size_t i = 0; i < context.swapchainImageCount; ++i) {
         depthImages.emplace_back(ImageBuilder().depth(), setupCmd);
         shadowMaps.emplace_back(ImageBuilder().depthSampled(shadowMapRes, shadowMapRes), setupCmd);
+        offscreenColors.emplace_back(ImageBuilder().colorTarget(windowWidth, windowHeight), setupCmd);
     }
     setupCmd.submitAndWait();
 
-    // Resize callback — recreate depth images; shadow maps are fixed resolution
+    // Resize callback — recreate depth images and offscreen colors; shadow maps are fixed resolution
     context.onSwapchainResize([&](Commands & cmd, VkExtent2D extent) {
-        (void)extent;
         depthImages.clear();
-        for (size_t i = 0; i < context.swapchainImageCount; ++i)
+        offscreenColors.clear();
+        for (size_t i = 0; i < context.swapchainImageCount; ++i) {
             depthImages.emplace_back(ImageBuilder().depth(), cmd);
+            offscreenColors.emplace_back(ImageBuilder().colorTarget(extent.width, extent.height), cmd);
+        }
     });
 
     // Vertex buffer: cubeCount cubes × 36 verts × 8 floats (pos3, normal3, uv2)
@@ -161,6 +167,11 @@ int main(int argc, char *argv[]) {
         .build();
 
     Pipeline computePipeline = createComputePipeline(cubeCompModule);
+
+    Pipeline blitPipeline = GraphicsPipelineBuilder()
+        .meshShader(fullscreenMeshModule)
+        .fragmentShader(blitFragModule)
+        .build();
 
     // Camera: looking down at the scene from above and to the side
     Camera camera;
@@ -222,18 +233,39 @@ int main(int argc, char *argv[]) {
             .aspectMask(VK_IMAGE_ASPECT_DEPTH_BIT)
             .record();
 
-        // 3. Main pass: render scene with shadow sampling
-        cmd.beginRendering(depthImages[idx].imageView);
+        // 3. Main pass: render scene to offscreen color target (not swapchain)
+        VkExtent2D offscreenExtent = {(uint32_t)context.windowWidth, (uint32_t)context.windowHeight};
+        cmd.beginRendering(offscreenColors[idx].imageView, depthImages[idx].imageView, offscreenExtent);
         cmd.bindGraphics(graphicsPipeline);
         cmd.pushConstants(&push, sizeof(push));
         cmd.drawMeshTasks(cubeCount, 1, 1);
         cmd.endRendering();
 
-        // Barrier: transition shadow map back for next frame's shadow pass
+        // Barrier: offscreen color → shader readable for blit
+        Barrier(cmd).image(offscreenColors[idx], 1)
+            .from(Stage::ColorOutput, Access::ColorAttachmentWrite, Layout::ColorAttachment)
+            .to(Stage::Fragment, Access::ShaderRead, Layout::ShaderReadOnly)
+            .record();
+
+        // Barrier: shadow map back for next frame
         Barrier(cmd).image(shadowMaps[idx], 1)
             .from(Stage::Fragment, Access::ShaderRead, Layout::DepthReadOnly)
             .to(Stage::EarlyFragment, Access::DepthStencilWrite, Layout::DepthStencilAttachment)
             .aspectMask(VK_IMAGE_ASPECT_DEPTH_BIT)
+            .record();
+
+        // 4. Blit pass: sample offscreen texture, draw to swapchain (no depth needed)
+        cmd.beginRendering();
+        cmd.bindGraphics(blitPipeline);
+        uint32_t blitRID = offscreenColors[idx].rid();
+        cmd.pushConstants(&blitRID, sizeof(blitRID));
+        cmd.drawMeshTasks(1, 1, 1);
+        cmd.endRendering();
+
+        // Barrier: offscreen color back to ColorAttachment for next frame
+        Barrier(cmd).image(offscreenColors[idx], 1)
+            .from(Stage::Fragment, Access::ShaderRead, Layout::ShaderReadOnly)
+            .to(Stage::ColorOutput, Access::ColorAttachmentWrite, Layout::ColorAttachment)
             .record();
 
         frame.submit(cmd);

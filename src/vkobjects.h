@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <array>
 #include <utility>
+#include <span>
 
 // --- Synchronization2 enum wrappers ---
 
@@ -291,12 +292,15 @@ struct ImageBuilder {
     VkExtent2D extent;
     bool isDepthBuffer;
     bool isDepthSampled;
+    bool isColorTarget;
     VkSampleCountFlagBits sampleBits;
     VkImageUsageFlags usage;
     ImageBuilder();
     ImageBuilder & createMipmaps(bool buildMipmaps);
     ImageBuilder & depth();
     ImageBuilder & depthSampled(uint32_t width, uint32_t height);
+    ImageBuilder & colorTarget(uint32_t width, uint32_t height);
+    ImageBuilder & colorTarget(uint32_t width, uint32_t height, VkFormat format);
     ImageBuilder & fromStagingBuffer(Buffer & stagingBuffer, int width, int height, VkFormat format);
     ImageBuilder & color();
     ImageBuilder & multisample();
@@ -390,9 +394,11 @@ public:
     void drawMeshTasks(uint32_t x, uint32_t y, uint32_t z);
     void drawMeshTasksIndirect(VkBuffer buffer, uint32_t drawCount, VkDeviceSize offset = 0, uint32_t stride = 12);
     void pushConstants(const void * data, uint32_t size);
+    void beginRendering();
     void beginRendering(VkImageView depthImage);
     void beginRendering(VkImageView depthImage, VkExtent2D extent);
     void beginRendering(VkImageView colorImage, VkImageView depthImage, VkExtent2D extent);
+    void beginRendering(std::span<const VkImageView> colorImages, VkImageView depthImage, VkExtent2D extent);
     void endRendering();
     void setViewport(float x, float y, float width, float height);
     void setScissor(int32_t x, int32_t y, uint32_t width, uint32_t height);
@@ -436,11 +442,13 @@ struct GraphicsPipelineBuilder {
     VkSampleCountFlagBits sampleCountBit;
     bool isDepthOnly;
     VkFormat depthOnlyFormat;
+    std::vector<VkFormat> colorAttachmentFormats;
     GraphicsPipelineBuilder();
     GraphicsPipelineBuilder & meshShader(ShaderModule & meshShaderModule, const char * entryPoint = "main");
     GraphicsPipelineBuilder & fragmentShader(ShaderModule & fragmentShaderModule, const char *entryPoint = "main");
     GraphicsPipelineBuilder & sampleCount(size_t sampleCount);
     GraphicsPipelineBuilder & depthOnly(VkFormat format = VK_FORMAT_D32_SFLOAT);
+    GraphicsPipelineBuilder & colorFormats(std::vector<VkFormat> formats);
     Pipeline build();
 };
 

@@ -47,6 +47,11 @@ GraphicsPipelineBuilder & GraphicsPipelineBuilder::depthOnly(VkFormat format) {
     return *this;
 }
 
+GraphicsPipelineBuilder & GraphicsPipelineBuilder::colorFormats(std::vector<VkFormat> formats) {
+    colorAttachmentFormats = std::move(formats);
+    return *this;
+}
+
 static void validateShaderBindings(const ShaderReflection & r, const std::string & name) {
     for (auto & [set, binding] : r.descriptorBindings) {
         if (set != 0) {
@@ -178,11 +183,17 @@ Pipeline GraphicsPipelineBuilder::build() {
     colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     colorBlendAttachment.blendEnable = VK_FALSE;
 
+    std::vector<VkFormat> formats = colorAttachmentFormats.empty()
+        ? std::vector<VkFormat>{g_context().colorFormat}
+        : colorAttachmentFormats;
+    uint32_t colorCount = isDepthOnly ? 0u : (uint32_t)formats.size();
+    std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments(colorCount, colorBlendAttachment);
+
     VkPipelineColorBlendStateCreateInfo colorBlending = {};
     colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     colorBlending.logicOpEnable = VK_FALSE;
-    colorBlending.attachmentCount = isDepthOnly ? 0u : 1u;
-    colorBlending.pAttachments = isDepthOnly ? nullptr : &colorBlendAttachment;
+    colorBlending.attachmentCount = colorCount;
+    colorBlending.pAttachments = colorCount > 0 ? colorBlendAttachments.data() : nullptr;
 
     VkPipelineMultisampleStateCreateInfo multisampling = {};
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -202,11 +213,10 @@ Pipeline GraphicsPipelineBuilder::build() {
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
 
-    VkFormat colorFormat = g_context().colorFormat;
     VkPipelineRenderingCreateInfo renderingInfo = {};
     renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
-    renderingInfo.colorAttachmentCount = isDepthOnly ? 0u : 1u;
-    renderingInfo.pColorAttachmentFormats = isDepthOnly ? nullptr : &colorFormat;
+    renderingInfo.colorAttachmentCount = colorCount;
+    renderingInfo.pColorAttachmentFormats = colorCount > 0 ? formats.data() : nullptr;
     renderingInfo.depthAttachmentFormat = isDepthOnly ? depthOnlyFormat : depthFormat;
     renderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 

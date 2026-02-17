@@ -61,6 +61,38 @@ void Commands::pushConstants(const void * data, uint32_t size) {
     vkCmdPushConstants(commandBuffer, g_context().bindlessTable.pipelineLayout, VK_SHADER_STAGE_ALL, 0, size, data);
 }
 
+void Commands::beginRendering() {
+    if (!frame) throw std::runtime_error("beginRendering requires a frame-bound Commands (use frame.beginCommands())");
+
+    VkRenderingAttachmentInfo colorAttachment = {};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = frame->swapchainImageView();
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkClearValue clearColor = { .color = { 0.0f, 0.0f, 0.0f, 1.0f } };
+    colorAttachment.clearValue = clearColor;
+
+    VkRenderingInfo renderingInfo = {};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea = { 0, 0, (uint32_t)g_context().windowWidth, (uint32_t)g_context().windowHeight };
+    renderingInfo.layerCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pDepthAttachment = nullptr;
+
+    VkViewport vp = {};
+    vp.width = (float)g_context().windowWidth;
+    vp.height = (float)g_context().windowHeight;
+    vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &vp);
+    VkRect2D sc = {};
+    sc.extent = { (uint32_t)g_context().windowWidth, (uint32_t)g_context().windowHeight };
+    vkCmdSetScissor(commandBuffer, 0, 1, &sc);
+
+    vkBeginRendering(commandBuffer, &renderingInfo);
+}
+
 void Commands::beginRendering(VkImageView depthImage) {
     if (!frame) throw std::runtime_error("beginRendering requires a frame-bound Commands (use frame.beginCommands())");
 
@@ -90,8 +122,6 @@ void Commands::beginRendering(VkImageView depthImage) {
     renderingInfo.colorAttachmentCount = 1;
     renderingInfo.pDepthAttachment = &depthAttachmentInfo;
 
-    vkBeginRendering(commandBuffer, &renderingInfo);
-
     VkViewport vp = {};
     vp.width = (float)g_context().windowWidth;
     vp.height = (float)g_context().windowHeight;
@@ -100,6 +130,8 @@ void Commands::beginRendering(VkImageView depthImage) {
     VkRect2D sc = {};
     sc.extent = { (uint32_t)g_context().windowWidth, (uint32_t)g_context().windowHeight };
     vkCmdSetScissor(commandBuffer, 0, 1, &sc);
+
+    vkBeginRendering(commandBuffer, &renderingInfo);
 }
 
 void Commands::beginRendering(VkImageView depthImage, VkExtent2D extent) {
@@ -134,14 +166,23 @@ void Commands::beginRendering(VkImageView depthImage, VkExtent2D extent) {
 }
 
 void Commands::beginRendering(VkImageView colorImage, VkImageView depthImage, VkExtent2D extent) {
-    VkRenderingAttachmentInfo colorAttachment = {};
-    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAttachment.imageView = colorImage;
-    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    VkClearValue clearColor = { .color = { 0.0f, 0.0f, 0.0f, 1.0f } };
-    colorAttachment.clearValue = clearColor;
+    VkImageView views[] = { colorImage };
+    beginRendering(std::span<const VkImageView>(views), depthImage, extent);
+}
+
+void Commands::beginRendering(std::span<const VkImageView> colorImages, VkImageView depthImage, VkExtent2D extent) {
+    std::vector<VkRenderingAttachmentInfo> colorAttachments;
+    for (auto view : colorImages) {
+        VkRenderingAttachmentInfo att = {};
+        att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        att.imageView = view;
+        att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        VkClearValue clearColor = { .color = { 0.0f, 0.0f, 0.0f, 1.0f } };
+        att.clearValue = clearColor;
+        colorAttachments.push_back(att);
+    }
 
     VkRenderingAttachmentInfo depthAttachmentInfo = {};
     depthAttachmentInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -156,9 +197,17 @@ void Commands::beginRendering(VkImageView colorImage, VkImageView depthImage, Vk
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     renderingInfo.renderArea = { 0, 0, extent.width, extent.height };
     renderingInfo.layerCount = 1;
-    renderingInfo.pColorAttachments = &colorAttachment;
-    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.colorAttachmentCount = (uint32_t)colorAttachments.size();
+    renderingInfo.pColorAttachments = colorAttachments.data();
     renderingInfo.pDepthAttachment = &depthAttachmentInfo;
+
+    VkViewport vp = {};
+    vp.width = (float)extent.width; vp.height = (float)extent.height;
+    vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &vp);
+    VkRect2D sc = {};
+    sc.extent = extent;
+    vkCmdSetScissor(commandBuffer, 0, 1, &sc);
 
     vkBeginRendering(commandBuffer, &renderingInfo);
 }

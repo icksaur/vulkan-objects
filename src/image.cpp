@@ -141,7 +141,7 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
 
 // --- Image ---
 
-ImageBuilder::ImageBuilder() : buildMipmaps(true), bytes(nullptr), stagingBuffer(nullptr), isDepthBuffer(false), isDepthSampled(false), sampleBits(VK_SAMPLE_COUNT_1_BIT), usage(0) {}
+ImageBuilder::ImageBuilder() : buildMipmaps(true), bytes(nullptr), stagingBuffer(nullptr), isDepthBuffer(false), isDepthSampled(false), isColorTarget(false), sampleBits(VK_SAMPLE_COUNT_1_BIT), usage(0) {}
 ImageBuilder & ImageBuilder::createMipmaps(bool buildMipmaps) { this->buildMipmaps = buildMipmaps; return *this; }
 ImageBuilder & ImageBuilder::depth() {
     bytes = nullptr; stagingBuffer = nullptr; buildMipmaps = false;
@@ -150,6 +150,7 @@ ImageBuilder & ImageBuilder::depth() {
     this->format = depthFormat;
     isDepthBuffer = true;
     isDepthSampled = false;
+    isColorTarget = false;
     return *this;
 }
 ImageBuilder & ImageBuilder::depthSampled(uint32_t width, uint32_t height) {
@@ -159,6 +160,20 @@ ImageBuilder & ImageBuilder::depthSampled(uint32_t width, uint32_t height) {
     this->format = VK_FORMAT_D32_SFLOAT;
     isDepthBuffer = true;
     isDepthSampled = true;
+    isColorTarget = false;
+    return *this;
+}
+ImageBuilder & ImageBuilder::colorTarget(uint32_t width, uint32_t height) {
+    return colorTarget(width, height, g_context().colorFormat);
+}
+ImageBuilder & ImageBuilder::colorTarget(uint32_t width, uint32_t height, VkFormat format) {
+    bytes = nullptr; stagingBuffer = nullptr; buildMipmaps = false;
+    extent.width = width;
+    extent.height = height;
+    this->format = format;
+    isDepthBuffer = false;
+    isDepthSampled = false;
+    isColorTarget = true;
     return *this;
 }
 ImageBuilder & ImageBuilder::fromStagingBuffer(Buffer & stagingBuffer, int width, int height, VkFormat format) {
@@ -167,6 +182,8 @@ ImageBuilder & ImageBuilder::fromStagingBuffer(Buffer & stagingBuffer, int width
     extent.width = width; extent.height = height;
     this->format = format;
     isDepthBuffer = false;
+    isDepthSampled = false;
+    isColorTarget = false;
     return *this;
 }
 ImageBuilder & ImageBuilder::color() {
@@ -175,6 +192,8 @@ ImageBuilder & ImageBuilder::color() {
     extent.height = g_context().windowHeight;
     this->format = g_context().colorFormat;
     isDepthBuffer = false;
+    isDepthSampled = false;
+    isColorTarget = false;
     return *this;
 }
 ImageBuilder & ImageBuilder::withFormat(VkFormat format) {
@@ -183,6 +202,8 @@ ImageBuilder & ImageBuilder::withFormat(VkFormat format) {
     extent.height = g_context().windowHeight;
     this->format = format;
     isDepthBuffer = false;
+    isDepthSampled = false;
+    isColorTarget = false;
     return *this;
 }
 ImageBuilder & ImageBuilder::multisample() {
@@ -213,6 +234,9 @@ Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HAND
     }
     if (builder.isDepthBuffer) {
         usageFlags |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    }
+    if (builder.isColorTarget) {
+        usageFlags |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     }
 
     VkResult result = vkGetPhysicalDeviceImageFormatProperties(
@@ -282,6 +306,11 @@ Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HAND
             .to(Stage::EarlyFragment, Access::DepthStencilWrite, Layout::DepthStencilAttachment)
             .aspectMask(depthAspect)
             .record();
+    } else if (builder.isColorTarget) {
+        Barrier(commandBuffer).image(image)
+            .from(Stage::None, Access::None, Layout::Undefined)
+            .to(Stage::ColorOutput, Access::ColorAttachmentWrite, Layout::ColorAttachment)
+            .record();
     } else {
         Barrier(commandBuffer).image(image)
             .from(Stage::None, Access::None, Layout::Undefined)
@@ -295,7 +324,7 @@ Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HAND
 
     if (builder.buildMipmaps) {
         recordMipmapGeneration(commandBuffer, image, builder.extent.width, builder.extent.height, mipLevels);
-    } else if (!builder.isDepthBuffer) {
+    } else if (!builder.isDepthBuffer && !builder.isColorTarget) {
         Barrier(commandBuffer).image(image, mipLevels)
             .from(Stage::Transfer, Access::TransferWrite, Layout::TransferDst)
             .to(Stage::Fragment, Access::ShaderRead, Layout::ShaderReadOnly)
