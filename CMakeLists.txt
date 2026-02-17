@@ -22,28 +22,37 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 
 # Source files
 set(SOURCES
-    main.cpp
-    camera.cpp
-    tga.cpp
-    vkobjects.cpp
+    src/main.cpp
+    src/camera.cpp
+    src/tga.cpp
+    src/vkobjects.cpp
+    src/shaders.cpp
+    src/buffer.cpp
+    src/image.cpp
+    src/barrier.cpp
+    src/commands.cpp
+    src/frame.cpp
+    src/pipeline.cpp
 )
 
 set(HEADERS
-    camera.h
-    math.h
-    pch.h
-    tga.h
-    vkobjects.h
+    src/camera.h
+    src/math.h
+    src/pch.h
+    src/tga.h
+    src/vkobjects.h
+    src/vkinternal.h
 )
 
 # Create executable
 add_executable(vulkan ${SOURCES} ${HEADERS})
 
 # Precompiled header
-target_precompile_headers(vulkan PRIVATE pch.h)
+target_precompile_headers(vulkan PRIVATE src/pch.h)
 
 # Include directories
-target_include_directories(vulkan PRIVATE 
+target_include_directories(vulkan PRIVATE
+    src
     ${SDL3_INCLUDE_DIRS}
     ${Vulkan_INCLUDE_DIRS}
 )
@@ -57,33 +66,17 @@ target_link_libraries(vulkan PRIVATE
 # Find glslc for shader compilation
 find_program(GLSLC glslc REQUIRED)
 
-# Shader compilation
-set(SHADER_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
-set(SHADER_BINARY_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+# Shader compilation — SPV output next to source
+set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders)
 
-# List of shaders
-set(VERTEX_SHADERS)
 set(FRAGMENT_SHADERS tri.frag)
 set(COMPUTE_SHADERS vertices.comp)
 set(MESH_SHADERS quad.mesh)
 
-# Compile vertex shaders
-foreach(SHADER ${VERTEX_SHADERS})
-    set(SHADER_SOURCE ${SHADER_SOURCE_DIR}/${SHADER})
-    set(SHADER_OUTPUT ${SHADER_BINARY_DIR}/${SHADER}.spv)
-    add_custom_command(
-        OUTPUT ${SHADER_OUTPUT}
-        COMMAND ${GLSLC} ${SHADER_SOURCE} -o ${SHADER_OUTPUT}
-        DEPENDS ${SHADER_SOURCE}
-        COMMENT "Compiling vertex shader ${SHADER}"
-    )
-    list(APPEND SPIRV_BINARIES ${SHADER_OUTPUT})
-endforeach()
-
 # Compile fragment shaders
 foreach(SHADER ${FRAGMENT_SHADERS})
-    set(SHADER_SOURCE ${SHADER_SOURCE_DIR}/${SHADER})
-    set(SHADER_OUTPUT ${SHADER_BINARY_DIR}/${SHADER}.spv)
+    set(SHADER_SOURCE ${SHADER_DIR}/${SHADER})
+    set(SHADER_OUTPUT ${SHADER_DIR}/${SHADER}.spv)
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
         COMMAND ${GLSLC} --target-env=vulkan1.2 ${SHADER_SOURCE} -o ${SHADER_OUTPUT}
@@ -95,8 +88,8 @@ endforeach()
 
 # Compile compute shaders
 foreach(SHADER ${COMPUTE_SHADERS})
-    set(SHADER_SOURCE ${SHADER_SOURCE_DIR}/${SHADER})
-    set(SHADER_OUTPUT ${SHADER_BINARY_DIR}/${SHADER}.spv)
+    set(SHADER_SOURCE ${SHADER_DIR}/${SHADER})
+    set(SHADER_OUTPUT ${SHADER_DIR}/${SHADER}.spv)
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
         COMMAND ${GLSLC} --target-env=vulkan1.2 ${SHADER_SOURCE} -o ${SHADER_OUTPUT}
@@ -108,8 +101,8 @@ endforeach()
 
 # Compile mesh shaders
 foreach(SHADER ${MESH_SHADERS})
-    set(SHADER_SOURCE ${SHADER_SOURCE_DIR}/${SHADER})
-    set(SHADER_OUTPUT ${SHADER_BINARY_DIR}/${SHADER}.spv)
+    set(SHADER_SOURCE ${SHADER_DIR}/${SHADER})
+    set(SHADER_OUTPUT ${SHADER_DIR}/${SHADER}.spv)
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
         COMMAND ${GLSLC} --target-env=vulkan1.2 -fshader-stage=mesh ${SHADER_SOURCE} -o ${SHADER_OUTPUT}

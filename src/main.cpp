@@ -50,7 +50,7 @@ struct Timer {
     }
 };
 
-Image createImageFromTGAFile(VkCommandBuffer commandBuffer, const char * filename) {
+Image createImageFromTGAFile(Commands & commands, const char * filename) {
     std::ifstream file(filename, std::ios::binary);
     std::vector<uint8_t> fileBytes = std::vector<uint8_t>(
         std::istreambuf_iterator<char>(file),
@@ -68,10 +68,10 @@ Image createImageFromTGAFile(VkCommandBuffer commandBuffer, const char * filenam
     VkFormat format = (bpp == 32) ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8_SRGB;
 
     Buffer stagingBuffer(BufferBuilder(byteCount).transferSource().hostVisible());
-    stagingBuffer.setData(bytes, byteCount);
+    stagingBuffer.upload(bytes, byteCount);
     free(bytes);
 
-    Image image(ImageBuilder().fromStagingBuffer(stagingBuffer, width, height, format), commandBuffer);
+    Image image(ImageBuilder().fromStagingBuffer(stagingBuffer, width, height, format), commands);
     return image;
 }
 
@@ -91,9 +91,9 @@ int main(int argc, char *argv[]) {
     VulkanContext context(window, VulkanContextOptions().validation().meshShaders());
 
     // shaders
-    ShaderModule fragShaderModule(ShaderBuilder().fragment().fromFile("tri.frag.spv"));
-    ShaderModule compShaderModule(ShaderBuilder().compute().fromFile("vertices.comp.spv"));
-    ShaderModule meshShaderModule(ShaderBuilder().mesh().fromFile("quad.mesh.spv"));
+    ShaderModule fragShaderModule(ShaderBuilder().fragment().fromFile("src/shaders/tri.frag.spv"));
+    ShaderModule compShaderModule(ShaderBuilder().compute().fromFile("src/shaders/vertices.comp.spv"));
+    ShaderModule meshShaderModule(ShaderBuilder().mesh().fromFile("src/shaders/quad.mesh.spv"));
 
     // one-shot setup commands
     auto setupCmd = Commands::oneShot();
@@ -118,12 +118,12 @@ int main(int argc, char *argv[]) {
     Buffer shaderStorageVertexBuffer(BufferBuilder(sizeof(float) * 5 * 6 * computedQuadCount).storage());
 
     // pipelines use the context's bindless pipeline layout
-    VkPipeline graphicsPipeline = GraphicsPipelineBuilder()
-        .addMeshShader(meshShaderModule)
-        .addFragmentShader(fragShaderModule)
+    Pipeline graphicsPipeline = GraphicsPipelineBuilder()
+        .meshShader(meshShaderModule)
+        .fragmentShader(fragShaderModule)
         .build();
 
-    VkPipeline computePipeline = createComputePipeline(compShaderModule);
+    Pipeline computePipeline = createComputePipeline(compShaderModule);
 
     Camera camera;
     camera.perspective(0.5f*M_PI, windowWidth, windowHeight, 0.1f, 100.0f)
@@ -166,7 +166,7 @@ int main(int argc, char *argv[]) {
         cmd.bufferBarrier(shaderStorageVertexBuffer, Stage::Compute, Stage::MeshShader);
 
         // Render pass
-        cmd.beginRendering(frame.swapchainImageView(), depthImages[frame.swapchainImageIndex()].imageView);
+        cmd.beginRendering(depthImages[frame.swapchainImageIndex()].imageView);
         cmd.bindGraphics(graphicsPipeline);
         cmd.pushConstants(&push, sizeof(push));
         cmd.drawMeshTasks(computedQuadCount, 1, 1);

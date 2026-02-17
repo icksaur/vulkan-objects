@@ -13,11 +13,8 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
 #include <cstdint>
-
-// function pointers for extensions
-extern PFN_vkCmdDrawMeshTasksEXT vkCmdDrawMeshTasks;
-extern PFN_vkCmdBeginRendering vkBeginRendering;
-extern PFN_vkCmdEndRendering vkEndRendering;
+#include <array>
+#include <utility>
 
 // --- Synchronization2 enum wrappers ---
 
@@ -81,6 +78,10 @@ struct DestroyGeneration {
     std::vector<VkImage> images;
     std::vector<VkImageView> imageViews;
     std::vector<VkSampler> samplers;
+    std::vector<uint32_t> storageBufferRIDs;
+    std::vector<uint32_t> samplerRIDs;
+    std::vector<uint32_t> storageImageRIDs;
+    std::vector<VkPipeline> pipelines;
     void destroy();
     ~DestroyGeneration();
 };
@@ -131,11 +132,26 @@ struct BindlessTable {
 };
 
 struct Commands;
+struct ShaderModule;
+class Pipeline;
 
-struct VulkanContext {
+class VulkanContext {
+    friend struct Frame;
+    friend struct Commands;
+    friend struct Buffer;
+    friend struct Image;
+    friend struct ImageBuilder;
+    friend struct ShaderModule;
+    friend struct DestroyGeneration;
+    friend struct GraphicsPipelineBuilder;
+    friend class Pipeline;
+    friend Pipeline createComputePipeline(ShaderModule &, const char *);
+    friend void createSwapChain(VulkanContext &, VkSurfaceKHR, VkPhysicalDevice, VkDevice, VkSwapchainKHR &);
+    friend VkFence createFence();
+    friend VkSemaphore createSemaphore();
+    friend void makeChainImageViews(VkDevice, VkFormat, std::vector<VkImage> &, std::vector<VkImageView> &);
+
     SDL_Window * window;
-    size_t windowWidth;
-    size_t windowHeight;
     VkInstance instance;
     VkDevice device;
     VkPhysicalDevice physicalDevice;
@@ -145,9 +161,7 @@ struct VulkanContext {
     VkQueue presentationQueue;
     VkSwapchainKHR swapchain;
     VkFormat colorFormat;
-    size_t swapchainImageCount;
     VkCommandPool commandPool;
-    VkQueue graphicsQueue;
     uint32_t maxSamples;
     VulkanContextOptions options;
     VkPhysicalDeviceLimits limits;
@@ -172,7 +186,13 @@ struct VulkanContext {
 
     std::vector<DestroyGeneration> destroyGenerations;
 
-    VulkanContext(SDL_Window * window, VulkanContextOptions & options);
+public:
+    size_t windowWidth;
+    size_t windowHeight;
+    size_t swapchainImageCount;
+    VkQueue graphicsQueue;
+
+    VulkanContext(SDL_Window * window, VulkanContextOptions options);
     ~VulkanContext();
     VulkanContext & operator=(const VulkanContext & other) = delete;
     VulkanContext(const VulkanContext & other) = delete;
@@ -193,8 +213,8 @@ extern VulkanContextSingleton g_context;
 struct ShaderBuilder {
     VkShaderStageFlagBits stage;
     std::vector<uint8_t> code;
+    std::string fileName;
     ShaderBuilder();
-    ShaderBuilder& vertex();
     ShaderBuilder& fragment();
     ShaderBuilder& compute();
     ShaderBuilder& mesh();
@@ -202,8 +222,21 @@ struct ShaderBuilder {
     ShaderBuilder& fromBuffer(const uint8_t * data, size_t size);
 };
 
+struct ShaderReflection {
+    uint32_t pushConstantSize = 0;
+    std::array<uint32_t, 3> localSize = {0, 0, 0};
+    uint32_t maxVertices = 0;
+    uint32_t maxPrimitives = 0;
+    std::set<uint32_t> inputLocations;
+    std::set<uint32_t> outputLocations;
+    std::set<std::pair<uint32_t, uint32_t>> descriptorBindings;
+    VkShaderStageFlagBits executionModel = VK_SHADER_STAGE_FLAG_BITS_MAX_ENUM;
+};
+
 struct ShaderModule {
     VkShaderModule module;
+    ShaderReflection reflection;
+    std::string fileName;
     ShaderModule(ShaderBuilder & builder);
     ~ShaderModule();
     operator VkShaderModule() const;
@@ -229,16 +262,17 @@ struct BufferBuilder {
     BufferBuilder & size(size_t byteCount);
 };
 
-struct Buffer {
+class Buffer {
     VkBuffer buffer;
     VkDeviceMemory memory;
     size_t size;
     uint32_t rid_;
 
+public:
     uint32_t rid() const;
-    void setData(void * bytes, size_t size);
-    void setData(void * bytes, size_t size, VkDeviceSize offset);
-    void getData(void * bytes, size_t size);
+    void upload(void * bytes, size_t size);
+    void upload(void * bytes, size_t size, VkDeviceSize offset);
+    void download(void * bytes, size_t size);
     Buffer(BufferBuilder & builder);
     Buffer(Buffer && other);
     ~Buffer();
@@ -267,17 +301,19 @@ struct ImageBuilder {
     ImageBuilder & withFormat(VkFormat format);
 };
 
-struct Image {
+class Image {
     VkImage image;
     VkDeviceMemory memory;
-    VkImageView imageView;
     VkSampler sampler;
     uint32_t rid_;
     bool isStorageImage;
 
+public:
+    VkImageView imageView;
+
     uint32_t rid() const;
     Image(Image && other);
-    Image(ImageBuilder & builder, VkCommandBuffer commandBuffer);
+    Image(ImageBuilder & builder, Commands & commands);
     operator VkImage() const;
     ~Image();
 };
@@ -304,7 +340,7 @@ struct Barrier {
 
 // --- Frame & Commands ---
 
-struct Frame {
+class Frame {
     VulkanContext & context;
     size_t inFlightIndex;
     VkSemaphore imageAvailableSemaphore;
@@ -314,7 +350,9 @@ struct Frame {
     bool submitted;
 
     static Frame * currentGuard;
+    friend class VulkanContext;
 
+public:
     Frame();
     ~Frame();
 
@@ -324,12 +362,17 @@ struct Frame {
     void submit(Commands & cmd);
 };
 
-struct Commands {
+class Commands {
     VkCommandBuffer commandBuffer;
     bool ended;
     bool ownsBuffer;
+    Frame * frame;
 
     Commands(VkCommandBuffer cmd, bool owns = false);
+    friend class Frame;
+    friend struct Image;
+
+public:
     Commands(Commands && other);
     Commands(const Commands &) = delete;
     Commands & operator=(const Commands &) = delete;
@@ -340,10 +383,15 @@ struct Commands {
     void bindCompute(VkPipeline pipeline);
     void bindGraphics(VkPipeline pipeline);
     void dispatch(uint32_t x, uint32_t y, uint32_t z);
+    void dispatchIndirect(VkBuffer buffer, VkDeviceSize offset = 0);
     void drawMeshTasks(uint32_t x, uint32_t y, uint32_t z);
+    void drawMeshTasksIndirect(VkBuffer buffer, uint32_t drawCount, VkDeviceSize offset = 0, uint32_t stride = 12);
     void pushConstants(const void * data, uint32_t size);
-    void beginRendering(VkImageView colorImage, VkImageView depthImage);
+    void beginRendering(VkImageView depthImage);
+    void beginRendering(VkImageView colorImage, VkImageView depthImage, VkExtent2D extent);
     void endRendering();
+    void setViewport(float x, float y, float width, float height);
+    void setScissor(int32_t x, int32_t y, uint32_t width, uint32_t height);
     void bufferBarrier(VkBuffer buffer, Stage srcStage, Stage dstStage);
     void imageBarrier(VkImage image, Stage srcStage, Access srcAccess, Layout oldLayout,
                       Stage dstStage, Access dstAccess, Layout newLayout, uint32_t mipLevels = 1);
@@ -355,14 +403,38 @@ struct Commands {
 
 // --- Pipelines ---
 
-struct GraphicsPipelineBuilder {
-    std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
-    VkSampleCountFlagBits sampleCountBit;
-    GraphicsPipelineBuilder();
-    GraphicsPipelineBuilder & addMeshShader(ShaderModule & meshShaderModule, const char * entryPoint = "main");
-    GraphicsPipelineBuilder & addFragmentShader(ShaderModule & fragmentShaderModule, const char *entryPoint = "main");
-    GraphicsPipelineBuilder & sampleCount(size_t sampleCount);
-    VkPipeline build();
+class Pipeline {
+    VkPipeline pipeline;
+public:
+    Pipeline() : pipeline(VK_NULL_HANDLE) {}
+    explicit Pipeline(VkPipeline pipeline) : pipeline(pipeline) {}
+    Pipeline(Pipeline && other) : pipeline(other.pipeline) { other.pipeline = VK_NULL_HANDLE; }
+    Pipeline & operator=(Pipeline && other) {
+        if (this != &other) {
+            if (pipeline != VK_NULL_HANDLE) destroyPipeline(pipeline);
+            pipeline = other.pipeline;
+            other.pipeline = VK_NULL_HANDLE;
+        }
+        return *this;
+    }
+    Pipeline(const Pipeline &) = delete;
+    Pipeline & operator=(const Pipeline &) = delete;
+    ~Pipeline();
+    operator VkPipeline() const { return pipeline; }
+
+private:
+    static void destroyPipeline(VkPipeline pipeline);
 };
 
-VkPipeline createComputePipeline(VkShaderModule computeShaderModule, const char * entryPoint = "main");
+struct GraphicsPipelineBuilder {
+    std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
+    std::vector<ShaderModule *> shaderModules;
+    VkSampleCountFlagBits sampleCountBit;
+    GraphicsPipelineBuilder();
+    GraphicsPipelineBuilder & meshShader(ShaderModule & meshShaderModule, const char * entryPoint = "main");
+    GraphicsPipelineBuilder & fragmentShader(ShaderModule & fragmentShaderModule, const char *entryPoint = "main");
+    GraphicsPipelineBuilder & sampleCount(size_t sampleCount);
+    Pipeline build();
+};
+
+Pipeline createComputePipeline(ShaderModule & computeShaderModule, const char * entryPoint = "main");

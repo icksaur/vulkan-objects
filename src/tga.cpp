@@ -121,14 +121,15 @@ void * read_tga(const std::vector<uint8_t> & bytes, unsigned & width, unsigned &
     } else {
         uint8_t * pixelCursor = (uint8_t*)pixels;
         uint8_t * end = pixelCursor + (width  * height * pixelSize);
-        uint8_t chunkHeader = *currentByte++;
         do {
+            uint8_t chunkHeader = *currentByte++;
             if (chunkHeader & rleChunkFlag) { // rle compressed chunk
                 uint8_t pixelCount = (chunkHeader ^ rleChunkFlag) + 1; // remove flag
                 for (int i = 0; i < pixelCount; i++) {
                     memcpy(pixelCursor, currentByte, pixelSize);
                     pixelCursor += pixelSize;
                 }
+                currentByte += pixelSize;
             } else {
                 uint8_t pixelCount = chunkHeader + 1;
                 memcpy(pixelCursor, currentByte, pixelCount * pixelSize);

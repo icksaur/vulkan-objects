@@ -4,14 +4,8 @@
 #include <algorithm>
 #include <cmath>
 
-// Define M_PI if not available (Windows/MinGW compatibility)
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 template <typename T>
-class Vec3 {
-public:
+struct Vec3 {
     T x, y, z;
     Vec3() :x(0), y(0), z(0) {}
     Vec3(T x, T y, T z) :x(x), y(y), z(z) {}
@@ -33,17 +27,15 @@ public:
     };
     void normalize() {
         T mag = magnitude();
+        if (mag < 1e-12f) return;
         x /= mag;
         y /= mag;
         z /= mag;
     }
     Vec3 normalized() const{
-        Vec3 n(*this);
         T mag = magnitude();
-        n.x /= mag;
-        n.y /= mag;
-        n.z /= mag;
-        return n;
+        if (mag < 1e-12f) return Vec3(0, 0, 0);
+        return Vec3(x / mag, y / mag, z / mag);
     }
     Vec3 cross(Vec3 v) const {
         return Vec3(
@@ -86,8 +78,9 @@ public:
     Vec3 operator+(const Vec3 & r) const {
         return Vec3(x + r.x, y + r.y, z + r.z);
     }
-    Vec3 lerp(const Vec3 & from, const Vec3 & to, T amount) const {
-        return from + (to - from) * amount;
+    // lerp from this to `to` by `amount`
+    Vec3 lerp(const Vec3 & to, T amount) const {
+        return *this + (to - *this) * amount;
     }
 };
 
@@ -110,7 +103,7 @@ Vec3<T> lerp(const Vec3<T> & from, const Vec3<T> & to, T amount) {
 // to append transformations, left-multiply:
 // projection * view * model * vertex
 template <typename T>
-class Mat16 {
+struct Mat16 {
     typedef Vec3<T> VectorType;
     static inline void element(int i, int j, const T * left, const T * right, T * out) {
         out[i * 4 + j] =
@@ -119,7 +112,6 @@ class Mat16 {
             left[j + 8] * right[i * 4 + 2] +
             left[j + 12] * right[i * 4 + 3];
     }
-public:
     T c[16];
     void identity() {
         memset(c, 0, sizeof(T)* 16);
@@ -408,109 +400,11 @@ public:
 
 template <typename T>
 Vec3<T> operator*(const Vec3<T> & l, const Mat16<T> & r) {
-    Vec3<T> out(
+    return Vec3<T>(
         l.x*r.c[0] + l.y*r.c[1] + l.z*r.c[2] + r.c[3],
         l.x*r.c[4] + l.y*r.c[5] + l.z*r.c[6] + r.c[7],
         l.x*r.c[8] + l.y*r.c[9] + l.z*r.c[10] + r.c[11]);
-    l = out;
 }
-
-template <typename T>
-class Quaternion {
-public:
-    T w, x, y, z;
-    Quaternion() :x(0), y(0), z(0), w(1.0f) {}
-    Quaternion(T w, T x, T y, T z) :x(x), y(y), z(z), w(w) {};
-    Quaternion(Vec3<T> axis, T radians) {
-        T sinHalfRadians = sin(radians / 2);
-        this->x = x * sinHalfRadians;
-        this->y = y * sinHalfRadians;
-        this->z = z * sinHalfRadians;
-        this->w = cos(radians / 2);
-    }
-    Quaternion(const Mat16<T> & m) { 
-        T t = 1.0f + m.c[0] + m.c[5] + m.c[10];
-        T s = 0.5f / sqrt(t);
-        w = 0.25f / s;
-        x = (m.c[9] - m.c[6])*s;
-        y = (m.c[2] - m.c[8])*s;
-        z = (m.c[4] - m.c[1])*s;
-    }
-    Quaternion(const Quaternion & rhs) :x(rhs.x), y(rhs.y), z(rhs.z), w(rhs.w) {};
-    Quaternion & operator=(const Quaternion & rhs) {
-        if (this != &rhs) {
-            x = rhs.x;
-            y = rhs.y;
-            z = rhs.z;
-            w = rhs.w;
-        }
-        return *this;
-    }
-    Mat16<T> matrix() const {
-        return Mat16<T>(
-            1.0f - 2 * (y*y + z*z), 2 * (x*y - w*z), 2 * (x*z + w*y),
-            2 * (x*y + w*z), 1.0f - 2 * (x*x + z*z), 2 * (y*z - w*x),
-            2 * (x*z - w*y), 2 * (y*z + w*x), 1.0f - 2 * (x*x + y*y));
-    }
-    Mat16<T> matrixAbout(const Vec3<T> & p) const {
-        Mat16<T> r = matrix();
-        r.c[3] = p.x - p.x * r(0, 0) - p.y * r(0, 1) - p.z * r(0, 2);
-        r.c[7] = p.y - p.x * r(1, 0) - p.y * r(1, 1) - p.z * r(1, 2);
-        r.c[11] = p.z - p.x * r(2, 0) - p.y * r(2, 1) - p.z * r(2, 2);
-        return r;
-    }
-    Quaternion operator*(const Quaternion & q) const {
-        return Quaternion(
-            w*q.w - x*q.x - y*q.y - z*q.z,
-            w*q.x + x*q.w + z*q.y - y*q.z,
-            w*q.y + y*q.w + x*q.z - z*q.x,
-            w*q.z + z*q.w + y*q.x - x*q.y);
-    }
-    Quaternion operator*=(const Quaternion & q) {
-        *this = *this * q;
-        return *this;
-    }
-    void normalize() {
-        T n = sqrt(x*x + y*y + z*z + w*w);
-        x /= n;
-        y /= n;
-        z /= n;
-        w /= n;
-    }
-    Quaternion slerp(const Quaternion & q1, T t) const {
-        if (t <= 0.0) { return *this; }
-        else if (t >= 1.0) { return q1; }
-
-        T cosOmega = w*q1.w + x*q1.x + y*q1.y + z*q1.z;
-        Quaternion q1h = q1;
-        if (cosOmega < 0.0f) {
-            q1h.w = -q1h.w;
-            q1h.x = -q1h.x;
-            q1h.y = -q1h.y;
-            q1h.z = -q1h.z;
-            cosOmega = -cosOmega;
-        }
-        T k0, k1;
-        if (cosOmega > 0.9999f) {
-            k0 = 1.0f - 1;
-            k1 = t;
-        }
-        else {
-            T sinOmega = sqrt(1.0f - cosOmega*cosOmega);
-            T omega = atan2(sinOmega, cosOmega);
-            T invSinOmega = 1.0f / sinOmega;
-
-            k0 = sin((1.0f - t) * omega) * invSinOmega;
-            k1 = sin(t * omega) * invSinOmega;
-        }
-
-        return Quaternion(
-            k0*w + k1*q1h.w,
-            k0*x + k1*q1h.x,
-            k0*y + k1*q1h.y,
-            k0*z + k1*q1h.z);           
-    }
-};
 
 template <typename T>
 void makePerspectiveProjectionMatrix(Mat16<T> & mat, T yFieldOfViewRadians, float aspectWidth, float aspectHeight, T zNear, T zFar) {

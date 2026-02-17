@@ -34,3 +34,4 @@ syntax: glob
 .cache/*
 vulkan
 *.spv
+plan.md
