@@ -1,0 +1,68 @@
+#version 450
+#extension GL_EXT_mesh_shader : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(triangles, max_vertices = 36, max_primitives = 12) out;
+
+layout(location = 1) out vec3 outNormal[];
+layout(location = 2) out vec2 outUV[];
+layout(location = 3) out vec4 outShadowCoord[];
+
+layout(set=0, binding=0) buffer StorageBuffers {
+    float data[];
+} storageBuffers[];
+
+layout(push_constant) uniform PushConstants {
+    mat4 viewProjection;
+    uint vertexBufferRID;
+    uint textureRID;
+    uint shadowMapRID;
+    uint lightBufferRID;
+    float rotationAngle;
+};
+
+const uint VERTS_PER_CUBE = 36;
+const uint FLOATS_PER_VERT = 8;
+
+void main() {
+    uint cubeIdx = gl_GlobalInvocationID.x;
+
+    SetMeshOutputsEXT(36, 12);
+
+    uint baseOffset = cubeIdx * VERTS_PER_CUBE * FLOATS_PER_VERT;
+    uint rid = vertexBufferRID;
+
+    // Fetch light VP from storage buffer
+    mat4 lightViewProjection;
+    for (int col = 0; col < 4; col++)
+        for (int row = 0; row < 4; row++)
+            lightViewProjection[col][row] = storageBuffers[nonuniformEXT(lightBufferRID)].data[col * 4 + row];
+
+    for (uint i = 0; i < 36; i++) {
+        uint offset = baseOffset + i * FLOATS_PER_VERT;
+        vec3 pos = vec3(
+            storageBuffers[nonuniformEXT(rid)].data[offset],
+            storageBuffers[nonuniformEXT(rid)].data[offset + 1],
+            storageBuffers[nonuniformEXT(rid)].data[offset + 2]);
+        vec3 normal = vec3(
+            storageBuffers[nonuniformEXT(rid)].data[offset + 3],
+            storageBuffers[nonuniformEXT(rid)].data[offset + 4],
+            storageBuffers[nonuniformEXT(rid)].data[offset + 5]);
+        vec2 uv = vec2(
+            storageBuffers[nonuniformEXT(rid)].data[offset + 6],
+            storageBuffers[nonuniformEXT(rid)].data[offset + 7]);
+
+        gl_MeshVerticesEXT[i].gl_Position = viewProjection * vec4(pos, 1.0);
+        outNormal[i] = normal;
+        outUV[i] = uv;
+
+        // Shadow coord: transform position by light VP, then map to [0,1] range
+        vec4 lightClip = lightViewProjection * vec4(pos, 1.0);
+        outShadowCoord[i] = lightClip;
+    }
+
+    for (uint i = 0; i < 12; i++) {
+        gl_PrimitiveTriangleIndicesEXT[i] = uvec3(i*3, i*3+1, i*3+2);
+    }
+}

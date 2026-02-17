@@ -141,7 +141,7 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
 
 // --- Image ---
 
-ImageBuilder::ImageBuilder() : buildMipmaps(true), bytes(nullptr), stagingBuffer(nullptr), isDepthBuffer(false), sampleBits(VK_SAMPLE_COUNT_1_BIT), usage(0) {}
+ImageBuilder::ImageBuilder() : buildMipmaps(true), bytes(nullptr), stagingBuffer(nullptr), isDepthBuffer(false), isDepthSampled(false), sampleBits(VK_SAMPLE_COUNT_1_BIT), usage(0) {}
 ImageBuilder & ImageBuilder::createMipmaps(bool buildMipmaps) { this->buildMipmaps = buildMipmaps; return *this; }
 ImageBuilder & ImageBuilder::depth() {
     bytes = nullptr; stagingBuffer = nullptr; buildMipmaps = false;
@@ -149,6 +149,16 @@ ImageBuilder & ImageBuilder::depth() {
     extent.height = g_context().windowHeight;
     this->format = depthFormat;
     isDepthBuffer = true;
+    isDepthSampled = false;
+    return *this;
+}
+ImageBuilder & ImageBuilder::depthSampled(uint32_t width, uint32_t height) {
+    bytes = nullptr; stagingBuffer = nullptr; buildMipmaps = false;
+    extent.width = width;
+    extent.height = height;
+    this->format = VK_FORMAT_D32_SFLOAT;
+    isDepthBuffer = true;
+    isDepthSampled = true;
     return *this;
 }
 ImageBuilder & ImageBuilder::fromStagingBuffer(Buffer & stagingBuffer, int width, int height, VkFormat format) {
@@ -264,10 +274,13 @@ Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HAND
 
     // Layout transitions using sync2
     if (builder.isDepthBuffer) {
+        VkImageAspectFlags depthAspect = builder.isDepthSampled
+            ? VK_IMAGE_ASPECT_DEPTH_BIT
+            : (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
         Barrier(commandBuffer).image(image)
             .from(Stage::None, Access::None, Layout::Undefined)
             .to(Stage::EarlyFragment, Access::DepthStencilWrite, Layout::DepthStencilAttachment)
-            .aspectMask(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
+            .aspectMask(depthAspect)
             .record();
     } else {
         Barrier(commandBuffer).image(image)
@@ -291,7 +304,9 @@ Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HAND
 
     VkImageAspectFlags aspectFlags;
     if (builder.isDepthBuffer) {
-        aspectFlags = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        aspectFlags = builder.isDepthSampled
+            ? VK_IMAGE_ASPECT_DEPTH_BIT
+            : (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
     } else {
         aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
     }
@@ -301,6 +316,9 @@ Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HAND
     isStorageImage = (builder.usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
     if (isStorageImage) {
         rid_ = g_context().bindlessTable.registerStorageImage(g_context().device, imageView);
+    } else if (builder.isDepthSampled) {
+        sampler = createShadowSampler(g_context().device);
+        rid_ = g_context().bindlessTable.registerSampler(g_context().device, imageView, sampler);
     } else if (!builder.isDepthBuffer) {
         sampler = createSampler(g_context().device);
         rid_ = g_context().bindlessTable.registerSampler(g_context().device, imageView, sampler);

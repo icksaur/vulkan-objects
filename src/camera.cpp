@@ -13,9 +13,9 @@ Camera& Camera::orthographic(float halfWidth, float halfHeight, float zNear, flo
     projectionType = ProjectionType::ortho;
     memset(projection.c, 0, sizeof(projection.c));
     projection.c[0] = 1.0f / halfWidth;
-    projection.c[5] = 1.0f / halfHeight;
-    projection.c[10] = -2.0f / (zFar - zNear);
-    projection.c[14] = -((zFar + zNear) / (zFar - zNear));
+    projection.c[5] = -1.0f / halfHeight; // Y-flip for Vulkan
+    projection.c[10] = -1.0f / (zFar - zNear); // Vulkan [0,1] depth range
+    projection.c[14] = -zNear / (zFar - zNear); // Vulkan [0,1] depth range
     projection.c[15] = 1.0f;
     dirty = true;
     return *this;

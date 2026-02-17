@@ -2,6 +2,8 @@
 
 A personal Vulkan wrapper library for C++ projects. Automatic lifetime management, bindless descriptors, and a minimal API surface that makes common rendering patterns easy and hard to get wrong.
 
+Target: a 3D game with TF2-level geometry complexity, ~500 entities, directional shadow maps, and multi-pass rendering. Not a AAA engine — no render graph, no scene graph, no ECS. Just correct Vulkan with good defaults.
+
 Always follow and refer to code-quality.md.
 
 ## concepts
@@ -10,14 +12,15 @@ Always follow and refer to code-quality.md.
 - **Frame** — Scoped guard representing one frame of GPU work. Constructor waits for the oldest in-flight frame's fence, cleans deferred resources, acquires the next swapchain image. Destructor advances the frame index. Only one can exist at a time (runtime enforced).
 - **Commands** — Scoped command buffer recording. Constructor begins recording and binds the global bindless descriptor set. Provides typed methods for compute, rendering, barriers, and push constants. Move-only. Also used for one-shot setup work via `Commands::oneShot()`.
 - **Buffer** — GPU buffer with automatic bindless registration. Every buffer gets a resource ID (RID) on construction. Deferred destruction via DestroyGeneration.
-- **Image** — GPU image with view and sampler. Automatic bindless registration (sampled images or storage images). Deferred destruction via DestroyGeneration.
+- **Image** — GPU image with view and optional sampler. Automatic bindless registration (sampled images, storage images, or depth-sampled images). Deferred destruction via DestroyGeneration.
+- **Pipeline** — RAII wrapper over VkPipeline. Move-only. Destructor defers pipeline destruction via DestroyGeneration. Implicitly converts to VkPipeline for bind calls.
 - **Barrier** — Synchronization2-based barrier builder for buffer and image memory barriers.
 - **DestroyGeneration** — Per-frame-slot collection of Vulkan handles awaiting deferred destruction. Cleaned when the fence proves the GPU is done with that frame slot.
 - **BindlessTable** — Single global descriptor set with three bindings (storage buffers, combined image samplers, storage images). Resources register/unregister automatically. See doc/bindless.md for details.
 
 ## target API usage
 
-From main.cpp — this is a working example:
+From main.cpp — this is a working example with shadow mapping:
 
 ```cpp
 int main() {
@@ -26,58 +29,148 @@ int main() {
 
     ShaderModule fragShader(ShaderBuilder().fragment().fromFile("tri.frag.spv"));
     ShaderModule compShader(ShaderBuilder().compute().fromFile("vertices.comp.spv"));
-    ShaderModule meshShader(ShaderBuilder().mesh().fromFile("quad.mesh.spv"));
+    ShaderModule meshShader(ShaderBuilder().mesh().fromFile("cube.mesh.spv"));
+    ShaderModule shadowMeshShader(ShaderBuilder().mesh().fromFile("shadow.mesh.spv"));
 
-    // One-shot setup commands
     auto setupCmd = Commands::oneShot();
     Image texture = createImageFromTGAFile(setupCmd, "texture.tga");
-    std::vector<Image> depthImages;
-    for (size_t i = 0; i < context.swapchainImageCount; ++i)
+
+    // Per-swapchain-image render targets (one per frame in flight)
+    std::vector<Image> depthImages, shadowMaps;
+    for (size_t i = 0; i < context.swapchainImageCount; ++i) {
         depthImages.emplace_back(ImageBuilder().depth(), setupCmd);
+        shadowMaps.emplace_back(ImageBuilder().depthSampled(1024, 1024), setupCmd);
+    }
     setupCmd.submitAndWait();
 
-    // Resize callback — invoked by Frame when swapchain is rebuilt
     context.onSwapchainResize([&](Commands & cmd, VkExtent2D extent) {
         (void)extent;
         depthImages.clear();
         for (size_t i = 0; i < context.swapchainImageCount; ++i)
             depthImages.emplace_back(ImageBuilder().depth(), cmd);
+        // shadowMaps are fixed resolution — no rebuild needed
     });
 
     Buffer storageBuffer(BufferBuilder(vertexDataSize).storage());
 
-    VkPipeline graphicsPipeline = GraphicsPipelineBuilder()
+    Pipeline graphicsPipeline = GraphicsPipelineBuilder()
         .meshShader(meshShader)
         .fragmentShader(fragShader)
         .build();
 
-    VkPipeline computePipeline = createComputePipeline(compShader);
+    Pipeline shadowPipeline = GraphicsPipelineBuilder()
+        .meshShader(shadowMeshShader)
+        .depthOnly()
+        .build();
 
-    struct Push { mat4 vp; float z; uint32_t bufRID, texRID; };
+    Pipeline computePipeline = createComputePipeline(compShader);
 
     while (!done) {
         Frame frame;
-
-        Push push = { camera.vp(), 0.2f, storageBuffer.rid(), texture.rid() };
+        uint32_t idx = frame.swapchainImageIndex();
 
         auto cmd = frame.beginCommands();
 
+        // Compute pass
         cmd.bindCompute(computePipeline);
         cmd.pushConstants(&push, sizeof(push));
-        cmd.dispatch(100, 1, 1);
-
+        cmd.dispatch(1, 1, 1);
         cmd.bufferBarrier(storageBuffer, Stage::Compute, Stage::MeshShader);
 
-        cmd.beginRendering(depthImages[frame.swapchainImageIndex()].imageView);
+        // Shadow pass — depth-only, renders scene from light's POV
+        cmd.beginRendering(shadowMaps[idx].imageView, {1024, 1024});
+        cmd.bindGraphics(shadowPipeline);
+        cmd.pushConstants(&lightPush, sizeof(lightPush));
+        cmd.drawMeshTasks(cubeCount, 1, 1);
+        cmd.endRendering();
+
+        // Barrier: shadow map depth write → fragment shader read
+        cmd.imageBarrier(shadowMaps[idx],
+            Stage::LateFragment, Access::DepthStencilWrite, Layout::DepthStencilAttachment,
+            Stage::Fragment, Access::ShaderRead, Layout::DepthReadOnly);
+
+        // Main pass — samples shadow map via RID
+        push.shadowMapRID = shadowMaps[idx].rid();
+        cmd.beginRendering(depthImages[idx].imageView);
         cmd.bindGraphics(graphicsPipeline);
         cmd.pushConstants(&push, sizeof(push));
-        cmd.drawMeshTasks(100, 1, 1);
+        cmd.drawMeshTasks(cubeCount, 1, 1);
         cmd.endRendering();
 
         frame.submit(cmd);
     }
 }
 ```
+
+## render target model
+
+### per-frame vs static render targets
+
+With N frames in flight (equals `swapchainImageCount`, typically 3), frames N and N-1 can execute on the GPU simultaneously. Any image written during the render loop needs **one copy per swapchain image count** to avoid cross-frame hazards.
+
+**Per-frame targets** (one per `swapchainImageCount`):
+- Main-pass depth buffers — different frames use different swapchain images
+- Shadow maps re-rendered each frame — frame N's write would stomp frame N-1's read
+- G-buffer targets (future) — written and consumed within each frame
+
+**Single-copy targets** (rendered once at setup or infrequently):
+- Baked environment maps
+- Static shadow maps (if the light never moves)
+- Lookup textures (BRDF LUT, noise, etc.)
+
+The existing `depthImages` vector establishes the per-frame pattern. Shadow maps and any future per-frame render targets follow the same pattern.
+
+### rendering overloads
+
+`Commands::beginRendering` has three overloads covering the common cases:
+
+| Overload | Color target | Depth target | Use case |
+|----------|-------------|-------------|----------|
+| `(VkImageView depth)` | Swapchain (from frame) | Provided depth view | Main scene pass |
+| `(VkImageView depth, VkExtent2D extent)` | None | Provided depth view | Shadow map pass |
+| `(VkImageView color, VkImageView depth, VkExtent2D extent)` | Provided color view | Provided depth view | Offscreen color+depth |
+
+All use `VK_ATTACHMENT_LOAD_OP_CLEAR` and `VK_ATTACHMENT_STORE_OP_STORE`. The depth-only overload (no color attachment) is essential for shadow map passes where no fragment shader runs.
+
+### depth-sampled images
+
+Regular depth images (`ImageBuilder().depth()`) are render-only — they serve as depth attachments but cannot be sampled by shaders. They have no sampler and no RID.
+
+Depth-sampled images (`ImageBuilder().depthSampled(w, h)`) serve double duty: depth attachment during the shadow pass, then sampled texture during the lighting pass. They:
+
+- Use `VK_FORMAT_D32_SFLOAT` (no stencil — more efficient for shadow maps)
+- Have usage flags `DEPTH_STENCIL_ATTACHMENT | SAMPLED`
+- Create a **comparison sampler** (`compareEnable = VK_TRUE`, `compareOp = VK_COMPARE_OP_LESS`)
+- Register in the bindless table as a combined image sampler and return an RID
+- Use `VK_IMAGE_ASPECT_DEPTH_BIT` only (no stencil aspect)
+- Initial layout: `DepthStencilAttachment` (ready for shadow pass)
+
+The shadow pass renders to the depth-sampled image, a barrier transitions it to `DepthReadOnly`, and the main pass's fragment shader samples it via RID using `texture(sampler2DShadow(...), ...)` in GLSL.
+
+### depth-only pipelines
+
+`GraphicsPipelineBuilder::depthOnly()` configures the pipeline for depth-only rendering:
+
+- `colorAttachmentCount = 0` in `VkPipelineRenderingCreateInfo`
+- Uses the shadow map's depth format (`VK_FORMAT_D32_SFLOAT`)
+- No fragment shader required (mesh shader outputs clip-space positions, rasterizer writes depth)
+- Color blend state still provided but with 0 attachments
+- Depth bias can optionally be enabled to reduce shadow acne
+
+```cpp
+Pipeline shadowPipeline = GraphicsPipelineBuilder()
+    .meshShader(shadowMeshShader)
+    .depthOnly()   // 0 color attachments, D32_SFLOAT depth
+    .build();
+```
+
+### future: multi-color-attachment rendering
+
+G-buffer / deferred rendering requires multiple color attachments (position, normal, albedo). This needs:
+- A `beginRendering` overload accepting a span of color image views
+- Pipeline builder support for multiple color attachment formats
+
+This is not needed for shadow maps and is deferred to the backlog.
 
 ## synchronization model
 
@@ -97,9 +190,9 @@ The number of frames in flight equals `swapchainImageCount` (typically 3).
 
 ### deferred destruction
 
-Buffer and Image destructors don't destroy Vulkan handles immediately. Instead, handles are pushed into the current frame slot's `DestroyGeneration`. When the fence for that slot is signaled (step 1 above), the handles are destroyed. This ensures the GPU is finished with resources before they are freed.
+Buffer, Image, and Pipeline destructors don't destroy Vulkan handles immediately. Instead, handles are pushed into the current frame slot's `DestroyGeneration`. When the fence for that slot is signaled (step 1 above), the handles are destroyed. This ensures the GPU is finished with resources before they are freed.
 
-DestroyGeneration holds: VkBuffer, VkDeviceMemory, VkCommandBuffer, VkImage, VkImageView, VkSampler.
+DestroyGeneration holds: VkBuffer, VkDeviceMemory, VkCommandBuffer, VkImage, VkImageView, VkSampler, VkPipeline.
 
 ### barriers
 
@@ -125,7 +218,7 @@ Interactive applications need to create, destroy, and modify resources at any ti
 
 ### swapping pipelines ✓
 
-`cmd.bindCompute(pipeline)` and `cmd.bindGraphics(pipeline)` accept any `VkPipeline`. Multiple bind calls per frame work. Pipelines are immutable once created — no sync concern.
+`cmd.bindCompute(pipeline)` and `cmd.bindGraphics(pipeline)` accept any `VkPipeline` (Pipeline converts implicitly). Multiple bind calls per frame work. Pipelines are immutable once created — no sync concern. Pipeline is RAII — destruction is deferred automatically.
 
 ### per-frame buffer writes ✓
 
@@ -137,11 +230,21 @@ GPU: Compute shaders write to storage buffers, then `cmd.bufferBarrier()` makes 
 
 Buffer and Image constructors register with the bindless table and assign an RID. Destructors defer both Vulkan handle destruction and RID release into the current frame's `DestroyGeneration`, ensuring the GPU is finished before the descriptor slot is recycled.
 
+### multi-pass rendering ✓
+
+Shadow map pass → barrier → main pass, all in a single command buffer per frame. Each pass uses `beginRendering` / `endRendering` with the appropriate overload:
+
+1. `beginRendering(shadowMap.imageView, {w, h})` — depth-only shadow pass
+2. `imageBarrier(...)` — transition shadow map to shader-readable
+3. `beginRendering(depthImage.imageView)` — main pass, fragment shader samples shadow map via RID
+
+Render targets that are written each frame need one per `swapchainImageCount` (see render target model above).
+
 ### render to offscreen image ✓
 
-Two overloads of `Commands::beginRendering()`:
-- `beginRendering(depthImageView)` — renders to the swapchain color attachment (requires frame-bound Commands)
-- `beginRendering(colorImageView, depthImageView, extent)` — renders to any color target
+Two offscreen overloads of `Commands::beginRendering()`:
+- `beginRendering(depthView, extent)` — depth-only offscreen (shadow maps)
+- `beginRendering(colorView, depthView, extent)` — color + depth offscreen
 
 ### indirect dispatch/draw ✓
 
@@ -150,10 +253,6 @@ Two overloads of `Commands::beginRendering()`:
 ### dynamic viewport/scissor ✓
 
 Viewport and scissor are dynamic pipeline state. `Frame::beginCommands()` sets them to window dimensions by default. `cmd.setViewport()` and `cmd.setScissor()` change them per-draw.
-
-### pipeline destruction ✓
-
-`destroyPipeline(pipeline)` defers destruction via DestroyGeneration, safe for mid-session pipeline replacement.
 
 ## Vulkan requirements
 
@@ -164,7 +263,7 @@ Viewport and scissor are dynamic pipeline state. `Frame::beginCommands()` sets t
 
 ## shader introspection
 
-SPIR-V binaries are self-describing. The library should parse SPIR-V at shader load time to extract metadata that enables compile-time correctness checks during pipeline building.
+SPIR-V binaries are self-describing. The library parses SPIR-V at shader load time to extract metadata that enables compile-time correctness checks during pipeline building.
 
 ### what SPIR-V exposes
 
@@ -179,23 +278,23 @@ The SPIR-V module contains all of the following, extractable by walking the inst
 
 ### compile-time correctness checks
 
-The pipeline builder should validate shader metadata at `build()` time. These are programmer errors detectable before any GPU work begins.
+The pipeline builder validates shader metadata at `build()` time. These are programmer errors detectable before any GPU work begins.
 
-**Push constant consistency** — All stages in a pipeline must declare the same push constant block size. A mismatch (e.g., fragment shader declares 76 bytes, mesh shader declares 80 bytes) means one shader is using a stale or wrong struct. The builder should throw with both sizes printed.
+**Push constant consistency** — All stages in a pipeline must declare the same push constant block size. A mismatch (e.g., fragment shader declares 76 bytes, mesh shader declares 80 bytes) means one shader is using a stale or wrong struct. The builder throws with both sizes printed.
 
-**Inter-stage location matching** — The mesh shader's output locations must be a superset of the fragment shader's input locations. A fragment shader reading `location=1` that the mesh shader never writes is a silent black-screen bug. The builder should throw listing the unmatched locations.
+**Inter-stage location matching** — The mesh shader's output locations must be a superset of the fragment shader's input locations. A fragment shader reading `location=1` that the mesh shader never writes is a silent black-screen bug. The builder throws listing the unmatched locations.
 
-**Descriptor set compatibility** — Every shader should only reference set=0 (the bindless set). Any reference to set≥1 is a mistake in a bindless architecture. The builder should throw identifying the unexpected set.
+**Descriptor set compatibility** — Every shader should only reference set=0 (the bindless set). Any reference to set≥1 is a mistake in a bindless architecture. The builder throws identifying the unexpected set.
 
-**Binding range check** — Bindings used by the shader must be within the bindless table's declared bindings (0=storage buffers, 1=samplers, 2=storage images). An out-of-range binding is a shader bug. The builder should throw with the invalid binding number.
+**Binding range check** — Bindings used by the shader must be within the bindless table's declared bindings (0=storage buffers, 1=samplers, 2=storage images). An out-of-range binding is a shader bug. The builder throws with the invalid binding number.
 
-**Execution model vs stage flag** — The execution model declared in SPIR-V (e.g., MeshEXT) must match the `VkShaderStageFlagBits` the builder is using. Passing a compute SPIR-V as a mesh shader stage should throw immediately rather than producing a Vulkan validation error later.
+**Execution model vs stage flag** — The execution model declared in SPIR-V (e.g., MeshEXT) must match the `VkShaderStageFlagBits` the builder is using. Passing a compute SPIR-V as a mesh shader stage throws immediately rather than producing a Vulkan validation error later.
 
-**Push constant size vs Vulkan limit** — If the push constant block exceeds `maxPushConstantsSize` (128 bytes minimum guaranteed), the builder should throw with the declared size and the device limit.
+**Push constant size vs Vulkan limit** — If the push constant block exceeds `maxPushConstantsSize` (128 bytes minimum guaranteed), the builder throws with the declared size and the device limit.
 
 ### queryable metadata
 
-ShaderModule (or ShaderBuilder) should expose introspection results so application code can also use them:
+ShaderModule exposes introspection results so application code can use them:
 
 ```cpp
 ShaderModule shader(ShaderBuilder().mesh().fromFile("quad.mesh.spv"));
@@ -209,8 +308,6 @@ shader.reflection.inputLocations;      // {}    (mesh has no inputs from prior s
 shader.reflection.descriptorBindings;  // {{0,0}, {0,1}}  (set, binding pairs)
 ```
 
-This lets application code compute dispatch counts from `localSize()`, size buffers from `maxVertices()`, or verify assumptions in tests.
-
 ### implementation approach
 
 SPIR-V is a simple binary format: a header followed by a stream of variable-length instructions. Parsing the subset needed for introspection (OpEntryPoint, OpExecutionMode, OpDecorate, OpMemberDecorate, OpVariable, OpTypeStruct, OpTypeFloat, OpTypeInt, OpTypeVector, OpTypeMatrix) requires ~200 lines of code with no external dependencies. No need for a full SPIR-V library.
@@ -219,7 +316,7 @@ ShaderModule owns a `ShaderReflection` struct parsed at construction time from t
 
 ### debug output
 
-When checks detect a problem, the error message must be actionable:
+When checks detect a problem, the error message is actionable:
 
 ```
 pipeline build error: push constant size mismatch
@@ -233,14 +330,18 @@ pipeline build error: unmatched fragment input locations
   mesh shader (quad.mesh.spv) outputs: {1}
 ```
 
-In debug builds, the builder should also print a summary of what it validated (stages, push sizes, locations matched) to stderr so the programmer can see the checks ran.
+In debug builds, the builder prints a summary of what it validated (stages, push sizes, locations matched) to stderr so the programmer can see the checks ran.
 
 ## considerations
 
 ### push constant size
 
-128 bytes (Vulkan guaranteed minimum), all stages. Enough for mat4 (64 bytes) + several scalars and RIDs. If a shader needs more data, one RID can point to a storage buffer containing the full dataset.
+128 bytes (Vulkan guaranteed minimum), all stages. Enough for mat4 (64 bytes) + several scalars and RIDs. If a shader needs more data, one RID can point to a storage buffer containing the full dataset. 500 entities × 128 bytes = 64 KB in a single storage buffer, trivial.
 
 ### VMA
 
-Not included. The current `vkAllocateMemory` + `findMemoryType` approach works for the project scope. VMA is a backlog item if allocation patterns become painful.
+Not included. The current `vkAllocateMemory` + `findMemoryType` approach works for the current project scope. Each Buffer and Image is a separate allocation. Vulkan implementations typically allow ~4096 allocations. A game with pooled geometry buffers and ~100 unique textures stays well within this limit. VMA is a backlog item if allocation counts become a problem.
+
+### texture formats
+
+TGA-only loading is sufficient for development. GPU-compressed formats (BC1–BC7 via KTX2 or DDS) are application-level loader additions — the library API (`ImageBuilder().fromStagingBuffer(...)`) already accepts any VkFormat and pre-uploaded data. Not a library architecture concern.

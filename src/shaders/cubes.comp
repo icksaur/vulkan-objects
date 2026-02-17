@@ -1,0 +1,126 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout (local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set=0, binding=0) buffer StorageBuffers {
+    float data[];
+} storageBuffers[];
+
+layout(push_constant) uniform PushConstants {
+    mat4 viewProjection;
+    uint vertexBufferRID;
+    uint textureRID;
+    uint shadowMapRID;
+    uint lightBufferRID;
+    float rotationAngle;
+};
+
+mat3 rotateY(float angle) {
+    float c = cos(angle);
+    float s = sin(angle);
+    return mat3(c, 0, -s,  0, 1, 0,  s, 0, c);
+}
+
+struct LightData {
+    mat4 lightViewProjection;
+};
+
+LightData getLightData() {
+    LightData ld;
+    for (int col = 0; col < 4; col++)
+        for (int row = 0; row < 4; row++)
+            ld.lightViewProjection[col][row] = storageBuffers[nonuniformEXT(lightBufferRID)].data[col * 4 + row];
+    return ld;
+}
+
+// Each cube: 36 vertices, 8 floats per vertex (pos xyz, normal xyz, uv)
+const uint VERTS_PER_CUBE = 36;
+const uint FLOATS_PER_VERT = 8;
+
+void writeVertex(uint rid, uint i, vec3 pos, vec3 normal, vec2 uv) {
+    storageBuffers[nonuniformEXT(rid)].data[i]   = pos.x;
+    storageBuffers[nonuniformEXT(rid)].data[i+1] = pos.y;
+    storageBuffers[nonuniformEXT(rid)].data[i+2] = pos.z;
+    storageBuffers[nonuniformEXT(rid)].data[i+3] = normal.x;
+    storageBuffers[nonuniformEXT(rid)].data[i+4] = normal.y;
+    storageBuffers[nonuniformEXT(rid)].data[i+5] = normal.z;
+    storageBuffers[nonuniformEXT(rid)].data[i+6] = uv.x;
+    storageBuffers[nonuniformEXT(rid)].data[i+7] = uv.y;
+}
+
+void writeFace(uint rid, uint baseIdx, vec3 center, float halfSize, vec3 normal, vec3 right, vec3 up) {
+    vec3 v0 = center + (-right - up) * halfSize;
+    vec3 v1 = center + ( right - up) * halfSize;
+    vec3 v2 = center + (-right + up) * halfSize;
+    vec3 v3 = center + ( right + up) * halfSize;
+
+    // Triangle 1: v0, v1, v2
+    writeVertex(rid, baseIdx,                    v0, normal, vec2(0, 1));
+    writeVertex(rid, baseIdx + FLOATS_PER_VERT,  v1, normal, vec2(1, 1));
+    writeVertex(rid, baseIdx + FLOATS_PER_VERT*2, v2, normal, vec2(0, 0));
+    // Triangle 2: v2, v1, v3
+    writeVertex(rid, baseIdx + FLOATS_PER_VERT*3, v2, normal, vec2(0, 0));
+    writeVertex(rid, baseIdx + FLOATS_PER_VERT*4, v1, normal, vec2(1, 1));
+    writeVertex(rid, baseIdx + FLOATS_PER_VERT*5, v3, normal, vec2(1, 0));
+}
+
+void main() {
+    uint cubeIdx = gl_GlobalInvocationID.x;
+
+    uint baseOffset = cubeIdx * VERTS_PER_CUBE * FLOATS_PER_VERT;
+
+    // Cube layout for shadowing:
+    // Cubes 0-3: large ground cubes (platforms),  y ~ 0
+    // Cubes 4-7: small cubes floating above them, y ~ 1.5
+    // Remaining: scattered small cubes
+
+    vec3 center;
+    float halfSize;
+
+    if (cubeIdx < 4) {
+        // Large ground platforms in a grid
+        float x = (float(cubeIdx % 2) - 0.5) * 3.0;
+        float z = (float(cubeIdx / 2) - 0.5) * 3.0;
+        center = vec3(x, -0.5, z);
+        halfSize = 1.0;
+    } else if (cubeIdx < 8) {
+        // Small floating cubes directly above ground cubes
+        uint groundIdx = cubeIdx - 4;
+        float x = (float(groundIdx % 2) - 0.5) * 3.0;
+        float z = (float(groundIdx / 2) - 0.5) * 3.0;
+        center = vec3(x, 1.5, z);
+        halfSize = 0.35;
+    } else {
+        // Extra scattered cubes
+        float angle = float(cubeIdx) * 1.37;
+        float radius = 1.0 + float(cubeIdx) * 0.3;
+        center = vec3(cos(angle) * radius, 0.5 + sin(angle * 0.7) * 0.5, sin(angle) * radius);
+        halfSize = 0.2 + sin(float(cubeIdx) * 2.1) * 0.1;
+    }
+
+    // Rotate cube around Y axis
+    mat3 rot = rotateY(rotationAngle);
+    center = rot * center;
+
+    uint rid = vertexBufferRID;
+    uint faceFloats = 6 * FLOATS_PER_VERT; // 6 vertices per face
+
+    // Face directions rotated with the cube
+    vec3 ux = rot * vec3(1,0,0);
+    vec3 uy = vec3(0,1,0);           // Y unchanged by Y rotation
+    vec3 uz = rot * vec3(0,0,1);
+
+    // +Y face (top)
+    writeFace(rid, baseOffset,                  center + uy * halfSize, halfSize, uy, ux, uz);
+    // -Y face (bottom)
+    writeFace(rid, baseOffset + faceFloats,     center - uy * halfSize, halfSize, -uy, ux, -uz);
+    // +X face (right)
+    writeFace(rid, baseOffset + faceFloats*2,   center + ux * halfSize, halfSize, ux, -uz, uy);
+    // -X face (left)
+    writeFace(rid, baseOffset + faceFloats*3,   center - ux * halfSize, halfSize, -ux, uz, uy);
+    // +Z face (front)
+    writeFace(rid, baseOffset + faceFloats*4,   center + uz * halfSize, halfSize, uz, ux, uy);
+    // -Z face (back)
+    writeFace(rid, baseOffset + faceFloats*5,   center - uz * halfSize, halfSize, -uz, -ux, uy);
+}

@@ -67,6 +67,7 @@ enum class Layout : int32_t {
     PresentSrc           = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
     Attachment           = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
     ReadOnly             = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+    DepthReadOnly        = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
 };
 
 // --- Resource destruction ---
@@ -289,11 +290,13 @@ struct ImageBuilder {
     VkFormat format;
     VkExtent2D extent;
     bool isDepthBuffer;
+    bool isDepthSampled;
     VkSampleCountFlagBits sampleBits;
     VkImageUsageFlags usage;
     ImageBuilder();
     ImageBuilder & createMipmaps(bool buildMipmaps);
     ImageBuilder & depth();
+    ImageBuilder & depthSampled(uint32_t width, uint32_t height);
     ImageBuilder & fromStagingBuffer(Buffer & stagingBuffer, int width, int height, VkFormat format);
     ImageBuilder & color();
     ImageBuilder & multisample();
@@ -388,6 +391,7 @@ public:
     void drawMeshTasksIndirect(VkBuffer buffer, uint32_t drawCount, VkDeviceSize offset = 0, uint32_t stride = 12);
     void pushConstants(const void * data, uint32_t size);
     void beginRendering(VkImageView depthImage);
+    void beginRendering(VkImageView depthImage, VkExtent2D extent);
     void beginRendering(VkImageView colorImage, VkImageView depthImage, VkExtent2D extent);
     void endRendering();
     void setViewport(float x, float y, float width, float height);
@@ -430,10 +434,13 @@ struct GraphicsPipelineBuilder {
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
     std::vector<ShaderModule *> shaderModules;
     VkSampleCountFlagBits sampleCountBit;
+    bool isDepthOnly;
+    VkFormat depthOnlyFormat;
     GraphicsPipelineBuilder();
     GraphicsPipelineBuilder & meshShader(ShaderModule & meshShaderModule, const char * entryPoint = "main");
     GraphicsPipelineBuilder & fragmentShader(ShaderModule & fragmentShaderModule, const char *entryPoint = "main");
     GraphicsPipelineBuilder & sampleCount(size_t sampleCount);
+    GraphicsPipelineBuilder & depthOnly(VkFormat format = VK_FORMAT_D32_SFLOAT);
     Pipeline build();
 };
 

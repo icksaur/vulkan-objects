@@ -2,7 +2,7 @@
 
 // --- Pipelines ---
 
-GraphicsPipelineBuilder::GraphicsPipelineBuilder() : sampleCountBit(VK_SAMPLE_COUNT_1_BIT) {}
+GraphicsPipelineBuilder::GraphicsPipelineBuilder() : sampleCountBit(VK_SAMPLE_COUNT_1_BIT), isDepthOnly(false), depthOnlyFormat(VK_FORMAT_D32_SFLOAT) {}
 GraphicsPipelineBuilder & GraphicsPipelineBuilder::meshShader(ShaderModule & meshShaderModule, const char * entryPoint) {
     if (meshShaderModule.reflection.executionModel != VK_SHADER_STAGE_MESH_BIT_EXT) {
         throw std::runtime_error("pipeline build error: shader '" + meshShaderModule.fileName +
@@ -38,6 +38,12 @@ GraphicsPipelineBuilder & GraphicsPipelineBuilder::sampleCount(size_t sampleCoun
         throw std::runtime_error("sample count must be greater than 0");
     }
     sampleCountBit = getSampleBits(sampleCount);
+    return *this;
+}
+
+GraphicsPipelineBuilder & GraphicsPipelineBuilder::depthOnly(VkFormat format) {
+    isDepthOnly = true;
+    depthOnlyFormat = format;
     return *this;
 }
 
@@ -117,6 +123,9 @@ Pipeline GraphicsPipelineBuilder::build() {
         }
     }
 
+    // depth-only: skip location validation when no fragment shader
+    // (mesh shader outputs are unused by rasterizer for depth-only)
+
 #ifndef NDEBUG
     std::cerr << "[pipeline] validation passed:";
     for (auto * sm : shaderModules) {
@@ -158,6 +167,13 @@ Pipeline GraphicsPipelineBuilder::build() {
     rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
 
+    if (isDepthOnly) {
+        rasterizer.depthBiasEnable = VK_TRUE;
+        rasterizer.depthBiasConstantFactor = 1.25f;
+        rasterizer.depthBiasSlopeFactor = 1.75f;
+        rasterizer.depthBiasClamp = 0.0f;
+    }
+
     VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
     colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     colorBlendAttachment.blendEnable = VK_FALSE;
@@ -165,8 +181,8 @@ Pipeline GraphicsPipelineBuilder::build() {
     VkPipelineColorBlendStateCreateInfo colorBlending = {};
     colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     colorBlending.logicOpEnable = VK_FALSE;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
+    colorBlending.attachmentCount = isDepthOnly ? 0u : 1u;
+    colorBlending.pAttachments = isDepthOnly ? nullptr : &colorBlendAttachment;
 
     VkPipelineMultisampleStateCreateInfo multisampling = {};
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -189,9 +205,9 @@ Pipeline GraphicsPipelineBuilder::build() {
     VkFormat colorFormat = g_context().colorFormat;
     VkPipelineRenderingCreateInfo renderingInfo = {};
     renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachmentFormats = &colorFormat;
-    renderingInfo.depthAttachmentFormat = depthFormat;
+    renderingInfo.colorAttachmentCount = isDepthOnly ? 0u : 1u;
+    renderingInfo.pColorAttachmentFormats = isDepthOnly ? nullptr : &colorFormat;
+    renderingInfo.depthAttachmentFormat = isDepthOnly ? depthOnlyFormat : depthFormat;
     renderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 
     VkGraphicsPipelineCreateInfo pipelineCreateInfo = {};

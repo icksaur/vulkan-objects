@@ -91,6 +91,46 @@ void Commands::beginRendering(VkImageView depthImage) {
     renderingInfo.pDepthAttachment = &depthAttachmentInfo;
 
     vkBeginRendering(commandBuffer, &renderingInfo);
+
+    VkViewport vp = {};
+    vp.width = (float)g_context().windowWidth;
+    vp.height = (float)g_context().windowHeight;
+    vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &vp);
+    VkRect2D sc = {};
+    sc.extent = { (uint32_t)g_context().windowWidth, (uint32_t)g_context().windowHeight };
+    vkCmdSetScissor(commandBuffer, 0, 1, &sc);
+}
+
+void Commands::beginRendering(VkImageView depthImage, VkExtent2D extent) {
+    VkRenderingAttachmentInfo depthAttachmentInfo = {};
+    depthAttachmentInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachmentInfo.imageView = depthImage;
+    depthAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAttachmentInfo.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachmentInfo.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkClearValue clearDepth = { .depthStencil = { 1.0f, 0 } };
+    depthAttachmentInfo.clearValue = clearDepth;
+
+    VkRenderingInfo renderingInfo = {};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea = { 0, 0, extent.width, extent.height };
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 0;
+    renderingInfo.pColorAttachments = nullptr;
+    renderingInfo.pDepthAttachment = &depthAttachmentInfo;
+
+    VkViewport vp = {};
+    vp.x = 0; vp.y = 0;
+    vp.width = (float)extent.width; vp.height = (float)extent.height;
+    vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &vp);
+    VkRect2D sc = {};
+    sc.offset = {0, 0};
+    sc.extent = extent;
+    vkCmdSetScissor(commandBuffer, 0, 1, &sc);
+
+    vkBeginRendering(commandBuffer, &renderingInfo);
 }
 
 void Commands::beginRendering(VkImageView colorImage, VkImageView depthImage, VkExtent2D extent) {
