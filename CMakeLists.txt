@@ -20,11 +20,10 @@ endif()
 # Add compiler warnings
 add_compile_options(-Wall -Wextra -Wpedantic)
 
-# Source files
-set(SOURCES
-    src/main.cpp
-    src/camera.cpp
-    src/tga.cpp
+# ---------------------------------------------------------------------------
+# vkobjects — static library
+# ---------------------------------------------------------------------------
+set(LIB_SOURCES
     src/vkobjects.cpp
     src/shaders.cpp
     src/buffer.cpp
@@ -35,39 +34,49 @@ set(SOURCES
     src/pipeline.cpp
 )
 
-set(HEADERS
-    src/camera.h
-    src/math.h
-    src/pch.h
-    src/tga.h
-    src/vkobjects.h
-    src/vkinternal.h
+add_library(vkobjects STATIC ${LIB_SOURCES})
+
+target_precompile_headers(vkobjects PRIVATE src/pch.h)
+
+# include/  — public (consumers see vkobjects.h)
+# src/      — private (internal headers: vkinternal.h, vk_mem_alloc.h, pch.h)
+target_include_directories(vkobjects
+    PUBLIC  include
+    PRIVATE src
 )
 
-# Create executable
-add_executable(vulkan ${SOURCES} ${HEADERS})
-
-# Precompiled header
-target_precompile_headers(vulkan PRIVATE src/pch.h)
-
-# Include directories
-target_include_directories(vulkan PRIVATE
-    src
+# SDL3 and Vulkan are PUBLIC because vkobjects.h includes their headers
+target_include_directories(vkobjects PUBLIC
     ${SDL3_INCLUDE_DIRS}
     ${Vulkan_INCLUDE_DIRS}
 )
 
-# Link libraries
-target_link_libraries(vulkan PRIVATE 
+target_link_libraries(vkobjects PUBLIC
     ${SDL3_LIBRARIES}
     Vulkan::Vulkan
 )
 
-# Find glslc for shader compilation
+# ---------------------------------------------------------------------------
+# vulkan-demo — demo executable
+# ---------------------------------------------------------------------------
+set(DEMO_SOURCES
+    demo/main.cpp
+    demo/camera.cpp
+    demo/tga.cpp
+)
+
+add_executable(vulkan-demo ${DEMO_SOURCES})
+
+target_include_directories(vulkan-demo PRIVATE demo)
+
+target_link_libraries(vulkan-demo PRIVATE vkobjects)
+
+# ---------------------------------------------------------------------------
+# Shader compilation — SPV output next to source
+# ---------------------------------------------------------------------------
 find_program(GLSLC glslc REQUIRED)
 
-# Shader compilation — SPV output next to source
-set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders)
+set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/demo/shaders)
 
 set(FRAGMENT_SHADERS shadow.frag blit.frag)
 set(COMPUTE_SHADERS cubes.comp)
@@ -115,5 +124,5 @@ endforeach()
 # Add custom target for shaders
 add_custom_target(shaders ALL DEPENDS ${SPIRV_BINARIES})
 
-# Make the main target depend on shaders
-add_dependencies(vulkan shaders)
+# Make the demo depend on shaders
+add_dependencies(vulkan-demo shaders)

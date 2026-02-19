@@ -17,7 +17,7 @@ const uint32_t cubeCount = 12;
 const size_t vertexBufferSize = sizeof(float) * 8 * 36 * cubeCount;
 Buffer vertexBuffer(BufferBuilder(vertexBufferSize).storage());
 
-ShaderModule cubeCompModule(ShaderBuilder().compute().fromFile("src/shaders/cubes.comp.spv"));
+ShaderModule cubeCompModule(ShaderBuilder().compute().fromFile("demo/shaders/cubes.comp.spv"));
 Pipeline computePipeline = createComputePipeline(cubeCompModule);
 ```
 

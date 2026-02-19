@@ -20,7 +20,7 @@ VMA is a single-header library (`vk_mem_alloc.h`). It creates a `VmaAllocator` a
 - Remove `findMemoryType` and `createBuffer` declarations
 - Add `extern VmaAllocator g_allocator;`
 
-**`src/vkobjects.h`** (public header — minimal changes)
+**`include/vkobjects.h`** (public header — minimal changes)
 - `DestroyGeneration`: replace `std::vector<VkDeviceMemory> memories` with `std::vector<VmaAllocation> allocations`
 - `Buffer`: replace `VkDeviceMemory memory` with `VmaAllocation allocation`
 - `Image`: replace `VkDeviceMemory memory` with `VmaAllocation allocation`

@@ -111,12 +111,12 @@ int main(int argc, char *argv[]) {
     VulkanContext context(window, VulkanContextOptions().validation().meshShaders());
 
     // Shaders
-    ShaderModule cubeMeshModule(ShaderBuilder().mesh().fromFile("src/shaders/cube.mesh.spv"));
-    ShaderModule shadowMeshModule(ShaderBuilder().mesh().fromFile("src/shaders/shadow.mesh.spv"));
-    ShaderModule shadowFragModule(ShaderBuilder().fragment().fromFile("src/shaders/shadow.frag.spv"));
-    ShaderModule cubeCompModule(ShaderBuilder().compute().fromFile("src/shaders/cubes.comp.spv"));
-    ShaderModule fullscreenMeshModule(ShaderBuilder().mesh().fromFile("src/shaders/fullscreen.mesh.spv"));
-    ShaderModule blitFragModule(ShaderBuilder().fragment().fromFile("src/shaders/blit.frag.spv"));
+    ShaderModule cubeMeshModule(ShaderBuilder().mesh().fromFile("demo/shaders/cube.mesh.spv"));
+    ShaderModule shadowMeshModule(ShaderBuilder().mesh().fromFile("demo/shaders/shadow.mesh.spv"));
+    ShaderModule shadowFragModule(ShaderBuilder().fragment().fromFile("demo/shaders/shadow.frag.spv"));
+    ShaderModule cubeCompModule(ShaderBuilder().compute().fromFile("demo/shaders/cubes.comp.spv"));
+    ShaderModule fullscreenMeshModule(ShaderBuilder().mesh().fromFile("demo/shaders/fullscreen.mesh.spv"));
+    ShaderModule blitFragModule(ShaderBuilder().fragment().fromFile("demo/shaders/blit.frag.spv"));
 
     // One-shot setup
     auto setupCmd = Commands::oneShot();

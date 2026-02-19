@@ -30,9 +30,10 @@ make run        # build and run
 
 ## Usage
 
-From [src/main.cpp](src/main.cpp):
+From [demo/main.cpp](demo/main.cpp):
 
 ```cpp
+#include "vkobjects.h"
 SDLWindow window("App", 1280, 720);
 VulkanContext context(window, VulkanContextOptions().validation().meshShaders());
 
@@ -102,11 +103,48 @@ layout(push_constant) uniform PushConstants {
 ## Project Structure
 
 ```
-src/            # C++ sources and headers
-src/shaders/    # GLSL shaders (compiled to .spv by CMake)
+include/        # public header (vkobjects.h)
+src/            # library implementation (static library)
+demo/           # demo application
+demo/shaders/   # GLSL shaders (compiled to .spv by CMake)
 doc/            # spec.md, bindless.md, backlog.md
 plan.md         # active implementation plan
 code-quality.md # code review standards
+```
+
+## Using in Your Project
+
+Add this repository as a subdirectory (git submodule, FetchContent, or copy) and link against the `vkobjects` target:
+
+```cmake
+add_subdirectory(vulkan-objects)
+target_link_libraries(my_app PRIVATE vkobjects)
+```
+
+This gives your project:
+- `#include "vkobjects.h"` — the public API header
+- Vulkan and SDL3 include paths and link libraries (propagated automatically)
+
+The library is a static archive (`libvkobjects.a`). No install step needed.
+
+### Minimal example
+
+```cpp
+#include "vkobjects.h"
+
+int main() {
+    SDLWindow window("App", 1280, 720);
+    VulkanContext context(window, VulkanContextOptions().validation().meshShaders());
+
+    Buffer vertexBuffer(BufferBuilder(dataSize).storage());
+
+    while (!done) {
+        Frame frame;
+        auto cmd = frame.beginCommands();
+        // ...
+        frame.submit(cmd);
+    }
+}
 ```
 
 ## Agent Guide
