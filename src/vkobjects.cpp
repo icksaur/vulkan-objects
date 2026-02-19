@@ -1,3 +1,11 @@
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#define VMA_IMPLEMENTATION
+#include "vk_mem_alloc.h"
+#pragma GCC diagnostic pop
+
 #include "vkobjects.h"
 #include <cstddef>
 #include <vulkan/vulkan_core.h>
@@ -55,6 +63,7 @@ VulkanContextOptions & VulkanContextOptions::throwOnValidationError() {
 VulkanContext & VulkanContextSingleton::operator()() { return *contextInstance; }
 
 VulkanContextSingleton g_context;
+VmaAllocator g_allocator = VK_NULL_HANDLE;
 
 // --- DestroyGeneration ---
 
@@ -79,18 +88,14 @@ void DestroyGeneration::destroy() {
         vkDestroyImageView(context.device, v, nullptr);
     }
     imageViews.clear();
-    for (VkImage img : images) {
-        vkDestroyImage(context.device, img, nullptr);
+    for (auto & [img, alloc] : imageAllocations) {
+        vmaDestroyImage(g_allocator, img, alloc);
     }
-    images.clear();
-    for (VkDeviceMemory memory : memories) {
-        vkFreeMemory(context.device, memory, nullptr);
+    imageAllocations.clear();
+    for (auto & [buf, alloc] : bufferAllocations) {
+        vmaDestroyBuffer(g_allocator, buf, alloc);
     }
-    memories.clear();
-    for (VkBuffer buffer : buffers) {
-        vkDestroyBuffer(context.device, buffer, nullptr);
-    }
-    buffers.clear();
+    bufferAllocations.clear();
     if (!commandBuffers.empty()) {
         vkFreeCommandBuffers(context.device, context.commandPool, commandBuffers.size(), commandBuffers.data());
         commandBuffers.clear();
@@ -815,53 +820,6 @@ void BindlessTable::releaseStorageBuffer(uint32_t index) { freeStorageBufferIndi
 void BindlessTable::releaseSampler(uint32_t index) { freeSamplerIndices.push_back(index); }
 void BindlessTable::releaseStorageImage(uint32_t index) { freeStorageImageIndices.push_back(index); }
 
-// --- Memory ---
-
-uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t memoryTypeBits, VkMemoryPropertyFlags properties) {
-    VkPhysicalDeviceMemoryProperties memProperties;
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
-    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-        if ((memoryTypeBits & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
-            return i;
-        }
-    }
-    throw std::runtime_error("failed to find suitable memory type!");
-}
-
-std::tuple<VkBuffer, VkDeviceMemory> createBuffer(VkPhysicalDevice gpu, VkDevice device, VkBufferUsageFlags usageFlags, size_t byteCount, VkMemoryPropertyFlags flags) {
-    VkBuffer buffer;
-    VkDeviceMemory memory;
-
-    VkBufferCreateInfo bufferInfo = {};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = byteCount;
-    bufferInfo.usage = usageFlags;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    if (bufferInfo.size == 0) {
-        throw std::runtime_error("buffer size must be greater than zero");
-    }
-
-    if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create buffer");
-    }
-
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
-
-    VkMemoryAllocateInfo allocInfo = {};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = findMemoryType(gpu, memRequirements.memoryTypeBits, flags);
-
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
-        throw std::runtime_error("failed to allocate buffer memory");
-    }
-
-    vkBindBufferMemory(device, buffer, memory, 0);
-    return std::make_tuple(buffer, memory);
-}
-
 VkSampler createSampler(VkDevice device) {
     VkSampler textureSampler;
     VkSamplerCreateInfo samplerInfo = {};
@@ -982,6 +940,16 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
 
     this->device = createLogicalDevice(options, this->physicalDevice, this->graphicsQueueIndex);
 
+    // Initialize VMA
+    VmaAllocatorCreateInfo allocatorInfo = {};
+    allocatorInfo.instance = this->instance;
+    allocatorInfo.physicalDevice = this->physicalDevice;
+    allocatorInfo.device = this->device;
+    allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3;
+    if (vmaCreateAllocator(&allocatorInfo, &g_allocator) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create VMA allocator");
+    }
+
     this->meshShaderProperties = getMeshShaderProperties(this->physicalDevice);
 
     this->presentationSurface = createSurface(window, this->instance, this->physicalDevice, this->graphicsQueueIndex);
@@ -1049,6 +1017,8 @@ VulkanContext::~VulkanContext() {
     for (VkImageView view : swapchainImageViews) vkDestroyImageView(device, view, nullptr);
     vkDestroySwapchainKHR(device, swapchain, nullptr);
     vkDestroySurfaceKHR(instance, presentationSurface, nullptr);
+    vmaDestroyAllocator(g_allocator);
+    g_allocator = VK_NULL_HANDLE;
     vkDestroyDevice(device, nullptr);
     destroyDebugReportCallbackEXT(instance, callback, nullptr);
     vkDestroyInstance(instance, nullptr);

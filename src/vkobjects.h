@@ -71,13 +71,16 @@ enum class Layout : int32_t {
     DepthReadOnly        = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
 };
 
+// --- VMA forward declaration ---
+struct VmaAllocation_T;
+typedef VmaAllocation_T* VmaAllocation;
+
 // --- Resource destruction ---
 
 struct DestroyGeneration {
-    std::vector<VkBuffer> buffers;
-    std::vector<VkDeviceMemory> memories;
+    std::vector<std::pair<VkBuffer, VmaAllocation>> bufferAllocations;
+    std::vector<std::pair<VkImage, VmaAllocation>> imageAllocations;
     std::vector<VkCommandBuffer> commandBuffers;
-    std::vector<VkImage> images;
     std::vector<VkImageView> imageViews;
     std::vector<VkSampler> samplers;
     std::vector<uint32_t> storageBufferRIDs;
@@ -266,7 +269,7 @@ struct BufferBuilder {
 
 class Buffer {
     VkBuffer buffer;
-    VkDeviceMemory memory;
+    VmaAllocation allocation;
     size_t size;
     uint32_t rid_;
 
@@ -310,7 +313,7 @@ struct ImageBuilder {
 
 class Image {
     VkImage image;
-    VkDeviceMemory memory;
+    VmaAllocation allocation;
     VkSampler sampler;
     uint32_t rid_;
     bool isStorageImage;

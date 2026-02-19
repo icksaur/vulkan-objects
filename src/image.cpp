@@ -215,9 +215,9 @@ ImageBuilder & ImageBuilder::storage() {
     return *this;
 }
 
-Image::Image(Image && other) : image(other.image), memory(other.memory), sampler(other.sampler), rid_(other.rid_), isStorageImage(other.isStorageImage), imageView(other.imageView) {
+Image::Image(Image && other) : image(other.image), allocation(other.allocation), sampler(other.sampler), rid_(other.rid_), isStorageImage(other.isStorageImage), imageView(other.imageView) {
     other.image = VK_NULL_HANDLE;
-    other.memory = VK_NULL_HANDLE;
+    other.allocation = VK_NULL_HANDLE;
     other.imageView = VK_NULL_HANDLE;
     other.sampler = VK_NULL_HANDLE;
     other.rid_ = UINT32_MAX;
@@ -277,23 +277,11 @@ Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HAND
     imageInfo.samples = builder.sampleBits;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (vkCreateImage(g_context().device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create Vulkan image");
-    }
+    VmaAllocationCreateInfo vmaAllocInfo = {};
+    vmaAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
 
-    VkMemoryRequirements memoryRequirements = {};
-    vkGetImageMemoryRequirements(g_context().device, image, &memoryRequirements);
-
-    VkMemoryAllocateInfo allocateInfo = {};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocateInfo.allocationSize = memoryRequirements.size;
-    allocateInfo.memoryTypeIndex = findMemoryType(g_context().physicalDevice, memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-    if (VK_SUCCESS != vkAllocateMemory(g_context().device, &allocateInfo, nullptr, &memory)) {
-        throw std::runtime_error("failed to allocate image memory");
-    }
-    if (VK_SUCCESS != vkBindImageMemory(g_context().device, image, memory, 0)) {
-        throw std::runtime_error("failed to bind memory to image");
+    if (vmaCreateImage(g_allocator, &imageInfo, &vmaAllocInfo, &image, &allocation, nullptr) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create image");
     }
 
     // Layout transitions using sync2
@@ -371,6 +359,5 @@ Image::~Image() {
 
     if (imageView != VK_NULL_HANDLE) gen.imageViews.push_back(imageView);
     if (sampler != VK_NULL_HANDLE) gen.samplers.push_back(sampler);
-    if (memory != VK_NULL_HANDLE) gen.memories.push_back(memory);
-    if (image != VK_NULL_HANDLE) gen.images.push_back(image);
+    gen.imageAllocations.push_back({image, allocation});
 }

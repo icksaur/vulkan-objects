@@ -18,15 +18,35 @@ BufferBuilder & BufferBuilder::transferSource() { usage |= VK_BUFFER_USAGE_TRANS
 BufferBuilder & BufferBuilder::transferDestination() { usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT; return *this; }
 BufferBuilder & BufferBuilder::size(size_t byteCount) { this->byteCount = byteCount; return *this; }
 
-Buffer::Buffer(BufferBuilder & builder) : buffer(VK_NULL_HANDLE), memory(VK_NULL_HANDLE), size(builder.byteCount), rid_(UINT32_MAX) {
+Buffer::Buffer(BufferBuilder & builder) : buffer(VK_NULL_HANDLE), allocation(VK_NULL_HANDLE), size(builder.byteCount), rid_(UINT32_MAX) {
     // All buffers get STORAGE_BUFFER_BIT for bindless registration
     VkBufferUsageFlags usage = builder.usage | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    std::tie(buffer, memory) = createBuffer(g_context().physicalDevice, g_context().device, usage, builder.byteCount, builder.properties);
+
+    if (builder.byteCount == 0) {
+        throw std::runtime_error("buffer size must be greater than zero");
+    }
+
+    VkBufferCreateInfo bufferInfo = {};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = builder.byteCount;
+    bufferInfo.usage = usage;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo allocInfo = {};
+    allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    if (builder.properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+        allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+    }
+
+    if (vmaCreateBuffer(g_allocator, &bufferInfo, &allocInfo, &buffer, &allocation, nullptr) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create buffer");
+    }
+
     rid_ = g_context().bindlessTable.registerStorageBuffer(g_context().device, buffer, builder.byteCount);
 }
-Buffer::Buffer(Buffer && other) : buffer(other.buffer), memory(other.memory), size(other.size), rid_(other.rid_) {
+Buffer::Buffer(Buffer && other) : buffer(other.buffer), allocation(other.allocation), size(other.size), rid_(other.rid_) {
     other.buffer = VK_NULL_HANDLE;
-    other.memory = VK_NULL_HANDLE;
+    other.allocation = VK_NULL_HANDLE;
     other.size = 0;
     other.rid_ = UINT32_MAX;
 }
@@ -34,23 +54,23 @@ uint32_t Buffer::rid() const { return rid_; }
 void Buffer::upload(void * bytes, size_t size) {
     if (size > this->size) throw std::runtime_error("buffer size mismatch");
     void* mapped;
-    vkMapMemory(g_context().device, memory, 0, size, 0, &mapped);
+    vmaMapMemory(g_allocator, allocation, &mapped);
     memcpy(mapped, bytes, size);
-    vkUnmapMemory(g_context().device, memory);
+    vmaUnmapMemory(g_allocator, allocation);
 }
 void Buffer::upload(void * bytes, size_t size, VkDeviceSize offset) {
     if (size > this->size) throw std::runtime_error("buffer size mismatch");
     void* mapped;
-    vkMapMemory(g_context().device, memory, offset, size, 0, &mapped);
-    memcpy(mapped, bytes, size);
-    vkUnmapMemory(g_context().device, memory);
+    vmaMapMemory(g_allocator, allocation, &mapped);
+    memcpy(static_cast<char*>(mapped) + offset, bytes, size);
+    vmaUnmapMemory(g_allocator, allocation);
 }
 void Buffer::download(void * bytes, size_t size) {
     if (size > this->size) throw std::runtime_error("buffer size mismatch");
     void* mapped;
-    vkMapMemory(g_context().device, memory, 0, size, 0, &mapped);
+    vmaMapMemory(g_allocator, allocation, &mapped);
     memcpy(bytes, mapped, size);
-    vkUnmapMemory(g_context().device, memory);
+    vmaUnmapMemory(g_allocator, allocation);
 }
 Buffer::~Buffer() {
     VulkanContext & context = g_context();
@@ -58,8 +78,7 @@ Buffer::~Buffer() {
     if (rid_ != UINT32_MAX) {
         gen.storageBufferRIDs.push_back(rid_);
     }
-    gen.memories.push_back(memory);
-    gen.buffers.push_back(buffer);
+    gen.bufferAllocations.push_back({buffer, allocation});
 }
 Buffer::operator VkBuffer() const { return buffer; }
 Buffer::operator VkBuffer*() const { return (VkBuffer*)&buffer; }

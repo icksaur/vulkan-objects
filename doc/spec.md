@@ -386,7 +386,7 @@ In debug builds, the builder prints a summary of what it validated (stages, push
 
 ### VMA
 
-Not included. The current `vkAllocateMemory` + `findMemoryType` approach works for the current project scope. Each Buffer and Image is a separate allocation. Vulkan implementations typically allow ~4096 allocations. A game with pooled geometry buffers and ~100 unique textures stays well within this limit. VMA is a backlog item if allocation counts become a problem.
+Integrated. VMA (Vulkan Memory Allocator) handles all buffer and image memory allocation via sub-allocation from pooled `vkAllocateMemory` calls. No per-resource `vkAllocateMemory` in project code. The ~4096 allocation limit no longer applies. Public API unchanged — `BufferBuilder`, `ImageBuilder`, `Buffer`, `Image` signatures are identical. See doc/features/vma.md for design details.
 
 ### texture formats
 

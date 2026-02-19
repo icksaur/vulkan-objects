@@ -2,14 +2,14 @@
 // Internal helpers shared across compilation units. Not part of the public API.
 
 #include "vkobjects.h"
+#include "vk_mem_alloc.h"
 #include <tuple>
 
 extern VkFormat depthFormat;
+extern VmaAllocator g_allocator;
 
 VkSampleCountFlagBits getSampleBits(uint32_t sampleCount);
 VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool);
-uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t memoryTypeBits, VkMemoryPropertyFlags properties);
-std::tuple<VkBuffer, VkDeviceMemory> createBuffer(VkPhysicalDevice gpu, VkDevice device, VkBufferUsageFlags usageFlags, size_t byteCount, VkMemoryPropertyFlags flags);
 VkSampler createSampler(VkDevice device);
 VkSampler createShadowSampler(VkDevice device);
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags imageAspects, size_t mipLevelCount);
