@@ -71,6 +71,24 @@ enum class Layout : int32_t {
     DepthReadOnly        = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
 };
 
+// --- Push constant compile-time validation ---
+
+// CRTP base for push constant structs. Inherit to enforce the 128-byte Vulkan
+// guaranteed minimum at compile time:
+//
+//   struct MyPush : PushConstantBase<MyPush> {
+//       uint32_t verticesRID;
+//       uint32_t textureRID;
+//   };
+//
+// The static_assert fires when the struct is instantiated, not just defined.
+template<typename T>
+struct PushConstantBase {
+    ~PushConstantBase() {
+        static_assert(sizeof(T) <= 128, "Push constants exceed 128-byte Vulkan guaranteed minimum");
+    }
+};
+
 // --- VMA forward declaration ---
 struct VmaAllocation_T;
 typedef VmaAllocation_T* VmaAllocation;
@@ -150,6 +168,7 @@ class VulkanContext {
     friend struct DestroyGeneration;
     friend struct GraphicsPipelineBuilder;
     friend class Pipeline;
+    friend class TimestampQuery;
     friend Pipeline createComputePipeline(ShaderModule &, const char *);
     friend void createSwapChain(VulkanContext &, VkSurfaceKHR, VkPhysicalDevice, VkDevice, VkSwapchainKHR &);
     friend VkFence createFence();
@@ -204,6 +223,7 @@ public:
     VulkanContext(VulkanContext && other) = delete;
 
     void onSwapchainResize(std::function<void(Commands &, VkExtent2D)> callback);
+    void waitIdle();
 };
 
 struct VulkanContextSingleton {
@@ -275,6 +295,7 @@ class Buffer {
 
 public:
     uint32_t rid() const;
+    size_t byteSize() const;
     void upload(void * bytes, size_t size);
     void upload(void * bytes, size_t size, VkDeviceSize offset);
     void download(void * bytes, size_t size);
@@ -397,6 +418,11 @@ public:
     void drawMeshTasks(uint32_t x, uint32_t y, uint32_t z);
     void drawMeshTasksIndirect(VkBuffer buffer, uint32_t drawCount, VkDeviceSize offset = 0, uint32_t stride = 12);
     void pushConstants(const void * data, uint32_t size);
+    template<typename T>
+    void pushConstants(const T & data) {
+        static_assert(sizeof(T) <= 128, "Push constants exceed 128-byte Vulkan guaranteed minimum");
+        pushConstants(&data, sizeof(T));
+    }
     void beginRendering();
     void beginRendering(VkImageView depthImage);
     void beginRendering(VkImageView depthImage, VkExtent2D extent);
@@ -405,6 +431,7 @@ public:
     void endRendering();
     void setViewport(float x, float y, float width, float height);
     void setScissor(int32_t x, int32_t y, uint32_t width, uint32_t height);
+    void fillBuffer(VkBuffer buffer, uint32_t value, VkDeviceSize offset = 0, VkDeviceSize size = VK_WHOLE_SIZE);
     void bufferBarrier(VkBuffer buffer, Stage srcStage, Stage dstStage);
     void imageBarrier(VkImage image, Stage srcStage, Access srcAccess, Layout oldLayout,
                       Stage dstStage, Access dstAccess, Layout newLayout, uint32_t mipLevels = 1);
@@ -456,3 +483,33 @@ struct GraphicsPipelineBuilder {
 };
 
 Pipeline createComputePipeline(ShaderModule & computeShaderModule, const char * entryPoint = "main");
+
+// --- Timestamp Queries ---
+
+class TimestampQuery {
+    std::vector<VkQueryPool> pools;
+    uint32_t queryCount;
+    uint32_t frameCount;
+    float nanosPerTick_;
+    uint32_t framesElapsed = 0;
+
+public:
+    // queryCount = number of timestamps per frame, frameCount = swapchain image count
+    TimestampQuery(uint32_t queryCount, uint32_t frameCount);
+    ~TimestampQuery();
+
+    TimestampQuery(const TimestampQuery &) = delete;
+    TimestampQuery & operator=(const TimestampQuery &) = delete;
+
+    // Reset queries for the given frame index (call before writing)
+    void reset(Commands & cmd, uint32_t frameIndex);
+
+    // Write a timestamp at the current pipeline position
+    void write(Commands & cmd, uint32_t frameIndex, uint32_t queryIndex);
+
+    // Read results from a previous frame. Returns false if results not yet available.
+    bool read(uint32_t frameIndex, uint64_t * timestamps, uint32_t count);
+
+    // Nanoseconds per timestamp tick (device-specific)
+    float nanosPerTick() const;
+};

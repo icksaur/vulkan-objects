@@ -1030,3 +1030,7 @@ void VulkanContext::onSwapchainResize(std::function<void(Commands &, VkExtent2D)
     resizeCallback = callback;
 }
 
+void VulkanContext::waitIdle() {
+    vkQueueWaitIdle(graphicsQueue);
+}
+

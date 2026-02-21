@@ -71,6 +71,44 @@ float v = storageBuffers[nonuniformEXT(vertexBufferRID)].data[i];
 
 128 bytes = 32 uint32s. If a shader needs more data, one of those uint32s can be an RID pointing to a storage buffer containing the full dataset.
 
+### compile-time size validation
+
+Push constant structs inherit from `PushConstantBase<T>` to enforce the 128-byte limit at compile time:
+
+```cpp
+struct MyPush : PushConstantBase<MyPush> {
+    float mvp[16];        // 64 bytes
+    uint32_t verticesRID; //  4 bytes
+    uint32_t textureRID;  //  4 bytes
+};                        // 72 bytes — ok
+```
+
+The typed `pushConstants(const T&)` overload also static-asserts at the call site and eliminates the `sizeof` argument:
+
+```cpp
+cmd.pushConstants(push);   // compile-time checked, no sizeof
+```
+
+### different structs for different pipelines
+
+The pipeline layout declares a single 128-byte push constant *range*, not a fixed struct. Each pipeline's shaders interpret those bytes however they want. Different pipelines can (and should) use different C++ push constant structs:
+
+```cpp
+struct ComputePush : PushConstantBase<ComputePush> {
+    uint32_t opsRID;
+    uint32_t hitsRID;
+    // ... compute-only RIDs ...
+};
+
+struct RenderPush : PushConstantBase<RenderPush> {
+    float mvp[16];
+    uint32_t verticesRID;
+    uint32_t triangleIndicesRID;
+};
+```
+
+This avoids packing unrelated RIDs into a single monolithic struct. Compute and render passes each carry only what their shaders need.
+
 ## what this eliminates from user code
 
 The old 7-step descriptor setup (layout builder → pool builder → pool allocate → set binder → update sets → bind sets → manage dynamic offsets) is completely gone. User code never touches descriptors. The entire descriptor lifecycle is internal to vkobjects.

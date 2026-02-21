@@ -77,7 +77,7 @@ Image createImageFromTGAFile(Commands & commands, const char * filename) {
 }
 
 // Push constants — must match all shaders
-struct PushConstants {
+struct PushConstants : PushConstantBase<PushConstants> {
     float viewProjection[16]; // mat4
     uint32_t vertexBufferRID;
     uint32_t textureRID;
@@ -213,7 +213,7 @@ int main(int argc, char *argv[]) {
 
         // 1. Compute pass: generate cube geometry
         cmd.bindCompute(computePipeline);
-        cmd.pushConstants(&push, sizeof(push));
+        cmd.pushConstants(push);
         cmd.dispatch(cubeCount, 1, 1);
 
         // Barrier: compute writes → mesh shader reads
@@ -222,7 +222,7 @@ int main(int argc, char *argv[]) {
         // 2. Shadow pass: render depth from light's perspective
         cmd.beginRendering(shadowMaps[idx].imageView, {shadowMapRes, shadowMapRes});
         cmd.bindGraphics(shadowPipeline);
-        cmd.pushConstants(&push, sizeof(push));
+        cmd.pushConstants(push);
         cmd.drawMeshTasks(cubeCount, 1, 1);
         cmd.endRendering();
 
@@ -237,7 +237,7 @@ int main(int argc, char *argv[]) {
         VkExtent2D offscreenExtent = {(uint32_t)context.windowWidth, (uint32_t)context.windowHeight};
         cmd.beginRendering(offscreenColors[idx].imageView, depthImages[idx].imageView, offscreenExtent);
         cmd.bindGraphics(graphicsPipeline);
-        cmd.pushConstants(&push, sizeof(push));
+        cmd.pushConstants(push);
         cmd.drawMeshTasks(cubeCount, 1, 1);
         cmd.endRendering();
 

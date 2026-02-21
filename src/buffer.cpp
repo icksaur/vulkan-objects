@@ -51,6 +51,7 @@ Buffer::Buffer(Buffer && other) : buffer(other.buffer), allocation(other.allocat
     other.rid_ = UINT32_MAX;
 }
 uint32_t Buffer::rid() const { return rid_; }
+size_t Buffer::byteSize() const { return size; }
 void Buffer::upload(void * bytes, size_t size) {
     if (size > this->size) throw std::runtime_error("buffer size mismatch");
     void* mapped;

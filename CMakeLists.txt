@@ -32,6 +32,7 @@ set(LIB_SOURCES
     src/commands.cpp
     src/frame.cpp
     src/pipeline.cpp
+    src/timestamp.cpp
 )
 
 add_library(vkobjects STATIC ${LIB_SOURCES})

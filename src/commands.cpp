@@ -231,6 +231,10 @@ void Commands::setScissor(int32_t x, int32_t y, uint32_t width, uint32_t height)
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 }
 
+void Commands::fillBuffer(VkBuffer buffer, uint32_t value, VkDeviceSize offset, VkDeviceSize size) {
+    vkCmdFillBuffer(commandBuffer, buffer, offset, size, value);
+}
+
 void Commands::bufferBarrier(VkBuffer buf, Stage srcStage, Stage dstStage) {
     Barrier(commandBuffer).buffer(buf)
         .from(srcStage, Access::ShaderWrite)
@@ -258,8 +262,16 @@ void Commands::submitAndWait() {
     submitInfo.commandBufferInfoCount = 1;
     submitInfo.pCommandBufferInfos = &cmdInfo;
 
-    vkQueueSubmit2(g_context().graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(g_context().graphicsQueue);
+    VkFenceCreateInfo fenceInfo = {};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence fence;
+    if (vkCreateFence(g_context().device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create fence for submitAndWait");
+    }
+
+    vkQueueSubmit2(g_context().graphicsQueue, 1, &submitInfo, fence);
+    vkWaitForFences(g_context().device, 1, &fence, VK_TRUE, UINT64_MAX);
+    vkDestroyFence(g_context().device, fence, nullptr);
 
     if (ownsBuffer) {
         vkFreeCommandBuffers(g_context().device, g_context().commandPool, 1, &commandBuffer);
