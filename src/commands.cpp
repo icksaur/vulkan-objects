@@ -235,6 +235,14 @@ void Commands::fillBuffer(VkBuffer buffer, uint32_t value, VkDeviceSize offset, 
     vkCmdFillBuffer(commandBuffer, buffer, offset, size, value);
 }
 
+void Commands::copyBuffer(VkBuffer src, VkBuffer dst, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset) {
+    VkBufferCopy region = {};
+    region.srcOffset = srcOffset;
+    region.dstOffset = dstOffset;
+    region.size = size;
+    vkCmdCopyBuffer(commandBuffer, src, dst, 1, &region);
+}
+
 void Commands::bufferBarrier(VkBuffer buf, Stage srcStage, Stage dstStage) {
     Barrier(commandBuffer).buffer(buf)
         .from(srcStage, Access::ShaderWrite)

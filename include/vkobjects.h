@@ -273,6 +273,7 @@ struct BufferBuilder {
     VkBufferUsageFlags usage;
     VkMemoryPropertyFlags properties;
     size_t byteCount;
+    bool isReadback = false;
 
     BufferBuilder(size_t byteCount);
     BufferBuilder & index();
@@ -284,6 +285,7 @@ struct BufferBuilder {
     BufferBuilder & deviceLocal();
     BufferBuilder & transferSource();
     BufferBuilder & transferDestination();
+    BufferBuilder & readback();
     BufferBuilder & size(size_t byteCount);
 };
 
@@ -432,6 +434,7 @@ public:
     void setViewport(float x, float y, float width, float height);
     void setScissor(int32_t x, int32_t y, uint32_t width, uint32_t height);
     void fillBuffer(VkBuffer buffer, uint32_t value, VkDeviceSize offset = 0, VkDeviceSize size = VK_WHOLE_SIZE);
+    void copyBuffer(VkBuffer src, VkBuffer dst, VkDeviceSize size, VkDeviceSize srcOffset = 0, VkDeviceSize dstOffset = 0);
     void bufferBarrier(VkBuffer buffer, Stage srcStage, Stage dstStage);
     void imageBarrier(VkImage image, Stage srcStage, Access srcAccess, Layout oldLayout,
                       Stage dstStage, Access dstAccess, Layout newLayout, uint32_t mipLevels = 1);

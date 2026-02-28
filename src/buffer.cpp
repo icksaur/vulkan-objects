@@ -16,6 +16,11 @@ BufferBuilder & BufferBuilder::hostVisible() { properties |= VK_MEMORY_PROPERTY_
 BufferBuilder & BufferBuilder::deviceLocal() { properties |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT; return *this; }
 BufferBuilder & BufferBuilder::transferSource() { usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT; return *this; }
 BufferBuilder & BufferBuilder::transferDestination() { usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT; return *this; }
+BufferBuilder & BufferBuilder::readback() {
+    properties |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+    isReadback = true;
+    return *this;
+}
 BufferBuilder & BufferBuilder::size(size_t byteCount) { this->byteCount = byteCount; return *this; }
 
 Buffer::Buffer(BufferBuilder & builder) : buffer(VK_NULL_HANDLE), allocation(VK_NULL_HANDLE), size(builder.byteCount), rid_(UINT32_MAX) {
@@ -34,8 +39,27 @@ Buffer::Buffer(BufferBuilder & builder) : buffer(VK_NULL_HANDLE), allocation(VK_
 
     VmaAllocationCreateInfo allocInfo = {};
     allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    if (builder.properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+    if (builder.isReadback) {
+        // Cached host memory for fast CPU reads (readback / download path)
+        allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+    } else if (builder.properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+        // Write-combined host memory for fast CPU writes (upload path)
         allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+    } else {
+        // Pure device-local: exclude memory types on heaps that are too small
+        // for this allocation (avoids BAR heap overflow validation warnings
+        // on NVIDIA where BAR memory types are also DEVICE_LOCAL).
+        allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        VkPhysicalDeviceMemoryProperties memProps;
+        vkGetPhysicalDeviceMemoryProperties(g_context().physicalDevice, &memProps);
+        uint32_t typeBits = 0;
+        for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
+            uint32_t heapIdx = memProps.memoryTypes[i].heapIndex;
+            if (memProps.memoryHeaps[heapIdx].size >= builder.byteCount)
+                typeBits |= (1u << i);
+        }
+        if (typeBits)
+            allocInfo.memoryTypeBits = typeBits;
     }
 
     if (vmaCreateBuffer(g_allocator, &bufferInfo, &allocInfo, &buffer, &allocation, nullptr) != VK_SUCCESS) {
