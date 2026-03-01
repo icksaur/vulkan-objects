@@ -647,7 +647,7 @@ VkCommandPool createCommandPool(VkDevice device, uint32_t queueFamilyIndex) {
 
 // --- BindlessTable ---
 
-void BindlessTable::init(VkDevice device) {
+void BindlessTable::init(VkDevice device, uint32_t maxPushConstantSize) {
     VkDescriptorSetLayoutBinding bindings[3] = {};
 
     bindings[0].binding = 0;
@@ -716,7 +716,7 @@ void BindlessTable::init(VkDevice device) {
     VkPushConstantRange pushRange = {};
     pushRange.stageFlags = VK_SHADER_STAGE_ALL;
     pushRange.offset = 0;
-    pushRange.size = 128;
+    pushRange.size = maxPushConstantSize;
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -965,7 +965,7 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
     this->commandPool = createCommandPool(this->device, this->graphicsQueueIndex);
 
     // Init bindless descriptor table
-    this->bindlessTable.init(this->device);
+    this->bindlessTable.init(this->device, this->limits.maxPushConstantsSize);
 
     // Pre-allocate frame command buffers
     for (size_t i = 0; i < swapchainImageCount; i++) {

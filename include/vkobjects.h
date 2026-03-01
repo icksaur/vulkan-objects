@@ -143,7 +143,7 @@ struct BindlessTable {
     uint32_t nextSamplerIndex = 0;
     uint32_t nextStorageImageIndex = 0;
 
-    void init(VkDevice device);
+    void init(VkDevice device, uint32_t maxPushConstantSize = 128);
     void destroy(VkDevice device);
 
     uint32_t registerStorageBuffer(VkDevice device, VkBuffer buffer, VkDeviceSize size);
