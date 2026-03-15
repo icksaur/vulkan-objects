@@ -319,6 +319,7 @@ struct ImageBuilder {
     bool isDepthBuffer;
     bool isDepthSampled;
     bool isColorTarget;
+    bool useNearest;
     VkSampleCountFlagBits sampleBits;
     VkImageUsageFlags usage;
     ImageBuilder();
@@ -331,6 +332,7 @@ struct ImageBuilder {
     ImageBuilder & color();
     ImageBuilder & multisample();
     ImageBuilder & storage();
+    ImageBuilder & nearest();
     ImageBuilder & withFormat(VkFormat format);
 };
 
@@ -426,6 +428,9 @@ public:
         pushConstants(&data, sizeof(T));
     }
     void beginRendering();
+    void beginRendering(float r, float g, float b, float a);
+    void resumeRendering();
+    void beginRenderingOffscreen(VkImageView colorImage, VkExtent2D extent);
     void beginRendering(VkImageView depthImage);
     void beginRendering(VkImageView depthImage, VkExtent2D extent);
     void beginRendering(VkImageView colorImage, VkImageView depthImage, VkExtent2D extent);
@@ -474,6 +479,8 @@ struct GraphicsPipelineBuilder {
     std::vector<ShaderModule *> shaderModules;
     VkSampleCountFlagBits sampleCountBit;
     bool isDepthOnly;
+    bool enableAlphaBlend;
+    bool disableDepthTest;
     VkFormat depthOnlyFormat;
     std::vector<VkFormat> colorAttachmentFormats;
     GraphicsPipelineBuilder();
@@ -482,6 +489,8 @@ struct GraphicsPipelineBuilder {
     GraphicsPipelineBuilder & sampleCount(size_t sampleCount);
     GraphicsPipelineBuilder & depthOnly(VkFormat format = VK_FORMAT_D32_SFLOAT);
     GraphicsPipelineBuilder & colorFormats(std::vector<VkFormat> formats);
+    GraphicsPipelineBuilder & alphaBlend();
+    GraphicsPipelineBuilder & noDepth();
     Pipeline build();
 };
 

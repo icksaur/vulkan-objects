@@ -2,7 +2,7 @@
 
 // --- Pipelines ---
 
-GraphicsPipelineBuilder::GraphicsPipelineBuilder() : sampleCountBit(VK_SAMPLE_COUNT_1_BIT), isDepthOnly(false), depthOnlyFormat(VK_FORMAT_D32_SFLOAT) {}
+GraphicsPipelineBuilder::GraphicsPipelineBuilder() : sampleCountBit(VK_SAMPLE_COUNT_1_BIT), isDepthOnly(false), enableAlphaBlend(false), disableDepthTest(false), depthOnlyFormat(VK_FORMAT_D32_SFLOAT) {}
 GraphicsPipelineBuilder & GraphicsPipelineBuilder::meshShader(ShaderModule & meshShaderModule, const char * entryPoint) {
     if (meshShaderModule.reflection.executionModel != VK_SHADER_STAGE_MESH_BIT_EXT) {
         throw std::runtime_error("pipeline build error: shader '" + meshShaderModule.fileName +
@@ -49,6 +49,16 @@ GraphicsPipelineBuilder & GraphicsPipelineBuilder::depthOnly(VkFormat format) {
 
 GraphicsPipelineBuilder & GraphicsPipelineBuilder::colorFormats(std::vector<VkFormat> formats) {
     colorAttachmentFormats = std::move(formats);
+    return *this;
+}
+
+GraphicsPipelineBuilder & GraphicsPipelineBuilder::alphaBlend() {
+    enableAlphaBlend = true;
+    return *this;
+}
+
+GraphicsPipelineBuilder & GraphicsPipelineBuilder::noDepth() {
+    disableDepthTest = true;
     return *this;
 }
 
@@ -181,7 +191,17 @@ Pipeline GraphicsPipelineBuilder::build() {
 
     VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
     colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    colorBlendAttachment.blendEnable = VK_FALSE;
+    if (enableAlphaBlend) {
+        colorBlendAttachment.blendEnable = VK_TRUE;
+        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    } else {
+        colorBlendAttachment.blendEnable = VK_FALSE;
+    }
 
     std::vector<VkFormat> formats = colorAttachmentFormats.empty()
         ? std::vector<VkFormat>{g_context().colorFormat}
@@ -207,8 +227,8 @@ Pipeline GraphicsPipelineBuilder::build() {
 
     VkPipelineDepthStencilStateCreateInfo depthStencil = {};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthTestEnable = disableDepthTest ? VK_FALSE : VK_TRUE;
+    depthStencil.depthWriteEnable = disableDepthTest ? VK_FALSE : VK_TRUE;
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;

@@ -141,7 +141,7 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
 
 // --- Image ---
 
-ImageBuilder::ImageBuilder() : buildMipmaps(true), bytes(nullptr), stagingBuffer(nullptr), isDepthBuffer(false), isDepthSampled(false), isColorTarget(false), sampleBits(VK_SAMPLE_COUNT_1_BIT), usage(0) {}
+ImageBuilder::ImageBuilder() : buildMipmaps(true), bytes(nullptr), stagingBuffer(nullptr), isDepthBuffer(false), isDepthSampled(false), isColorTarget(false), useNearest(false), sampleBits(VK_SAMPLE_COUNT_1_BIT), usage(0) {}
 ImageBuilder & ImageBuilder::createMipmaps(bool buildMipmaps) { this->buildMipmaps = buildMipmaps; return *this; }
 ImageBuilder & ImageBuilder::depth() {
     bytes = nullptr; stagingBuffer = nullptr; buildMipmaps = false;
@@ -212,6 +212,10 @@ ImageBuilder & ImageBuilder::multisample() {
 }
 ImageBuilder & ImageBuilder::storage() {
     usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    return *this;
+}
+ImageBuilder & ImageBuilder::nearest() {
+    useNearest = true;
     return *this;
 }
 
@@ -337,7 +341,7 @@ Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HAND
         sampler = createShadowSampler(g_context().device);
         rid_ = g_context().bindlessTable.registerSampler(g_context().device, imageView, sampler);
     } else if (!builder.isDepthBuffer) {
-        sampler = createSampler(g_context().device);
+        sampler = builder.useNearest ? createNearestSampler(g_context().device) : createSampler(g_context().device);
         rid_ = g_context().bindlessTable.registerSampler(g_context().device, imageView, sampler);
     }
 }

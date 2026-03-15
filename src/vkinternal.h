@@ -11,6 +11,7 @@ extern VmaAllocator g_allocator;
 VkSampleCountFlagBits getSampleBits(uint32_t sampleCount);
 VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool);
 VkSampler createSampler(VkDevice device);
+VkSampler createNearestSampler(VkDevice device);
 VkSampler createShadowSampler(VkDevice device);
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags imageAspects, size_t mipLevelCount);
 void recordMipmapGeneration(VkCommandBuffer commandBuffer, VkImage image, int width, int height, size_t mipLevelCount);
