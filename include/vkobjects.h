@@ -111,6 +111,8 @@ struct DestroyGeneration {
 
 // --- Context ---
 
+enum class ValidationSeverity { Info, Warning, Error };
+
 struct VulkanContextOptions {
     bool enableMultisampling;
     uint32_t multisampleCount;
@@ -118,12 +120,15 @@ struct VulkanContextOptions {
     bool enableValidationLayers;
     float shaderSampleRateShading;
     bool enableThrowOnValidationError;
+    bool enableVerbose;
+    std::function<void(ValidationSeverity, const char*)> validationCallback;
     VulkanContextOptions();
     VulkanContextOptions & multisample(uint32_t count);
     VulkanContextOptions & meshShaders();
     VulkanContextOptions & validation();
     VulkanContextOptions & sampleRateShading(float rate);
     VulkanContextOptions & throwOnValidationError();
+    VulkanContextOptions & verbose();
 };
 
 struct BindlessTable {
@@ -180,7 +185,7 @@ class VulkanContext {
     VkDevice device;
     VkPhysicalDevice physicalDevice;
     unsigned int graphicsQueueIndex;
-    VkDebugReportCallbackEXT callback;
+    VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
     VkSurfaceKHR presentationSurface;
     VkQueue presentationQueue;
     VkSwapchainKHR swapchain;
@@ -224,6 +229,7 @@ public:
 
     void onSwapchainResize(std::function<void(Commands &, VkExtent2D)> callback);
     void waitIdle();
+    void flushDestroys();
 };
 
 struct VulkanContextSingleton {

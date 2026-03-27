@@ -34,7 +34,8 @@ VulkanContextOptions::VulkanContextOptions() :
     enableMeshShaders(false),
     enableValidationLayers(false),
     shaderSampleRateShading(0.0f),
-    enableThrowOnValidationError(false) {}
+    enableThrowOnValidationError(false),
+    enableVerbose(false) {}
 VulkanContextOptions & VulkanContextOptions::multisample(uint32_t count) {
     multisampleCount = count;
     enableMultisampling = count > 1;
@@ -57,6 +58,10 @@ VulkanContextOptions & VulkanContextOptions::sampleRateShading(float rate) {
 }
 VulkanContextOptions & VulkanContextOptions::throwOnValidationError() {
     enableThrowOnValidationError = true;
+    return *this;
+}
+VulkanContextOptions & VulkanContextOptions::verbose() {
+    enableVerbose = true;
     return *this;
 }
 
@@ -157,7 +162,7 @@ std::vector<std::string> getRequestedLayerNames(VulkanContextOptions & options) 
     return layers;
 }
 
-void getAvailableVulkanLayers(std::vector<std::string>& outLayers) {
+void getAvailableVulkanLayers(std::vector<std::string>& outLayers, bool verbose) {
     uint32_t instanceLayerCount;
     vkEnumerateInstanceLayerProperties(&instanceLayerCount, NULL);
 
@@ -170,9 +175,11 @@ void getAvailableVulkanLayers(std::vector<std::string>& outLayers) {
         outLayers.emplace_back(layerName);
     }
 
-    std::cout << "found " << outLayers.size() << " instance layers:\n";
-    for (const auto& layer : outLayers) {
-        std::cout << "  " << layer << std::endl;
+    if (verbose) {
+        std::cout << "found " << outLayers.size() << " instance layers:\n";
+        for (const auto& layer : outLayers) {
+            std::cout << "  " << layer << std::endl;
+        }
     }
 }
 
@@ -188,15 +195,15 @@ void createVulkanInstance(const std::vector<std::string> & layerNames, const std
     }
 
     // add debug report extension if validation is on
-    bool hasDebugReport = false;
+    bool hasDebugUtils = false;
     for (const auto& ext : extensions) {
-        if (std::string(ext) == VK_EXT_DEBUG_REPORT_EXTENSION_NAME) {
-            hasDebugReport = true;
+        if (std::string(ext) == VK_EXT_DEBUG_UTILS_EXTENSION_NAME) {
+            hasDebugUtils = true;
             break;
         }
     }
-    if (!hasDebugReport && !layers.empty()) {
-        extensions.push_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
+    if (!hasDebugUtils && !layers.empty()) {
+        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
 
     VkApplicationInfo appInfo = {};
@@ -221,35 +228,54 @@ void createVulkanInstance(const std::vector<std::string> & layerNames, const std
     }
 }
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
-    VkDebugReportFlagsEXT flags,
-    VkDebugReportObjectTypeEXT objType,
-    uint64_t obj,
-    size_t location,
-    int32_t code,
-    const char* layerPrefix,
-    const char* msg,
-    void* userData) {
-    (void)flags; (void)objType; (void)obj; (void)location; (void)code; (void)layerPrefix; (void)userData;
-    std::cerr << "validation layer: " << msg << std::endl;
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT messageType,
+    const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+    void* pUserData) {
+    (void)messageType;
+
+    auto* opts = static_cast<VulkanContextOptions*>(pUserData);
+
+    ValidationSeverity severity = ValidationSeverity::Info;
+    if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+        severity = ValidationSeverity::Error;
+    else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+        severity = ValidationSeverity::Warning;
+
+    if (opts->validationCallback) {
+        opts->validationCallback(severity, pCallbackData->pMessage);
+    } else {
+        std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
+    }
+
+    if (opts->enableThrowOnValidationError && severity == ValidationSeverity::Error) {
+        throw std::runtime_error(std::string("Vulkan validation error: ") + pCallbackData->pMessage);
+    }
+
     return VK_FALSE;
 }
 
-void setupDebugCallback(VkInstance instance, VkDebugReportCallbackEXT& callback) {
-    VkDebugReportCallbackCreateInfoEXT createInfo = {};
-    createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
-    createInfo.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT;
-    createInfo.pfnCallback = debugCallback;
+void setupDebugMessenger(VkInstance instance, VulkanContextOptions* opts, VkDebugUtilsMessengerEXT& messenger) {
+    VkDebugUtilsMessengerCreateInfoEXT createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
+                               | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
+                           | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+                           | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    createInfo.pfnUserCallback = debugUtilsCallback;
+    createInfo.pUserData = opts;
 
-    auto CreateDebugReportCallbackEXT = (PFN_vkCreateDebugReportCallbackEXT)
-        vkGetInstanceProcAddr(instance, "vkCreateDebugReportCallbackEXT");
+    auto createMessenger = (PFN_vkCreateDebugUtilsMessengerEXT)
+        vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
 
-    if (CreateDebugReportCallbackEXT == nullptr || CreateDebugReportCallbackEXT(instance, &createInfo, nullptr, &callback) != VK_SUCCESS) {
-        throw std::runtime_error("failed to set up debug callback");
+    if (createMessenger == nullptr || createMessenger(instance, &createInfo, nullptr, &messenger) != VK_SUCCESS) {
+        throw std::runtime_error("failed to set up debug messenger");
     }
 }
 
-VkPhysicalDeviceMeshShaderPropertiesEXT getMeshShaderProperties(VkPhysicalDevice physicalDevice) {
+VkPhysicalDeviceMeshShaderPropertiesEXT getMeshShaderProperties(VkPhysicalDevice physicalDevice, bool verbose) {
     VkPhysicalDeviceMeshShaderPropertiesEXT meshShaderProperties = {};
     meshShaderProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT;
 
@@ -259,15 +285,17 @@ VkPhysicalDeviceMeshShaderPropertiesEXT getMeshShaderProperties(VkPhysicalDevice
 
     vkGetPhysicalDeviceProperties2(physicalDevice, &deviceProperties2);
 
-    std::cout << "max mesh shader output vertices: " << meshShaderProperties.maxMeshOutputVertices << std::endl;
-    std::cout << "max mesh shader output primitives: " << meshShaderProperties.maxMeshOutputPrimitives << std::endl;
-    std::cout << "max mesh work group invocations: " << meshShaderProperties.maxMeshWorkGroupInvocations << std::endl;
-    std::cout << "max preferred mesh work group invocations: " << meshShaderProperties.maxPreferredMeshWorkGroupInvocations << std::endl;
+    if (verbose) {
+        std::cout << "max mesh shader output vertices: " << meshShaderProperties.maxMeshOutputVertices << std::endl;
+        std::cout << "max mesh shader output primitives: " << meshShaderProperties.maxMeshOutputPrimitives << std::endl;
+        std::cout << "max mesh work group invocations: " << meshShaderProperties.maxMeshWorkGroupInvocations << std::endl;
+        std::cout << "max preferred mesh work group invocations: " << meshShaderProperties.maxPreferredMeshWorkGroupInvocations << std::endl;
+    }
 
     return meshShaderProperties;
 }
 
-void selectGPU(VkInstance instance, VkPhysicalDevice & outDevice, unsigned int & outQueueFamilyIndex, uint32_t & outMaxSamples, VkPhysicalDeviceLimits & outLimits) {
+void selectGPU(VkInstance instance, VkPhysicalDevice & outDevice, unsigned int & outQueueFamilyIndex, uint32_t & outMaxSamples, VkPhysicalDeviceLimits & outLimits, bool verbose) {
     uint32_t count = 0;
     if (VK_SUCCESS != vkEnumeratePhysicalDevices(instance, &count, nullptr)) {
         throw std::runtime_error("unable to count physical devices");
@@ -282,13 +310,13 @@ void selectGPU(VkInstance instance, VkPhysicalDevice & outDevice, unsigned int &
     for (const auto& device : physicalDevices) {
         VkPhysicalDeviceProperties properties;
         vkGetPhysicalDeviceProperties(device, &properties);
-        std::cout << "device: " << properties.deviceName << std::endl;
+        if (verbose) std::cout << "device: " << properties.deviceName << std::endl;
 
         if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
             selectedDevice = device;
             outLimits = properties.limits;
             outMaxSamples = properties.limits.framebufferColorSampleCounts & properties.limits.framebufferDepthSampleCounts;
-            std::cout << "selected device: " << properties.deviceName << std::endl;
+            if (verbose) std::cout << "selected device: " << properties.deviceName << std::endl;
         }
     }
 
@@ -298,7 +326,7 @@ void selectGPU(VkInstance instance, VkPhysicalDevice & outDevice, unsigned int &
         vkGetPhysicalDeviceProperties(selectedDevice, &properties);
         outLimits = properties.limits;
         outMaxSamples = properties.limits.framebufferColorSampleCounts & properties.limits.framebufferDepthSampleCounts;
-        std::cout << "no discrete GPU found, using first device: " << properties.deviceName << std::endl;
+        if (verbose) std::cout << "no discrete GPU found, using first device: " << properties.deviceName << std::endl;
     }
 
     uint32_t familyQueueCount = 0;
@@ -329,7 +357,7 @@ VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& p
     if (VK_SUCCESS != vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &devicePropertyCount, NULL)) {
         throw std::runtime_error("Unable to acquire device extension property count");
     }
-    std::cout << "found " << devicePropertyCount << " device extensions\n";
+    if (options.enableVerbose) std::cout << "found " << devicePropertyCount << " device extensions\n";
 
     std::vector<VkExtensionProperties> extensionProperties(devicePropertyCount);
     if (VK_SUCCESS != vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &devicePropertyCount, extensionProperties.data())) {
@@ -354,13 +382,13 @@ VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& p
 
     if (!requiredExtensionNames.empty()) {
         for (auto missing : requiredExtensionNames) {
-            std::cout << "missing extension: " << missing << std::endl;
+            if (options.enableVerbose) std::cout << "missing extension: " << missing << std::endl;
         }
         throw std::runtime_error("not all required device extensions are supported!\n");
     }
 
     for (const auto& name : devicePropertyNames) {
-        std::cout << "applying device extension: " << name << std::endl;
+        if (options.enableVerbose) std::cout << "applying device extension: " << name << std::endl;
     }
 
     VkDeviceQueueCreateInfo queueCreateInfo = {};
@@ -915,9 +943,9 @@ VkSemaphore createSemaphore() {
 
 // --- VulkanContext ---
 
-void destroyDebugReportCallbackEXT(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* pAllocator) {
-    auto func = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT");
-    if (func != nullptr) func(instance, callback, pAllocator);
+void destroyDebugMessenger(VkInstance instance, VkDebugUtilsMessengerEXT messenger, const VkAllocationCallbacks* pAllocator) {
+    auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+    if (func != nullptr && messenger != VK_NULL_HANDLE) func(instance, messenger, pAllocator);
 }
 
 VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
@@ -935,7 +963,7 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
     getAvailableVulkanExtensions(window, foundExtensions);
 
     std::vector<std::string> foundLayers;
-    getAvailableVulkanLayers(foundLayers);
+    getAvailableVulkanLayers(foundLayers, options.enableVerbose);
 
     std::vector<std::string> requestedLayers = getRequestedLayerNames(options);
     std::vector<std::string> enabledLayers;
@@ -947,18 +975,18 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
         if (found) {
             enabledLayers.push_back(requested);
         } else {
-            std::cout << "  Missing layer: " << requested << std::endl;
+            if (options.enableVerbose) std::cout << "  Missing layer: " << requested << std::endl;
         }
     }
 
     createVulkanInstance(enabledLayers, foundExtensions, this->instance);
 
     if (options.enableValidationLayers) {
-        setupDebugCallback(this->instance, this->callback);
+        setupDebugMessenger(this->instance, &this->options, this->debugMessenger);
     }
 
     this->graphicsQueueIndex = -1;
-    selectGPU(this->instance, this->physicalDevice, this->graphicsQueueIndex, this->maxSamples, this->limits);
+    selectGPU(this->instance, this->physicalDevice, this->graphicsQueueIndex, this->maxSamples, this->limits, options.enableVerbose);
 
     this->device = createLogicalDevice(options, this->physicalDevice, this->graphicsQueueIndex);
 
@@ -972,7 +1000,7 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
         throw std::runtime_error("failed to create VMA allocator");
     }
 
-    this->meshShaderProperties = getMeshShaderProperties(this->physicalDevice);
+    this->meshShaderProperties = getMeshShaderProperties(this->physicalDevice, options.enableVerbose);
 
     this->presentationSurface = createSurface(window, this->instance, this->physicalDevice, this->graphicsQueueIndex);
     this->presentationQueue = getPresentationQueue(this->physicalDevice, this->device, this->graphicsQueueIndex, this->presentationSurface);
@@ -1042,7 +1070,7 @@ VulkanContext::~VulkanContext() {
     vmaDestroyAllocator(g_allocator);
     g_allocator = VK_NULL_HANDLE;
     vkDestroyDevice(device, nullptr);
-    destroyDebugReportCallbackEXT(instance, callback, nullptr);
+    destroyDebugMessenger(instance, debugMessenger, nullptr);
     vkDestroyInstance(instance, nullptr);
 
     g_context.contextInstance = nullptr;
@@ -1054,5 +1082,9 @@ void VulkanContext::onSwapchainResize(std::function<void(Commands &, VkExtent2D)
 
 void VulkanContext::waitIdle() {
     vkQueueWaitIdle(graphicsQueue);
+}
+
+void VulkanContext::flushDestroys() {
+    for (auto& dg : destroyGenerations) dg.destroy();
 }
 

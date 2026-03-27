@@ -142,11 +142,13 @@ Pipeline GraphicsPipelineBuilder::build() {
     // (mesh shader outputs are unused by rasterizer for depth-only)
 
 #ifndef NDEBUG
-    std::cerr << "[pipeline] validation passed:";
-    for (auto * sm : shaderModules) {
-        std::cerr << " " << sm->fileName << "(pc=" << sm->reflection.pushConstantSize << "B)";
+    if (g_context().options.enableVerbose) {
+        std::cerr << "[pipeline] validation passed:";
+        for (auto * sm : shaderModules) {
+            std::cerr << " " << sm->fileName << "(pc=" << sm->reflection.pushConstantSize << "B)";
+        }
+        std::cerr << std::endl;
     }
-    std::cerr << std::endl;
 #endif
 
     VkPipelineLayout pipelineLayout = g_context().bindlessTable.pipelineLayout;
@@ -275,8 +277,10 @@ Pipeline createComputePipeline(ShaderModule & computeShaderModule, const char * 
         g_context().limits.maxPushConstantsSize);
 
 #ifndef NDEBUG
-    std::cerr << "[pipeline] compute validation passed: " << computeShaderModule.fileName
-        << "(pc=" << computeShaderModule.reflection.pushConstantSize << "B)" << std::endl;
+    if (g_context().options.enableVerbose) {
+        std::cerr << "[pipeline] compute validation passed: " << computeShaderModule.fileName
+            << "(pc=" << computeShaderModule.reflection.pushConstantSize << "B)" << std::endl;
+    }
 #endif
 
     VkPipelineLayout pipelineLayout = g_context().bindlessTable.pipelineLayout;
