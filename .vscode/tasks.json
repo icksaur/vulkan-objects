@@ -3,8 +3,8 @@
     "tasks": [
         {
             "label": "build",
-            "command": "make",
-            "args": ["-j${env:NUMBER_OF_PROCESSORS}"],
+            "command": "debug-build.sh",
+            "args": [],
             "linux": {
                 "problemMatcher": ["$gcc"],
             },

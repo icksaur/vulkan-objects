@@ -242,6 +242,11 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsCallback(
 
     auto* opts = static_cast<VulkanContextOptions*>(pUserData);
 
+    // Suppress known-benign meta-warning about running core checks + GPU-AV together.
+    // We intentionally enable both during development for maximum coverage.
+    if (pCallbackData->messageIdNumber == 0x7f1922d7)
+        return VK_FALSE;
+
     ValidationSeverity severity = ValidationSeverity::Info;
     if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
         severity = ValidationSeverity::Error;
@@ -986,6 +991,9 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
 
     if (options.enableValidationLayers && options.enableGpuAssistedValidation) {
         SDL_setenv_unsafe("VK_LAYER_GPUAV_ENABLE", "1", 1);
+        // Suppress the "both GPU-AV and Core Check enabled" meta-warning.
+        // We intentionally enable both during development for maximum coverage.
+        SDL_setenv_unsafe("VK_LAYER_MESSAGE_ID_FILTER", "0x7f1922d7", 1);
     } else if (options.enableValidationLayers) {
         SDL_setenv_unsafe("VK_LAYER_GPUAV_ENABLE", "0", 1);
     }
