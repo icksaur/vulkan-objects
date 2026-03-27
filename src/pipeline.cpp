@@ -90,6 +90,10 @@ Pipeline::~Pipeline() {
 void Pipeline::destroyPipeline(VkPipeline pipeline) {
     VulkanContext & context = g_context();
     context.pipelines.erase(pipeline);
+    if (context.options.enableImmediateDestroy) {
+        vkDestroyPipeline(context.device, pipeline, nullptr);
+        return;
+    }
     context.destroyGenerations[context.frameInFlightIndex].pipelines.push_back(pipeline);
 }
 

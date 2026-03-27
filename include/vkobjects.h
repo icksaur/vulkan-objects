@@ -122,6 +122,7 @@ struct VulkanContextOptions {
     bool enableThrowOnValidationError;
     bool enableVerbose;
     bool enableGpuAssistedValidation;
+    bool enableImmediateDestroy;
     std::function<void(ValidationSeverity, const char*)> validationCallback;
     VulkanContextOptions();
     VulkanContextOptions & multisample(uint32_t count);
@@ -131,6 +132,7 @@ struct VulkanContextOptions {
     VulkanContextOptions & throwOnValidationError();
     VulkanContextOptions & verbose();
     VulkanContextOptions & gpuAssistedValidation(bool enable = true);
+    VulkanContextOptions & immediateDestroy(bool v = true);
 };
 
 struct BindlessTable {

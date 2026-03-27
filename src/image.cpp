@@ -350,7 +350,20 @@ uint32_t Image::rid() const { return rid_; }
 Image::operator VkImage() const { return image; }
 
 Image::~Image() {
+    if (image == VK_NULL_HANDLE) return;
     VulkanContext & context = g_context();
+    if (context.options.enableImmediateDestroy) {
+        if (rid_ != UINT32_MAX) {
+            if (isStorageImage)
+                context.bindlessTable.releaseStorageImage(rid_);
+            else
+                context.bindlessTable.releaseSampler(rid_);
+        }
+        if (imageView != VK_NULL_HANDLE) vkDestroyImageView(context.device, imageView, nullptr);
+        if (sampler != VK_NULL_HANDLE) vkDestroySampler(context.device, sampler, nullptr);
+        vmaDestroyImage(g_allocator, image, allocation);
+        return;
+    }
     auto & gen = context.destroyGenerations[context.frameInFlightIndex];
 
     if (rid_ != UINT32_MAX) {

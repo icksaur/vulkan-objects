@@ -98,7 +98,14 @@ void Buffer::download(void * bytes, size_t size) {
     vmaUnmapMemory(g_allocator, allocation);
 }
 Buffer::~Buffer() {
+    if (buffer == VK_NULL_HANDLE) return;
     VulkanContext & context = g_context();
+    if (context.options.enableImmediateDestroy) {
+        if (rid_ != UINT32_MAX)
+            context.bindlessTable.releaseStorageBuffer(rid_);
+        vmaDestroyBuffer(g_allocator, buffer, allocation);
+        return;
+    }
     auto & gen = context.destroyGenerations[context.frameInFlightIndex];
     if (rid_ != UINT32_MAX) {
         gen.storageBufferRIDs.push_back(rid_);

@@ -36,7 +36,8 @@ VulkanContextOptions::VulkanContextOptions() :
     shaderSampleRateShading(0.0f),
     enableThrowOnValidationError(false),
     enableVerbose(false),
-    enableGpuAssistedValidation(true) {}
+    enableGpuAssistedValidation(true),
+    enableImmediateDestroy(false) {}
 VulkanContextOptions & VulkanContextOptions::multisample(uint32_t count) {
     multisampleCount = count;
     enableMultisampling = count > 1;
@@ -67,6 +68,10 @@ VulkanContextOptions & VulkanContextOptions::verbose() {
 }
 VulkanContextOptions & VulkanContextOptions::gpuAssistedValidation(bool enable) {
     enableGpuAssistedValidation = enable;
+    return *this;
+}
+VulkanContextOptions & VulkanContextOptions::immediateDestroy(bool v) {
+    enableImmediateDestroy = v;
     return *this;
 }
 
