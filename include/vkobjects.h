@@ -121,6 +121,7 @@ struct VulkanContextOptions {
     float shaderSampleRateShading;
     bool enableThrowOnValidationError;
     bool enableVerbose;
+    bool enableGpuAssistedValidation;
     std::function<void(ValidationSeverity, const char*)> validationCallback;
     VulkanContextOptions();
     VulkanContextOptions & multisample(uint32_t count);
@@ -129,6 +130,7 @@ struct VulkanContextOptions {
     VulkanContextOptions & sampleRateShading(float rate);
     VulkanContextOptions & throwOnValidationError();
     VulkanContextOptions & verbose();
+    VulkanContextOptions & gpuAssistedValidation(bool enable = true);
 };
 
 struct BindlessTable {

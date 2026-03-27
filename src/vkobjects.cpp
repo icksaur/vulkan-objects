@@ -35,7 +35,8 @@ VulkanContextOptions::VulkanContextOptions() :
     enableValidationLayers(false),
     shaderSampleRateShading(0.0f),
     enableThrowOnValidationError(false),
-    enableVerbose(false) {}
+    enableVerbose(false),
+    enableGpuAssistedValidation(true) {}
 VulkanContextOptions & VulkanContextOptions::multisample(uint32_t count) {
     multisampleCount = count;
     enableMultisampling = count > 1;
@@ -62,6 +63,10 @@ VulkanContextOptions & VulkanContextOptions::throwOnValidationError() {
 }
 VulkanContextOptions & VulkanContextOptions::verbose() {
     enableVerbose = true;
+    return *this;
+}
+VulkanContextOptions & VulkanContextOptions::gpuAssistedValidation(bool enable) {
+    enableGpuAssistedValidation = enable;
     return *this;
 }
 
@@ -977,6 +982,12 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
         } else {
             if (options.enableVerbose) std::cout << "  Missing layer: " << requested << std::endl;
         }
+    }
+
+    if (options.enableValidationLayers && options.enableGpuAssistedValidation) {
+        SDL_setenv_unsafe("VK_LAYER_GPUAV_ENABLE", "1", 1);
+    } else if (options.enableValidationLayers) {
+        SDL_setenv_unsafe("VK_LAYER_GPUAV_ENABLE", "0", 1);
     }
 
     createVulkanInstance(enabledLayers, foundExtensions, this->instance);
