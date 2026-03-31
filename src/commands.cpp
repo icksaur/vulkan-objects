@@ -306,10 +306,24 @@ void Commands::copyBuffer(VkBuffer src, VkBuffer dst, VkDeviceSize size, VkDevic
     vkCmdCopyBuffer(commandBuffer, src, dst, 1, &region);
 }
 
+static Access inferSrcAccess(Stage s) {
+    auto v = static_cast<uint64_t>(s);
+    if (v & static_cast<uint64_t>(Stage::Transfer)) return Access::TransferWrite;
+    if (v & static_cast<uint64_t>(Stage::Host)) return Access::HostWrite;
+    return Access::ShaderWrite;
+}
+
+static Access inferDstAccess(Stage s) {
+    auto v = static_cast<uint64_t>(s);
+    if (v & static_cast<uint64_t>(Stage::Transfer)) return Access::TransferRead;
+    if (v & static_cast<uint64_t>(Stage::Host)) return Access::HostRead;
+    return Access::ShaderRead;
+}
+
 void Commands::bufferBarrier(VkBuffer buf, Stage srcStage, Stage dstStage) {
     Barrier(commandBuffer).buffer(buf)
-        .from(srcStage, Access::ShaderWrite)
-        .to(dstStage, Access::ShaderRead)
+        .from(srcStage, inferSrcAccess(srcStage))
+        .to(dstStage, inferDstAccess(dstStage))
         .record();
 }
 
