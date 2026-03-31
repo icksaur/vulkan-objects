@@ -317,6 +317,7 @@ static Access inferDstAccess(Stage s) {
     auto v = static_cast<uint64_t>(s);
     if (v & static_cast<uint64_t>(Stage::Transfer)) return Access::TransferRead;
     if (v & static_cast<uint64_t>(Stage::Host)) return Access::HostRead;
+    if (v & static_cast<uint64_t>(Stage::DrawIndirect)) return Access::IndirectCommandRead;
     return Access::ShaderRead;
 }
 
