@@ -424,6 +424,7 @@ VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& p
     device12Features.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
     device12Features.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
     device12Features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    device12Features.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
     device12Features.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
     device12Features.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
     device12Features.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;

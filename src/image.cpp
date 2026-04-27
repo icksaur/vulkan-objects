@@ -316,6 +316,11 @@ Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HAND
 
     if (builder.buildMipmaps) {
         recordMipmapGeneration(commandBuffer, image, builder.extent.width, builder.extent.height, mipLevels);
+    } else if (builder.usage & VK_IMAGE_USAGE_STORAGE_BIT) {
+        Barrier(commandBuffer).image(image, mipLevels)
+            .from(Stage::Transfer, Access::TransferWrite, Layout::TransferDst)
+            .to(Stage::Compute, Access::ShaderWrite, Layout::General)
+            .record();
     } else if (!builder.isDepthBuffer && !builder.isColorTarget) {
         Barrier(commandBuffer).image(image, mipLevels)
             .from(Stage::Transfer, Access::TransferWrite, Layout::TransferDst)
