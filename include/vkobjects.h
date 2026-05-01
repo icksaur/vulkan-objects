@@ -489,6 +489,7 @@ struct GraphicsPipelineBuilder {
     std::vector<ShaderModule *> shaderModules;
     VkSampleCountFlagBits sampleCountBit;
     bool isDepthOnly;
+    bool noColorAttachments = false;
     bool enableAlphaBlend;
     bool disableDepthTest;
     VkFormat depthOnlyFormat;
@@ -501,6 +502,7 @@ struct GraphicsPipelineBuilder {
     GraphicsPipelineBuilder & colorFormats(std::vector<VkFormat> formats);
     GraphicsPipelineBuilder & alphaBlend();
     GraphicsPipelineBuilder & noDepth();
+    GraphicsPipelineBuilder & noColor();
     Pipeline build();
 };
 

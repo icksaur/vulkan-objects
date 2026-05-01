@@ -62,6 +62,11 @@ GraphicsPipelineBuilder & GraphicsPipelineBuilder::noDepth() {
     return *this;
 }
 
+GraphicsPipelineBuilder & GraphicsPipelineBuilder::noColor() {
+    noColorAttachments = true;
+    return *this;
+}
+
 static void validateShaderBindings(const ShaderReflection & r, const std::string & name) {
     for (auto & [set, binding] : r.descriptorBindings) {
         if (set != 0) {
@@ -212,7 +217,7 @@ Pipeline GraphicsPipelineBuilder::build() {
     std::vector<VkFormat> formats = colorAttachmentFormats.empty()
         ? std::vector<VkFormat>{g_context().colorFormat}
         : colorAttachmentFormats;
-    uint32_t colorCount = isDepthOnly ? 0u : (uint32_t)formats.size();
+    uint32_t colorCount = (isDepthOnly || noColorAttachments) ? 0u : (uint32_t)formats.size();
     std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments(colorCount, colorBlendAttachment);
 
     VkPipelineColorBlendStateCreateInfo colorBlending = {};
@@ -243,7 +248,7 @@ Pipeline GraphicsPipelineBuilder::build() {
     renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
     renderingInfo.colorAttachmentCount = colorCount;
     renderingInfo.pColorAttachmentFormats = colorCount > 0 ? formats.data() : nullptr;
-    renderingInfo.depthAttachmentFormat = isDepthOnly ? depthOnlyFormat : depthFormat;
+    renderingInfo.depthAttachmentFormat = isDepthOnly ? depthOnlyFormat : (noColorAttachments && disableDepthTest ? VK_FORMAT_UNDEFINED : depthFormat);
     renderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 
     VkGraphicsPipelineCreateInfo pipelineCreateInfo = {};

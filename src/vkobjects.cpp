@@ -462,6 +462,7 @@ VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& p
     deviceFeatures2.features.samplerAnisotropy = VK_TRUE;
     deviceFeatures2.features.shaderInt64 = VK_TRUE;
     deviceFeatures2.features.shaderFloat64 = VK_TRUE;
+    deviceFeatures2.features.fragmentStoresAndAtomics = VK_TRUE;
     deviceFeatures2.pNext = previousInChain;
     if (options.shaderSampleRateShading > 0.0f) {
         deviceFeatures2.features.sampleRateShading = VK_TRUE;
