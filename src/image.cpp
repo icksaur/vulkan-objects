@@ -218,8 +218,30 @@ ImageBuilder & ImageBuilder::nearest() {
     useNearest = true;
     return *this;
 }
+ImageBuilder & ImageBuilder::cube(uint32_t edge) {
+    bytes = nullptr; stagingBuffer = nullptr; buildMipmaps = false;
+    extent.width = edge; extent.height = edge;
+    isDepthBuffer = false;
+    isDepthSampled = false;
+    isColorTarget = false;
+    isCube = true;
+    return *this;
+}
+ImageBuilder & ImageBuilder::mipLevels(uint32_t n) {
+    mipLevelsOverride = n;
+    return *this;
+}
+ImageBuilder & ImageBuilder::size(uint32_t width, uint32_t height) {
+    extent.width = width;
+    extent.height = height;
+    return *this;
+}
+ImageBuilder & ImageBuilder::sampledStorage() {
+    isSampledStorage = true;
+    return *this;
+}
 
-Image::Image(Image && other) : image(other.image), allocation(other.allocation), sampler(other.sampler), rid_(other.rid_), isStorageImage(other.isStorageImage), imageView(other.imageView) {
+Image::Image(Image && other) : image(other.image), allocation(other.allocation), sampler(other.sampler), rid_(other.rid_), isStorageImage(other.isStorageImage), isCube_(other.isCube_), mipLevels_(other.mipLevels_), format_(other.format_), imageView(other.imageView) {
     other.image = VK_NULL_HANDLE;
     other.allocation = VK_NULL_HANDLE;
     other.imageView = VK_NULL_HANDLE;
@@ -227,13 +249,19 @@ Image::Image(Image && other) : image(other.image), allocation(other.allocation),
     other.rid_ = UINT32_MAX;
 }
 
-Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HANDLE), rid_(UINT32_MAX), isStorageImage(false) {
+Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HANDLE), rid_(UINT32_MAX), isStorageImage(false), isCube_(builder.isCube), mipLevels_(1), format_(builder.format) {
     VkCommandBuffer commandBuffer = commands.commandBuffer;
     VkImageFormatProperties formatProps;
 
     VkImageUsageFlags usageFlags = builder.usage;
     usageFlags |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if (0 == (usageFlags & VK_IMAGE_USAGE_STORAGE_BIT)) {
+    if (builder.isCube) {
+        // Cube IBL images are both sampled (lighting shader) and storage
+        // (bake shaders write per-face/per-mip via createStorageView).
+        usageFlags |= VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+    } else if (builder.isSampledStorage) {
+        usageFlags |= VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+    } else if (0 == (usageFlags & VK_IMAGE_USAGE_STORAGE_BIT)) {
         usageFlags |= VK_IMAGE_USAGE_SAMPLED_BIT;
     }
     if (builder.isDepthBuffer) {
@@ -243,20 +271,26 @@ Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HAND
         usageFlags |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     }
 
+    VkImageCreateFlags createFlags = 0;
+    if (builder.isCube) createFlags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+
     VkResult result = vkGetPhysicalDeviceImageFormatProperties(
         g_context().physicalDevice, builder.format, VK_IMAGE_TYPE_2D,
-        VK_IMAGE_TILING_OPTIMAL, usageFlags, 0, &formatProps);
+        VK_IMAGE_TILING_OPTIMAL, usageFlags, createFlags, &formatProps);
     if (result != VK_SUCCESS) {
         throw std::runtime_error("failed to get image format properties " + std::to_string(result));
     }
 
     size_t mipLevels;
-    if (builder.buildMipmaps) {
+    if (builder.mipLevelsOverride > 0) {
+        mipLevels = std::min<size_t>(builder.mipLevelsOverride, formatProps.maxMipLevels);
+    } else if (builder.buildMipmaps) {
         size_t maxMipLevels = std::floor(std::log2(std::max(builder.extent.width, builder.extent.height))) + 1;
         mipLevels = std::min(maxMipLevels, static_cast<size_t>(formatProps.maxMipLevels));
     } else {
         mipLevels = 1;
     }
+    mipLevels_ = static_cast<uint32_t>(mipLevels);
 
     VkExtent3D extent = {
         std::min(builder.extent.width, formatProps.maxExtent.width),
@@ -268,12 +302,15 @@ Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HAND
         throw std::runtime_error("requested sample count not supported");
     }
 
+    uint32_t arrayLayers = builder.isCube ? 6u : 1u;
+
     VkImageCreateInfo imageInfo = {};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.flags = createFlags;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
     imageInfo.extent = extent;
     imageInfo.mipLevels = mipLevels;
-    imageInfo.arrayLayers = 1;
+    imageInfo.arrayLayers = arrayLayers;
     imageInfo.format = builder.format;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -288,8 +325,19 @@ Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HAND
         throw std::runtime_error("failed to create image");
     }
 
-    // Layout transitions using sync2
-    if (builder.isDepthBuffer) {
+    if (builder.isCube) {
+        // Cube IBL: transition all 6 faces × all mips Undefined → General
+        // so storage-image views can be written by the bake compute passes.
+        Barrier(commandBuffer).image(image, static_cast<uint32_t>(mipLevels), arrayLayers)
+            .from(Stage::None, Access::None, Layout::Undefined)
+            .to(Stage::Compute, Access::ShaderWrite, Layout::General)
+            .record();
+    } else if (builder.isSampledStorage) {
+        Barrier(commandBuffer).image(image, static_cast<uint32_t>(mipLevels))
+            .from(Stage::None, Access::None, Layout::Undefined)
+            .to(Stage::Compute, Access::ShaderWrite, Layout::General)
+            .record();
+    } else if (builder.isDepthBuffer) {
         VkImageAspectFlags depthAspect = builder.isDepthSampled
             ? VK_IMAGE_ASPECT_DEPTH_BIT
             : (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
@@ -314,7 +362,11 @@ Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HAND
         recordCopyBufferToImage(commandBuffer, *(builder.stagingBuffer), image, builder.extent.width, builder.extent.height);
     }
 
-    if (builder.buildMipmaps) {
+    if (builder.isCube) {
+        // Already in General — no further transition needed here.
+    } else if (builder.isSampledStorage) {
+        // Already in General. createStorageView() will register storage RIDs.
+    } else if (builder.buildMipmaps) {
         recordMipmapGeneration(commandBuffer, image, builder.extent.width, builder.extent.height, mipLevels);
     } else if (builder.usage & VK_IMAGE_USAGE_STORAGE_BIT) {
         Barrier(commandBuffer).image(image, mipLevels)
@@ -336,23 +388,74 @@ Image::Image(ImageBuilder & builder, Commands & commands) : sampler(VK_NULL_HAND
     } else {
         aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
     }
-    imageView = createImageView(g_context().device, image, builder.format, aspectFlags, mipLevels);
 
-    // Register with bindless table
-    isStorageImage = (builder.usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
-    if (isStorageImage) {
-        rid_ = g_context().bindlessTable.registerStorageImage(g_context().device, imageView);
-    } else if (builder.isDepthSampled) {
-        sampler = createShadowSampler(g_context().device);
-        rid_ = g_context().bindlessTable.registerSampler(g_context().device, imageView, sampler);
-    } else if (!builder.isDepthBuffer) {
+    if (builder.isCube) {
+        VkImageViewCreateInfo vi = {};
+        vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vi.image = image;
+        vi.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+        vi.format = builder.format;
+        vi.subresourceRange.aspectMask = aspectFlags;
+        vi.subresourceRange.baseMipLevel = 0;
+        vi.subresourceRange.levelCount = mipLevels;
+        vi.subresourceRange.baseArrayLayer = 0;
+        vi.subresourceRange.layerCount = 6;
+        if (vkCreateImageView(g_context().device, &vi, nullptr, &imageView) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create cube image view");
+        }
+    } else {
+        imageView = createImageView(g_context().device, image, builder.format, aspectFlags, mipLevels);
+    }
+
+    // Register with bindless table. Cube and sampled-storage images
+    // expose only the sampler RID here; storage views are created on
+    // demand via createStorageView().
+    if (builder.isCube || builder.isSampledStorage) {
+        isStorageImage = false;
         sampler = builder.useNearest ? createNearestSampler(g_context().device) : createSampler(g_context().device);
         rid_ = g_context().bindlessTable.registerSampler(g_context().device, imageView, sampler);
+    } else {
+        isStorageImage = (builder.usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
+        if (isStorageImage) {
+            rid_ = g_context().bindlessTable.registerStorageImage(g_context().device, imageView);
+        } else if (builder.isDepthSampled) {
+            sampler = createShadowSampler(g_context().device);
+            rid_ = g_context().bindlessTable.registerSampler(g_context().device, imageView, sampler);
+        } else if (!builder.isDepthBuffer) {
+            sampler = builder.useNearest ? createNearestSampler(g_context().device) : createSampler(g_context().device);
+            rid_ = g_context().bindlessTable.registerSampler(g_context().device, imageView, sampler);
+        }
     }
 }
 
 uint32_t Image::rid() const { return rid_; }
+bool Image::isCube() const { return isCube_; }
+uint32_t Image::mipLevelCount() const { return mipLevels_; }
 Image::operator VkImage() const { return image; }
+
+Image::StorageView Image::createStorageView(uint32_t face, uint32_t mip) {
+    VkImageViewCreateInfo vi = {};
+    vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.image = image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = format_;
+    vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vi.subresourceRange.baseMipLevel = mip;
+    vi.subresourceRange.levelCount = 1;
+    vi.subresourceRange.baseArrayLayer = face;
+    vi.subresourceRange.layerCount = 1;
+    StorageView out{UINT32_MAX, VK_NULL_HANDLE};
+    if (vkCreateImageView(g_context().device, &vi, nullptr, &out.view) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create storage face/mip view");
+    }
+    out.rid = g_context().bindlessTable.registerStorageImage(g_context().device, out.view);
+    return out;
+}
+
+void Image::destroyStorageView(StorageView v) {
+    if (v.rid != UINT32_MAX) g_context().bindlessTable.releaseStorageImage(v.rid);
+    if (v.view != VK_NULL_HANDLE) vkDestroyImageView(g_context().device, v.view, nullptr);
+}
 
 Image::~Image() {
     if (image == VK_NULL_HANDLE) return;

@@ -27,10 +27,11 @@ Barrier & Barrier::buffer(VkBuffer buf) {
     return *this;
 }
 
-Barrier & Barrier::image(VkImage img, uint32_t mipLevels) {
+Barrier & Barrier::image(VkImage img, uint32_t mipLevels, uint32_t layerCount) {
     hasImage = true;
     imgBarrier.image = img;
     imgBarrier.subresourceRange.levelCount = mipLevels;
+    imgBarrier.subresourceRange.layerCount = layerCount;
     return *this;
 }
 

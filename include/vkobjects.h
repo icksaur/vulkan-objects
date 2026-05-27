@@ -330,6 +330,9 @@ struct ImageBuilder {
     bool isDepthSampled;
     bool isColorTarget;
     bool useNearest;
+    bool isCube = false;
+    bool isSampledStorage = false;
+    uint32_t mipLevelsOverride = 0;
     VkSampleCountFlagBits sampleBits;
     VkImageUsageFlags usage;
     ImageBuilder();
@@ -344,6 +347,12 @@ struct ImageBuilder {
     ImageBuilder & storage();
     ImageBuilder & nearest();
     ImageBuilder & withFormat(VkFormat format);
+    ImageBuilder & cube(uint32_t edge);
+    ImageBuilder & mipLevels(uint32_t n);
+    ImageBuilder & size(uint32_t width, uint32_t height);
+    // 2D image that is BOTH sampled (primary rid()) and writable via
+    // createStorageView(0, 0). Used for the IBL BRDF LUT and similar.
+    ImageBuilder & sampledStorage();
 };
 
 class Image {
@@ -352,15 +361,29 @@ class Image {
     VkSampler sampler;
     uint32_t rid_;
     bool isStorageImage;
+    bool isCube_ = false;
+    uint32_t mipLevels_ = 1;
+    VkFormat format_ = VK_FORMAT_UNDEFINED;
 
 public:
     VkImageView imageView;
 
     uint32_t rid() const;
+    bool isCube() const;
+    uint32_t mipLevelCount() const;
     Image(Image && other);
     Image(ImageBuilder & builder, Commands & commands);
     operator VkImage() const;
     ~Image();
+
+    // Create a storage-image view for a single face × single mip of this
+    // image (cube or 2D-array) and register it as a bindless storage
+    // image. Returns { rid, view }. Caller owns destruction (use
+    // destroyStorageView). Only valid when the image was created with
+    // storage usage.
+    struct StorageView { uint32_t rid; VkImageView view; };
+    StorageView createStorageView(uint32_t face, uint32_t mip);
+    static void destroyStorageView(StorageView view);
 };
 
 // --- Barrier ---
@@ -374,7 +397,7 @@ struct Barrier {
 
     Barrier(VkCommandBuffer cmd);
     Barrier & buffer(VkBuffer buf);
-    Barrier & image(VkImage img, uint32_t mipLevels = 1);
+    Barrier & image(VkImage img, uint32_t mipLevels = 1, uint32_t layerCount = 1);
     Barrier & from(Stage stage, Access access);
     Barrier & from(Stage stage, Access access, Layout layout);
     Barrier & to(Stage stage, Access access);
@@ -452,7 +475,7 @@ public:
     void copyBuffer(VkBuffer src, VkBuffer dst, VkDeviceSize size, VkDeviceSize srcOffset = 0, VkDeviceSize dstOffset = 0);
     void bufferBarrier(VkBuffer buffer, Stage srcStage, Stage dstStage);
     void imageBarrier(VkImage image, Stage srcStage, Access srcAccess, Layout oldLayout,
-                      Stage dstStage, Access dstAccess, Layout newLayout, uint32_t mipLevels = 1);
+                      Stage dstStage, Access dstAccess, Layout newLayout, uint32_t mipLevels = 1, uint32_t layerCount = 1);
     void submitAndWait();
     void end();
 
