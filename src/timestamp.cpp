@@ -51,3 +51,35 @@ bool TimestampQuery::read(uint32_t frameIndex, uint64_t * timestamps, uint32_t c
 float TimestampQuery::nanosPerTick() const {
     return nanosPerTick_;
 }
+
+// --- GpuTimer ---
+
+GpuTimer::GpuTimer(uint32_t maxSegments, uint32_t frameCount)
+    : query(maxSegments + 1, frameCount), frame(0), next(0) {
+    labels.reserve(maxSegments);
+}
+
+void GpuTimer::begin(Commands & cmd, uint32_t frameIndex) {
+    frame = frameIndex;
+    next = 0;
+    labels.clear();
+    query.reset(cmd, frame);
+    query.write(cmd, frame, next++);
+}
+
+void GpuTimer::mark(Commands & cmd, const char * label) {
+    query.write(cmd, frame, next++);
+    labels.push_back(label);
+}
+
+std::vector<std::pair<std::string, double>> GpuTimer::resolve() {
+    std::vector<std::pair<std::string, double>> out;
+    if (labels.empty()) return out;
+    uint32_t count = next;
+    std::vector<uint64_t> ticks(count);
+    if (!query.read(frame, ticks.data(), count)) return out;
+    double npt = double(query.nanosPerTick());
+    for (size_t i = 0; i < labels.size(); ++i)
+        out.emplace_back(labels[i], double(ticks[i + 1] - ticks[i]) * npt * 1e-6);
+    return out;
+}

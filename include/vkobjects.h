@@ -16,6 +16,7 @@
 #include <array>
 #include <utility>
 #include <span>
+#include <string>
 
 // --- Synchronization2 enum wrappers ---
 
@@ -559,4 +560,32 @@ public:
 
     // Nanoseconds per timestamp tick (device-specific)
     float nanosPerTick() const;
+};
+
+// --- GpuTimer ---
+
+// Labeled per-segment GPU timing over TimestampQuery. begin() marks the start;
+// each mark() closes one labeled segment. After the GPU work completes (e.g.
+// submitAndWait), resolve() returns labeled millisecond durations. Keeps query
+// pools and tick conversion out of call sites.
+//
+//   GpuTimer timer(passCount);
+//   timer.begin(cmd);
+//   /* pass A */  timer.mark(cmd, "A");
+//   /* pass B */  timer.mark(cmd, "B");
+//   cmd.submitAndWait();
+//   for (auto & [label, ms] : timer.resolve()) ...
+class GpuTimer {
+    TimestampQuery query;
+    std::vector<std::string> labels;
+    uint32_t frame;
+    uint32_t next;
+
+public:
+    // maxSegments = number of mark() calls between begin() and resolve().
+    explicit GpuTimer(uint32_t maxSegments, uint32_t frameCount = 1);
+    void begin(Commands & cmd, uint32_t frameIndex = 0);
+    void mark(Commands & cmd, const char * label);
+    // Labeled durations in milliseconds; empty if results are not yet ready.
+    std::vector<std::pair<std::string, double>> resolve();
 };
