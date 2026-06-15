@@ -7,6 +7,7 @@
 #pragma GCC diagnostic pop
 
 #include "vkobjects.h"
+#include "pipelinecache.h"
 #include <cstddef>
 #include <vulkan/vulkan_core.h>
 #include <cmath>
@@ -38,6 +39,10 @@ VulkanContextOptions::VulkanContextOptions() :
     enableVerbose(false),
     enableGpuAssistedValidation(true),
     enableImmediateDestroy(false) {}
+VulkanContextOptions & VulkanContextOptions::pipelineCache(const std::string & dir) {
+    pipelineCacheDir = dir;
+    return *this;
+}
 VulkanContextOptions & VulkanContextOptions::multisample(uint32_t count) {
     multisampleCount = count;
     enableMultisampling = count > 1;
@@ -1043,6 +1048,13 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
     // Init bindless descriptor table
     this->bindlessTable.init(this->device, this->limits.maxPushConstantsSize);
 
+    {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(this->physicalDevice, &props);
+        this->pipelineCache = vkobjects::loadPipelineCache(this->device, vkobjects::deviceCacheId(props),
+                                                options.pipelineCacheDir, options.enableVerbose);
+    }
+
     // Pre-allocate frame command buffers
     for (size_t i = 0; i < swapchainImageCount; i++) {
         frameCommandBuffers.push_back(createCommandBuffer(this->device, this->commandPool));
@@ -1086,6 +1098,14 @@ VulkanContext::~VulkanContext() {
     for (auto semaphore : semaphores) vkDestroySemaphore(device, semaphore, nullptr);
     for (auto fence : fences) vkDestroyFence(device, fence, nullptr);
     for (VkPipeline pipeline : pipelines) vkDestroyPipeline(device, pipeline, nullptr);
+
+    if (pipelineCache != VK_NULL_HANDLE) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(physicalDevice, &props);
+        vkobjects::savePipelineCache(device, pipelineCache, vkobjects::deviceCacheId(props),
+                          options.pipelineCacheDir, options.enableVerbose);
+        vkDestroyPipelineCache(device, pipelineCache, nullptr);
+    }
 
     bindlessTable.destroy(device);
 

@@ -124,6 +124,7 @@ struct VulkanContextOptions {
     bool enableVerbose;
     bool enableGpuAssistedValidation;
     bool enableImmediateDestroy;
+    std::string pipelineCacheDir;
     std::function<void(ValidationSeverity, const char*)> validationCallback;
     VulkanContextOptions();
     VulkanContextOptions & multisample(uint32_t count);
@@ -134,6 +135,7 @@ struct VulkanContextOptions {
     VulkanContextOptions & verbose();
     VulkanContextOptions & gpuAssistedValidation(bool enable = true);
     VulkanContextOptions & immediateDestroy(bool v = true);
+    VulkanContextOptions & pipelineCache(const std::string & dir);
 };
 
 struct BindlessTable {
@@ -217,6 +219,7 @@ class VulkanContext {
     std::vector<VkSemaphore> semaphores;
     std::vector<VkFence> fences;
     std::set<VkPipeline> pipelines;
+    VkPipelineCache pipelineCache = VK_NULL_HANDLE;
 
     std::vector<DestroyGeneration> destroyGenerations;
 
@@ -531,6 +534,16 @@ struct GraphicsPipelineBuilder {
 };
 
 Pipeline createComputePipeline(ShaderModule & computeShaderModule, const char * entryPoint = "main");
+
+// --- Pipeline cache ---
+
+// Derive a per-user, machine-local cache directory for `appName` and create it.
+//   Linux:   $XDG_CACHE_HOME/<app>  (fallback $HOME/.cache/<app>)
+//   Windows: %LOCALAPPDATA%\<app>
+// Pass the result to VulkanContextOptions::pipelineCacheDir to enable cross-launch
+// pipeline-cache persistence. Best-effort: returns "" on a bad appName or any
+// filesystem failure, which simply leaves persistence disabled (never fatal).
+std::string defaultPipelineCacheDir(const char * appName);
 
 // --- Timestamp Queries ---
 

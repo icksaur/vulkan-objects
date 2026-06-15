@@ -32,6 +32,7 @@ set(LIB_SOURCES
     src/commands.cpp
     src/frame.cpp
     src/pipeline.cpp
+    src/pipelinecache.cpp
     src/timestamp.cpp
 )
 

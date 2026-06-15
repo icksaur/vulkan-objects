@@ -269,7 +269,7 @@ Pipeline GraphicsPipelineBuilder::build() {
     pipelineCreateInfo.pNext = &renderingInfo;
 
     VkPipeline pipeline;
-    if (vkCreateGraphicsPipelines(g_context().device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(g_context().device, g_context().pipelineCache, 1, &pipelineCreateInfo, nullptr, &pipeline) != VK_SUCCESS) {
         throw std::runtime_error("failed to create graphics pipeline");
     }
     g_context().pipelines.emplace(pipeline);
@@ -303,7 +303,7 @@ Pipeline createComputePipeline(ShaderModule & computeShaderModule, const char * 
     pipelineInfo.layout = pipelineLayout;
 
     VkPipeline computePipeline;
-    if (VK_SUCCESS != vkCreateComputePipelines(g_context().device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline)) {
+    if (VK_SUCCESS != vkCreateComputePipelines(g_context().device, g_context().pipelineCache, 1, &pipelineInfo, nullptr, &computePipeline)) {
         throw std::runtime_error("failed to create compute pipeline");
     }
     g_context().pipelines.emplace(computePipeline);
