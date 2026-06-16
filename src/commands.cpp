@@ -328,6 +328,14 @@ void Commands::bufferBarrier(VkBuffer buf, Stage srcStage, Stage dstStage) {
         .record();
 }
 
+void Commands::bufferBarrier(VkBuffer buf, Stage srcStage, Access srcAccess,
+                             Stage dstStage, Access dstAccess) {
+    Barrier(commandBuffer).buffer(buf)
+        .from(srcStage, srcAccess)
+        .to(dstStage, dstAccess)
+        .record();
+}
+
 void Commands::imageBarrier(VkImage img, Stage srcStage, Access srcAccess, Layout oldLayout,
                             Stage dstStage, Access dstAccess, Layout newLayout, uint32_t mipLevels, uint32_t layerCount) {
     Barrier(commandBuffer).image(img, mipLevels, layerCount)

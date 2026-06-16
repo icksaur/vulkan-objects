@@ -478,6 +478,8 @@ public:
     void fillBuffer(VkBuffer buffer, uint32_t value, VkDeviceSize offset = 0, VkDeviceSize size = VK_WHOLE_SIZE);
     void copyBuffer(VkBuffer src, VkBuffer dst, VkDeviceSize size, VkDeviceSize srcOffset = 0, VkDeviceSize dstOffset = 0);
     void bufferBarrier(VkBuffer buffer, Stage srcStage, Stage dstStage);
+    void bufferBarrier(VkBuffer buffer, Stage srcStage, Access srcAccess,
+                       Stage dstStage, Access dstAccess);
     void imageBarrier(VkImage image, Stage srcStage, Access srcAccess, Layout oldLayout,
                       Stage dstStage, Access dstAccess, Layout newLayout, uint32_t mipLevels = 1, uint32_t layerCount = 1);
     void submitAndWait();
