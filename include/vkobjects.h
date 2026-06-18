@@ -223,6 +223,8 @@ class VulkanContext {
 
     std::vector<DestroyGeneration> destroyGenerations;
 
+    std::vector<std::function<void()>> preDestroyCallbacks;
+
 public:
     size_t windowWidth;
     size_t windowHeight;
@@ -238,6 +240,12 @@ public:
     void onSwapchainResize(std::function<void(Commands &, VkExtent2D)> callback);
     void waitIdle();
     void flushDestroys();
+
+    // Register a callback to run at the very start of ~VulkanContext, before the device,
+    // allocator, and pipelines are torn down. Use for releasing long-lived caches that own
+    // GPU resources (buffers/pipelines) with no natural scope, so their VMA allocations are
+    // freed before vmaDestroyAllocator. Callbacks run in registration order.
+    void onPreDestroy(std::function<void()> callback);
 };
 
 struct VulkanContextSingleton {

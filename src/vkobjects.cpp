@@ -1093,6 +1093,9 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
 VulkanContext::~VulkanContext() {
     vkQueueWaitIdle(graphicsQueue);
 
+    for (auto& cb : preDestroyCallbacks) cb();
+    preDestroyCallbacks.clear();
+
     destroyGenerations.clear();
 
     for (auto semaphore : semaphores) vkDestroySemaphore(device, semaphore, nullptr);
@@ -1120,6 +1123,10 @@ VulkanContext::~VulkanContext() {
     vkDestroyInstance(instance, nullptr);
 
     g_context.contextInstance = nullptr;
+}
+
+void VulkanContext::onPreDestroy(std::function<void()> callback) {
+    preDestroyCallbacks.push_back(std::move(callback));
 }
 
 void VulkanContext::onSwapchainResize(std::function<void(Commands &, VkExtent2D)> callback) {
