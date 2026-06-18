@@ -1,5 +1,9 @@
 #include "vkinternal.h"
 
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+
 // --- Commands ---
 
 Commands::Commands(VkCommandBuffer cmd, bool owns) : commandBuffer(cmd), ended(false), ownsBuffer(owns), frame(nullptr) {
@@ -345,7 +349,12 @@ void Commands::imageBarrier(VkImage img, Stage srcStage, Access srcAccess, Layou
 }
 
 void Commands::submitAndWait() {
+    const bool diag = std::getenv("HULL_FENCE_SLACK_DIAG") != nullptr;
+    auto now = [] { return std::chrono::steady_clock::now(); };
+    auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    auto t0 = now();
     end();
+    auto tEnd = now();
 
     VkCommandBufferSubmitInfo cmdInfo = {};
     cmdInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
@@ -358,18 +367,44 @@ void Commands::submitAndWait() {
 
     VkFenceCreateInfo fenceInfo = {};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    VkFence fence;
-    if (vkCreateFence(g_context().device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create fence for submitAndWait");
+    // Reuse one fence per thread across submitAndWait calls: this function always waits for
+    // completion before returning, so the fence is idle by the next call. vkCreateFence /
+    // vkDestroyFence per submit cost ~0.3ms each on this driver — ~7ms over a ~12-submit bind.
+    static thread_local VkFence s_fence = VK_NULL_HANDLE;
+    static thread_local VkDevice s_fenceDevice = VK_NULL_HANDLE;
+    VkDevice device = g_context().device;
+    if (s_fence == VK_NULL_HANDLE || s_fenceDevice != device) {
+        if (s_fence != VK_NULL_HANDLE) vkDestroyFence(s_fenceDevice, s_fence, nullptr);
+        if (vkCreateFence(device, &fenceInfo, nullptr, &s_fence) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create fence for submitAndWait");
+        }
+        s_fenceDevice = device;
+    } else {
+        vkResetFences(device, 1, &s_fence);
     }
+    VkFence fence = s_fence;
+    auto tFence = now();
 
     vkQueueSubmit2(g_context().graphicsQueue, 1, &submitInfo, fence);
-    vkWaitForFences(g_context().device, 1, &fence, VK_TRUE, UINT64_MAX);
-    vkDestroyFence(g_context().device, fence, nullptr);
+    auto tSubmit = now();
+    if (std::getenv("HULL_FENCE_SLACK_POLL") != nullptr) {
+        while (vkGetFenceStatus(g_context().device, fence) == VK_NOT_READY) { /* busy spin */ }
+    } else {
+        vkWaitForFences(g_context().device, 1, &fence, VK_TRUE, UINT64_MAX);
+    }
+    auto tWait = now();
+    auto tDestroy = now();
 
     if (ownsBuffer) {
         vkFreeCommandBuffers(g_context().device, g_context().commandPool, 1, &commandBuffer);
         commandBuffer = VK_NULL_HANDLE;
+    }
+    auto tFree = now();
+    if (diag) {
+        std::fprintf(stderr,
+            "DIAG: vk_submit_wait end=%.3fms createFence=%.3fms queueSubmit=%.3fms waitFence=%.3fms destroyFence=%.3fms freeCmd=%.3fms total=%.3fms\n",
+            ms(t0, tEnd), ms(tEnd, tFence), ms(tFence, tSubmit), ms(tSubmit, tWait),
+            ms(tWait, tDestroy), ms(tDestroy, tFree), ms(t0, tFree));
     }
 }
 
