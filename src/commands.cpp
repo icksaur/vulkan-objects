@@ -340,6 +340,30 @@ void Commands::bufferBarrier(VkBuffer buf, Stage srcStage, Access srcAccess,
         .record();
 }
 
+void Commands::bufferBarriers(std::span<const BufferBarrierDesc> barriers) {
+    if (barriers.empty()) return;
+    std::vector<VkBufferMemoryBarrier2> mem(barriers.size());
+    for (size_t i = 0; i < barriers.size(); ++i) {
+        VkBufferMemoryBarrier2 & b = mem[i];
+        b = {};
+        b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.buffer = barriers[i].buffer;
+        b.offset = 0;
+        b.size = VK_WHOLE_SIZE;
+        b.srcStageMask = static_cast<VkPipelineStageFlags2>(barriers[i].srcStage);
+        b.srcAccessMask = static_cast<VkAccessFlags2>(barriers[i].srcAccess);
+        b.dstStageMask = static_cast<VkPipelineStageFlags2>(barriers[i].dstStage);
+        b.dstAccessMask = static_cast<VkAccessFlags2>(barriers[i].dstAccess);
+    }
+    VkDependencyInfo depInfo = {};
+    depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    depInfo.bufferMemoryBarrierCount = static_cast<uint32_t>(mem.size());
+    depInfo.pBufferMemoryBarriers = mem.data();
+    vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+}
+
 void Commands::imageBarrier(VkImage img, Stage srcStage, Access srcAccess, Layout oldLayout,
                             Stage dstStage, Access dstAccess, Layout newLayout, uint32_t mipLevels, uint32_t layerCount) {
     Barrier(commandBuffer).image(img, mipLevels, layerCount)

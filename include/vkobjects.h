@@ -410,6 +410,15 @@ struct Barrier {
     void record();
 };
 
+// One buffer memory dependency, for batching several into a single vkCmdPipelineBarrier2.
+struct BufferBarrierDesc {
+    VkBuffer buffer;
+    Stage srcStage;
+    Access srcAccess;
+    Stage dstStage;
+    Access dstAccess;
+};
+
 // --- Frame & Commands ---
 
 class Frame {
@@ -480,6 +489,10 @@ public:
     void bufferBarrier(VkBuffer buffer, Stage srcStage, Stage dstStage);
     void bufferBarrier(VkBuffer buffer, Stage srcStage, Access srcAccess,
                        Stage dstStage, Access dstAccess);
+    // Records all given buffer memory dependencies in a single vkCmdPipelineBarrier2.
+    // Semantically equivalent to issuing each bufferBarrier separately (each retains its own
+    // per-buffer access scopes); only the command/barrier count is reduced.
+    void bufferBarriers(std::span<const BufferBarrierDesc> barriers);
     void imageBarrier(VkImage image, Stage srcStage, Access srcAccess, Layout oldLayout,
                       Stage dstStage, Access dstAccess, Layout newLayout, uint32_t mipLevels = 1, uint32_t layerCount = 1);
     void submitAndWait();
