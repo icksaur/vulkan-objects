@@ -14,6 +14,7 @@
 #include <vulkan/vulkan_core.h>
 #include <cstdint>
 #include <array>
+#include <type_traits>
 #include <utility>
 #include <span>
 #include <string>
@@ -71,6 +72,10 @@ enum class Layout : int32_t {
     ReadOnly             = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
     DepthReadOnly        = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
 };
+
+// --- Bindless resource IDs ---
+
+#include "rid.h"
 
 // --- Push constant compile-time validation ---
 
