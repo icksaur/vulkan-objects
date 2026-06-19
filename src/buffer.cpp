@@ -2,6 +2,9 @@
 
 // --- Buffer ---
 
+static BufferWriteHook g_bufferWriteHook;
+void setBufferWriteHook(BufferWriteHook hook) { g_bufferWriteHook = std::move(hook); }
+
 BufferBuilder::BufferBuilder(size_t byteCount) : usage(0), properties(0), byteCount(byteCount) {}
 BufferBuilder & BufferBuilder::index() { usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT; return *this; }
 BufferBuilder & BufferBuilder::uniform() {
@@ -82,6 +85,7 @@ void Buffer::upload(void * bytes, size_t size) {
     vmaMapMemory(g_allocator, allocation, &mapped);
     memcpy(mapped, bytes, size);
     vmaUnmapMemory(g_allocator, allocation);
+    if (g_bufferWriteHook) g_bufferWriteHook(rid_);
 }
 void Buffer::upload(void * bytes, size_t size, VkDeviceSize offset) {
     if (size > this->size) throw std::runtime_error("buffer size mismatch");
@@ -89,6 +93,7 @@ void Buffer::upload(void * bytes, size_t size, VkDeviceSize offset) {
     vmaMapMemory(g_allocator, allocation, &mapped);
     memcpy(static_cast<char*>(mapped) + offset, bytes, size);
     vmaUnmapMemory(g_allocator, allocation);
+    if (g_bufferWriteHook) g_bufferWriteHook(rid_);
 }
 void Buffer::download(void * bytes, size_t size) {
     if (size > this->size) throw std::runtime_error("buffer size mismatch");

@@ -335,6 +335,12 @@ public:
     operator VkBuffer*() const;
 };
 
+// Debug instrumentation: invoked on every Buffer::upload with the buffer's RID. The
+// frame-in-flight write audit (hull-side) uses this to detect single-buffered per-frame
+// host writes. No-op unless set; pass nullptr to clear.
+using BufferWriteHook = std::function<void(uint32_t rid)>;
+void setBufferWriteHook(BufferWriteHook hook);
+
 // --- Images ---
 
 struct ImageBuilder {
@@ -454,6 +460,12 @@ public:
     VkImageView swapchainImageView() const;
     Commands beginCommands();
     void submit(Commands & cmd);
+
+    // Frame-in-flight slot this frame occupies (0 .. swapchainImageCount-1). The coordinate
+    // any per-frame-mutable resource ring must index by.
+    size_t inFlight() const { return inFlightIndex; }
+    // The live frame, or nullptr outside a Frame's scope (e.g. setup, oneShot work).
+    static Frame * current() { return currentGuard; }
 };
 
 class Commands {
