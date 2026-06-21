@@ -260,6 +260,11 @@ public:
     VkPhysicalDevice physicalDeviceHandle() const { return physicalDevice; }
     VkCommandPool commandPoolHandle() const { return commandPool; }
     uint32_t queueFamilyIndex() const { return graphicsQueueIndex; }
+
+    // Bindless set-0 handles (spike-trace-cost): a custom pipeline (e.g. a ray-query compute pass
+    // with an extra TLAS set) reuses the bindless storage-buffer set as set 0.
+    VkDescriptorSetLayout bindlessSetLayout() const { return bindlessTable.layout; }
+    VkDescriptorSet bindlessDescriptorSet() const { return bindlessTable.set; }
 };
 
 struct VulkanContextSingleton {
