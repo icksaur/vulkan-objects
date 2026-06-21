@@ -129,11 +129,13 @@ struct VulkanContextOptions {
     bool enableVerbose;
     bool enableGpuAssistedValidation;
     bool enableImmediateDestroy;
+    bool enableRayTracing;
     std::string pipelineCacheDir;
     std::function<void(ValidationSeverity, const char*)> validationCallback;
     VulkanContextOptions();
     VulkanContextOptions & multisample(uint32_t count);
     VulkanContextOptions & meshShaders();
+    VulkanContextOptions & rayTracing();
     VulkanContextOptions & validation();
     VulkanContextOptions & sampleRateShading(float rate);
     VulkanContextOptions & throwOnValidationError();
@@ -251,6 +253,13 @@ public:
     // GPU resources (buffers/pipelines) with no natural scope, so their VMA allocations are
     // freed before vmaDestroyAllocator. Callbacks run in registration order.
     void onPreDestroy(std::function<void()> callback);
+
+    // Raw handle accessors (spike-rt-blas): needed to load RT extension entrypoints via
+    // vkGetDeviceProcAddr and to record acceleration-structure builds on a one-shot queue.
+    VkDevice deviceHandle() const { return device; }
+    VkPhysicalDevice physicalDeviceHandle() const { return physicalDevice; }
+    VkCommandPool commandPoolHandle() const { return commandPool; }
+    uint32_t queueFamilyIndex() const { return graphicsQueueIndex; }
 };
 
 struct VulkanContextSingleton {
@@ -314,6 +323,9 @@ struct BufferBuilder {
     BufferBuilder & transferDestination();
     BufferBuilder & readback();
     BufferBuilder & size(size_t byteCount);
+    // spike-rt-blas: OR in arbitrary usage (e.g. acceleration-structure storage / build input,
+    // shader device address). Requires a context created with rayTracing() for device-address use.
+    BufferBuilder & usageFlags(VkBufferUsageFlags extra);
 };
 
 class Buffer {
@@ -328,6 +340,9 @@ public:
     void upload(void * bytes, size_t size);
     void upload(void * bytes, size_t size, VkDeviceSize offset);
     void download(void * bytes, size_t size);
+    // spike-rt-blas: GPU virtual address (buffer must be created with usageFlags including
+    // VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT on a rayTracing() context).
+    VkDeviceAddress deviceAddress() const;
     Buffer(BufferBuilder & builder);
     Buffer(Buffer && other);
     ~Buffer();

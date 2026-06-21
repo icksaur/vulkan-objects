@@ -38,7 +38,8 @@ VulkanContextOptions::VulkanContextOptions() :
     enableThrowOnValidationError(false),
     enableVerbose(false),
     enableGpuAssistedValidation(true),
-    enableImmediateDestroy(false) {}
+    enableImmediateDestroy(false),
+    enableRayTracing(false) {}
 VulkanContextOptions & VulkanContextOptions::pipelineCache(const std::string & dir) {
     pipelineCacheDir = dir;
     return *this;
@@ -50,6 +51,10 @@ VulkanContextOptions & VulkanContextOptions::multisample(uint32_t count) {
 }
 VulkanContextOptions & VulkanContextOptions::meshShaders() {
     enableMeshShaders = true;
+    return *this;
+}
+VulkanContextOptions & VulkanContextOptions::rayTracing() {
+    enableRayTracing = true;
     return *this;
 }
 VulkanContextOptions & VulkanContextOptions::validation() {
@@ -392,6 +397,12 @@ VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& p
     }
     requiredExtensionNames.emplace(VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME);
 
+    if (options.enableRayTracing) {
+        requiredExtensionNames.emplace(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        requiredExtensionNames.emplace(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        requiredExtensionNames.emplace(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    }
+
     for (const auto& extensionProperty : extensionProperties) {
         auto it = requiredExtensionNames.find(std::string(extensionProperty.extensionName));
         if (it != requiredExtensionNames.end()) {
@@ -433,7 +444,7 @@ VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& p
     device12Features.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
     device12Features.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
     device12Features.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
-    device12Features.bufferDeviceAddress = VK_FALSE;
+    device12Features.bufferDeviceAddress = options.enableRayTracing ? VK_TRUE : VK_FALSE;
     previousInChain = &device12Features;
 
     // Vulkan 1.3 features: dynamic rendering and synchronization2
@@ -461,6 +472,20 @@ VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& p
     imageAtomicInt64Features.sparseImageInt64Atomics = VK_FALSE;
     imageAtomicInt64Features.pNext = previousInChain;
     previousInChain = &imageAtomicInt64Features;
+
+    // spike-rt-blas: hardware ray tracing acceleration-structure + ray-query features.
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeatures = {};
+    asFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    asFeatures.accelerationStructure = VK_TRUE;
+    VkPhysicalDeviceRayQueryFeaturesKHR rqFeatures = {};
+    rqFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+    rqFeatures.rayQuery = VK_TRUE;
+    if (options.enableRayTracing) {
+        asFeatures.pNext = previousInChain;
+        previousInChain = &asFeatures;
+        rqFeatures.pNext = previousInChain;
+        previousInChain = &rqFeatures;
+    }
 
     VkPhysicalDeviceFeatures2 deviceFeatures2 = {};
     deviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -1027,6 +1052,9 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
     allocatorInfo.physicalDevice = this->physicalDevice;
     allocatorInfo.device = this->device;
     allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3;
+    if (options.enableRayTracing) {
+        allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    }
     if (vmaCreateAllocator(&allocatorInfo, &g_allocator) != VK_SUCCESS) {
         throw std::runtime_error("failed to create VMA allocator");
     }

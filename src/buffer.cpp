@@ -25,6 +25,7 @@ BufferBuilder & BufferBuilder::readback() {
     return *this;
 }
 BufferBuilder & BufferBuilder::size(size_t byteCount) { this->byteCount = byteCount; return *this; }
+BufferBuilder & BufferBuilder::usageFlags(VkBufferUsageFlags extra) { usage |= extra; return *this; }
 
 Buffer::Buffer(BufferBuilder & builder) : buffer(VK_NULL_HANDLE), allocation(VK_NULL_HANDLE), size(builder.byteCount), rid_(UINT32_MAX) {
     // All buffers get STORAGE_BUFFER_BIT for bindless registration
@@ -117,5 +118,10 @@ Buffer::~Buffer() {
     }
     gen.bufferAllocations.push_back({buffer, allocation});
 }
-Buffer::operator VkBuffer() const { return buffer; }
-Buffer::operator VkBuffer*() const { return (VkBuffer*)&buffer; }
+Buffer::operator VkBuffer() const { return buffer; }Buffer::operator VkBuffer*() const { return (VkBuffer*)&buffer; }
+VkDeviceAddress Buffer::deviceAddress() const {
+    VkBufferDeviceAddressInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    info.buffer = buffer;
+    return vkGetBufferDeviceAddress(g_context().device, &info);
+}
