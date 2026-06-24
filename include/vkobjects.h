@@ -18,6 +18,8 @@
 #include <utility>
 #include <span>
 #include <string>
+#include <memory>
+#include <cassert>
 
 // --- Synchronization2 enum wrappers ---
 
@@ -34,6 +36,7 @@ enum class Stage : uint64_t {
     AllGraphics = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
     Host        = VK_PIPELINE_STAGE_2_HOST_BIT,
     DrawIndirect = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+    AccelStructureBuild = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
 };
 inline Stage operator|(Stage a, Stage b) {
     return static_cast<Stage>(static_cast<uint64_t>(a) | static_cast<uint64_t>(b));
@@ -54,6 +57,8 @@ enum class Access : uint64_t {
     DepthStencilRead     = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
     DepthStencilWrite    = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
     IndirectCommandRead  = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
+    AccelStructureRead   = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+    AccelStructureWrite  = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
 };
 inline Access operator|(Access a, Access b) {
     return static_cast<Access>(static_cast<uint64_t>(a) | static_cast<uint64_t>(b));
@@ -107,9 +112,11 @@ struct DestroyGeneration {
     std::vector<VkCommandBuffer> commandBuffers;
     std::vector<VkImageView> imageViews;
     std::vector<VkSampler> samplers;
+    std::vector<VkAccelerationStructureKHR> accelStructures;
     std::vector<uint32_t> storageBufferRIDs;
     std::vector<uint32_t> samplerRIDs;
     std::vector<uint32_t> storageImageRIDs;
+    std::vector<uint32_t> tlasRIDs;
     std::vector<VkPipeline> pipelines;
     void destroy();
     ~DestroyGeneration();
@@ -149,6 +156,7 @@ struct BindlessTable {
     static constexpr uint32_t MAX_STORAGE_BUFFERS = 16384;
     static constexpr uint32_t MAX_SAMPLERS = 16384;
     static constexpr uint32_t MAX_STORAGE_IMAGES = 4096;
+    static constexpr uint32_t MAX_TLAS = 4;
 
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -158,19 +166,24 @@ struct BindlessTable {
     std::vector<uint32_t> freeStorageBufferIndices;
     std::vector<uint32_t> freeSamplerIndices;
     std::vector<uint32_t> freeStorageImageIndices;
+    std::vector<uint32_t> freeTlasIndices;
     uint32_t nextStorageBufferIndex = 0;
     uint32_t nextSamplerIndex = 0;
     uint32_t nextStorageImageIndex = 0;
+    uint32_t nextTlasIndex = 0;
+    bool tlasEnabled = false;
 
-    void init(VkDevice device, uint32_t maxPushConstantSize = 128);
+    void init(VkDevice device, uint32_t maxPushConstantSize = 128, bool enableTlas = false);
     void destroy(VkDevice device);
 
     uint32_t registerStorageBuffer(VkDevice device, VkBuffer buffer, VkDeviceSize size);
     uint32_t registerSampler(VkDevice device, VkImageView imageView, VkSampler sampler);
     uint32_t registerStorageImage(VkDevice device, VkImageView imageView);
+    uint32_t registerTlas(VkDevice device, VkAccelerationStructureKHR tlas);
     void releaseStorageBuffer(uint32_t index);
     void releaseSampler(uint32_t index);
     void releaseStorageImage(uint32_t index);
+    void releaseTlas(uint32_t index);
 };
 
 struct Commands;
@@ -183,6 +196,8 @@ class VulkanContext {
     friend struct Buffer;
     friend struct Image;
     friend struct ImageBuilder;
+    friend class Blas;
+    friend class Tlas;
     friend struct ShaderModule;
     friend struct DestroyGeneration;
     friend struct GraphicsPipelineBuilder;
@@ -209,6 +224,7 @@ class VulkanContext {
     VulkanContextOptions options;
     VkPhysicalDeviceLimits limits;
     VkPhysicalDeviceMeshShaderPropertiesEXT meshShaderProperties;
+    uint32_t minAccelerationStructureScratchOffsetAlignment = 1;
 
     BindlessTable bindlessTable;
     std::function<void(Commands &, VkExtent2D)> resizeCallback;
@@ -265,6 +281,8 @@ public:
     // with an extra TLAS set) reuses the bindless storage-buffer set as set 0.
     VkDescriptorSetLayout bindlessSetLayout() const { return bindlessTable.layout; }
     VkDescriptorSet bindlessDescriptorSet() const { return bindlessTable.set; }
+    uint32_t accelerationStructureScratchAlignment() const { return minAccelerationStructureScratchOffsetAlignment; }
+    bool rayTracingEnabled() const { return options.enableRayTracing; }
 };
 
 struct VulkanContextSingleton {
@@ -353,6 +371,123 @@ public:
     ~Buffer();
     operator VkBuffer() const;
     operator VkBuffer*() const;
+};
+
+// --- Acceleration structures ---
+
+struct BlasTriangles {
+    VkDeviceAddress vertices = 0;
+    uint32_t vertexCount = 0;
+    uint32_t vertexStride = 12;
+    VkFormat vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+    VkDeviceAddress indices = 0;
+    uint32_t triangleCount = 0;
+    VkIndexType indexType = VK_INDEX_TYPE_UINT32;
+    bool opaque = true;
+};
+
+struct BlasBuilder {
+    std::vector<BlasTriangles> geoms;
+    bool allowUpdate = false;
+    bool fastTrace = true;
+
+    BlasBuilder& triangles(Buffer& vtx, uint32_t vtxCount, Buffer& idx, uint32_t triCount);
+    BlasBuilder& triangles(const BlasTriangles&);
+    BlasBuilder& refittable();
+    BlasBuilder& fastBuild();
+};
+
+class Blas {
+    friend struct Commands;
+    std::unique_ptr<Buffer> backing_, scratch_, updateScratch_;
+    std::vector<BlasTriangles> geometry_;
+    VkAccelerationStructureKHR handle_ = VK_NULL_HANDLE;
+    VkDeviceAddress address_ = 0;
+    VkDeviceAddress scratchAddress_ = 0;
+    VkDeviceAddress updateScratchAddress_ = 0;
+    bool updatable_ = false;
+    bool built_ = false;
+    VkBuildAccelerationStructureFlagsKHR flags_ = 0;
+
+    void destroyHandle();
+
+public:
+    Blas(BlasBuilder&);
+    Blas(Blas&& other) noexcept;
+    Blas& operator=(Blas&& other) noexcept;
+    Blas(const Blas&) = delete;
+    Blas& operator=(const Blas&) = delete;
+    ~Blas();
+
+    VkDeviceAddress address() const;
+    Buffer& backing();
+    bool updatable() const;
+    operator VkAccelerationStructureKHR() const;
+};
+
+struct TlasInstances {
+    std::vector<VkAccelerationStructureInstanceKHR> raw;
+    TlasInstances& add(const Blas&, const float (&xform3x4)[12], uint32_t customIndex, uint8_t mask = 0xFF);
+    void clear();
+};
+
+class Tlas {
+    friend struct Commands;
+    std::unique_ptr<Buffer> backing_, scratch_, instanceBuf_;
+    VkAccelerationStructureKHR handle_ = VK_NULL_HANDLE;
+    VkDeviceAddress scratchAddress_ = 0;
+    uint32_t rid_ = kNullRid;
+    uint32_t maxInstances_ = 0;
+
+    void destroyHandle();
+
+public:
+    explicit Tlas(uint32_t maxInstances);
+    Tlas(Tlas&& other) noexcept;
+    Tlas& operator=(Tlas&& other) noexcept;
+    Tlas(const Tlas&) = delete;
+    Tlas& operator=(const Tlas&) = delete;
+    ~Tlas();
+
+    VkAccelerationStructureKHR handle() const;
+    Buffer& backing();
+    uint32_t rid() const;
+    operator VkAccelerationStructureKHR() const;
+};
+
+template<class Payload>
+class InstanceTable {
+    static_assert(std::is_trivially_copyable_v<Payload>, "InstanceTable payload must be trivially copyable");
+    std::unique_ptr<Buffer> buf_;
+    std::vector<Payload> data_;
+    uint32_t next_ = 0;
+
+public:
+    explicit InstanceTable(uint32_t maxEntries) : data_(maxEntries) {
+        assert(maxEntries <= (1u << 24));
+        BufferBuilder builder(sizeof(Payload) * maxEntries);
+        builder.storage().hostVisible();
+        buf_ = std::make_unique<Buffer>(builder);
+    }
+
+    uint32_t add(const Payload& payload) {
+        assert(next_ < data_.size());
+        uint32_t index = next_++;
+        data_[index] = payload;
+        return index;
+    }
+
+    void set(uint32_t customIndex, const Payload& payload) {
+        assert(customIndex < data_.size());
+        data_[customIndex] = payload;
+        if (customIndex >= next_) next_ = customIndex + 1;
+    }
+
+    void upload(Commands&) {
+        if (!data_.empty()) buf_->upload(data_.data(), data_.size() * sizeof(Payload));
+    }
+
+    uint32_t rid() const { return buf_->rid(); }
 };
 
 // Debug instrumentation: invoked on every Buffer::upload with the buffer's RID. The
@@ -488,6 +623,27 @@ public:
     static Frame * current() { return currentGuard; }
 };
 
+template<class T>
+class AccelStructureRing {
+    std::vector<T> slots_;
+
+public:
+    void init(uint32_t n, const std::function<T(uint32_t slot)>& makeSlot) {
+        slots_.clear();
+        slots_.reserve(n);
+        for (uint32_t i = 0; i < n; ++i) slots_.emplace_back(makeSlot(i));
+    }
+
+    T& current() {
+        assert(!slots_.empty());
+        Frame* frame = Frame::current();
+        uint32_t slot = frame ? static_cast<uint32_t>(frame->inFlight()) : 0;
+        return slots_[slot % slots_.size()];
+    }
+
+    uint32_t size() const { return static_cast<uint32_t>(slots_.size()); }
+};
+
 class Commands {
     VkCommandBuffer commandBuffer;
     bool ended;
@@ -538,6 +694,10 @@ public:
     // Semantically equivalent to issuing each bufferBarrier separately (each retains its own
     // per-buffer access scopes); only the command/barrier count is reduced.
     void bufferBarriers(std::span<const BufferBarrierDesc> barriers);
+    void blasToTlasBarrier(std::span<const VkBuffer> blasBackings);
+    void tlasToShaderReadBarrier(VkBuffer tlasBacking);
+    void buildBlas(Blas&, bool refit);
+    void buildTlas(Tlas&, const TlasInstances&);
     void imageBarrier(VkImage image, Stage srcStage, Access srcAccess, Layout oldLayout,
                       Stage dstStage, Access dstAccess, Layout newLayout, uint32_t mipLevels = 1, uint32_t layerCount = 1);
     void submitAndWait();

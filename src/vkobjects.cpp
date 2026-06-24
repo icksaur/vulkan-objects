@@ -13,6 +13,8 @@
 #include <cmath>
 #include <cstring>
 
+void destroyThreadLocalSubmitFence(VkDevice device);
+
 // useful defaults
 const char * appName = "VulkanExample";
 const char * engineName = "VulkanExampleEngine";
@@ -28,6 +30,11 @@ PFN_vkCmdDrawMeshTasksEXT vkCmdDrawMeshTasks;
 PFN_vkCmdDrawMeshTasksIndirectEXT vkCmdDrawMeshTasksIndirect;
 PFN_vkCmdBeginRendering vkBeginRendering;
 PFN_vkCmdEndRendering vkEndRendering;
+PFN_vkGetAccelerationStructureBuildSizesKHR rtGetAccelerationStructureBuildSizes;
+PFN_vkCreateAccelerationStructureKHR rtCreateAccelerationStructure;
+PFN_vkDestroyAccelerationStructureKHR rtDestroyAccelerationStructure;
+PFN_vkCmdBuildAccelerationStructuresKHR rtCmdBuildAccelerationStructures;
+PFN_vkGetAccelerationStructureDeviceAddressKHR rtGetAccelerationStructureDeviceAddress;
 
 VulkanContextOptions::VulkanContextOptions() :
     enableMultisampling(false),
@@ -109,6 +116,12 @@ void DestroyGeneration::destroy() {
         vkDestroySampler(context.device, s, nullptr);
     }
     samplers.clear();
+    for (uint32_t rid : tlasRIDs) context.bindlessTable.releaseTlas(rid);
+    tlasRIDs.clear();
+    for (VkAccelerationStructureKHR as : accelStructures) {
+        rtDestroyAccelerationStructure(context.device, as, nullptr);
+    }
+    accelStructures.clear();
     for (VkImageView v : imageViews) {
         vkDestroyImageView(context.device, v, nullptr);
     }
@@ -477,6 +490,7 @@ VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& p
     VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeatures = {};
     asFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
     asFeatures.accelerationStructure = VK_TRUE;
+    asFeatures.descriptorBindingAccelerationStructureUpdateAfterBind = VK_TRUE;
     VkPhysicalDeviceRayQueryFeaturesKHR rqFeatures = {};
     rqFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
     rqFeatures.rayQuery = VK_TRUE;
@@ -723,8 +737,9 @@ VkCommandPool createCommandPool(VkDevice device, uint32_t queueFamilyIndex) {
 
 // --- BindlessTable ---
 
-void BindlessTable::init(VkDevice device, uint32_t maxPushConstantSize) {
-    VkDescriptorSetLayoutBinding bindings[3] = {};
+void BindlessTable::init(VkDevice device, uint32_t maxPushConstantSize, bool enableTlas) {
+    tlasEnabled = enableTlas;
+    std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
 
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -741,7 +756,16 @@ void BindlessTable::init(VkDevice device, uint32_t maxPushConstantSize) {
     bindings[2].descriptorCount = MAX_STORAGE_IMAGES;
     bindings[2].stageFlags = VK_SHADER_STAGE_ALL;
 
-    VkDescriptorBindingFlags bindingFlags[3] = {
+    uint32_t bindingCount = enableTlas ? 4u : 3u;
+    if (enableTlas) {
+        bindings[3].binding = 3;
+        bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        bindings[3].descriptorCount = MAX_TLAS;
+        bindings[3].stageFlags = VK_SHADER_STAGE_ALL;
+    }
+
+    VkDescriptorBindingFlags bindingFlags[4] = {
+        VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
         VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
         VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
         VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
@@ -749,13 +773,13 @@ void BindlessTable::init(VkDevice device, uint32_t maxPushConstantSize) {
 
     VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo = {};
     bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-    bindingFlagsInfo.bindingCount = 3;
+    bindingFlagsInfo.bindingCount = bindingCount;
     bindingFlagsInfo.pBindingFlags = bindingFlags;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 3;
-    layoutInfo.pBindings = bindings;
+    layoutInfo.bindingCount = bindingCount;
+    layoutInfo.pBindings = bindings.data();
     layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     layoutInfo.pNext = &bindingFlagsInfo;
 
@@ -763,15 +787,16 @@ void BindlessTable::init(VkDevice device, uint32_t maxPushConstantSize) {
         throw std::runtime_error("failed to create bindless descriptor set layout");
     }
 
-    VkDescriptorPoolSize poolSizes[3] = {};
+    VkDescriptorPoolSize poolSizes[4] = {};
     poolSizes[0] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, MAX_STORAGE_BUFFERS};
     poolSizes[1] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_SAMPLERS};
     poolSizes[2] = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_STORAGE_IMAGES};
+    if (enableTlas) poolSizes[3] = {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, MAX_TLAS};
 
     VkDescriptorPoolCreateInfo poolInfo = {};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.maxSets = 1;
-    poolInfo.poolSizeCount = 3;
+    poolInfo.poolSizeCount = bindingCount;
     poolInfo.pPoolSizes = poolSizes;
     poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
 
@@ -892,9 +917,39 @@ uint32_t BindlessTable::registerStorageImage(VkDevice device, VkImageView imageV
     return index;
 }
 
+uint32_t BindlessTable::registerTlas(VkDevice device, VkAccelerationStructureKHR tlas) {
+    if (!tlasEnabled) throw std::runtime_error("TLAS bindless table is not enabled");
+    uint32_t index;
+    if (!freeTlasIndices.empty()) {
+        index = freeTlasIndices.back();
+        freeTlasIndices.pop_back();
+    } else {
+        index = nextTlasIndex++;
+    }
+    if (index >= MAX_TLAS) throw std::runtime_error("too many TLAS bindless descriptors");
+
+    VkWriteDescriptorSetAccelerationStructureKHR asInfo = {};
+    asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+    asInfo.accelerationStructureCount = 1;
+    asInfo.pAccelerationStructures = &tlas;
+
+    VkWriteDescriptorSet write = {};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.pNext = &asInfo;
+    write.dstSet = set;
+    write.dstBinding = 3;
+    write.dstArrayElement = index;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    write.descriptorCount = 1;
+
+    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    return index;
+}
+
 void BindlessTable::releaseStorageBuffer(uint32_t index) { freeStorageBufferIndices.push_back(index); }
 void BindlessTable::releaseSampler(uint32_t index) { freeSamplerIndices.push_back(index); }
 void BindlessTable::releaseStorageImage(uint32_t index) { freeStorageImageIndices.push_back(index); }
+void BindlessTable::releaseTlas(uint32_t index) { if (index != kNullRid) freeTlasIndices.push_back(index); }
 
 VkSampler createSampler(VkDevice device) {
     VkSampler textureSampler;
@@ -1045,6 +1100,36 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
     selectGPU(this->instance, this->physicalDevice, this->graphicsQueueIndex, this->maxSamples, this->limits, options.enableVerbose);
 
     this->device = createLogicalDevice(options, this->physicalDevice, this->graphicsQueueIndex);
+    if (options.enableRayTracing) {
+        auto g = [&](const char* n) { return vkGetDeviceProcAddr(this->device, n); };
+        rtGetAccelerationStructureBuildSizes =
+            (PFN_vkGetAccelerationStructureBuildSizesKHR)g("vkGetAccelerationStructureBuildSizesKHR");
+        rtCreateAccelerationStructure =
+            (PFN_vkCreateAccelerationStructureKHR)g("vkCreateAccelerationStructureKHR");
+        rtDestroyAccelerationStructure =
+            (PFN_vkDestroyAccelerationStructureKHR)g("vkDestroyAccelerationStructureKHR");
+        rtCmdBuildAccelerationStructures =
+            (PFN_vkCmdBuildAccelerationStructuresKHR)g("vkCmdBuildAccelerationStructuresKHR");
+        rtGetAccelerationStructureDeviceAddress =
+            (PFN_vkGetAccelerationStructureDeviceAddressKHR)g("vkGetAccelerationStructureDeviceAddressKHR");
+        if (!rtGetAccelerationStructureBuildSizes || !rtCreateAccelerationStructure ||
+            !rtDestroyAccelerationStructure || !rtCmdBuildAccelerationStructures ||
+            !rtGetAccelerationStructureDeviceAddress) {
+            throw std::runtime_error("failed to load acceleration-structure entrypoints");
+        }
+
+        VkPhysicalDeviceAccelerationStructurePropertiesKHR asProps = {};
+        asProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
+        VkPhysicalDeviceProperties2 props = {};
+        props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        props.pNext = &asProps;
+        vkGetPhysicalDeviceProperties2(this->physicalDevice, &props);
+        this->minAccelerationStructureScratchOffsetAlignment =
+            std::max(asProps.minAccelerationStructureScratchOffsetAlignment, 1u);
+        if (asProps.maxDescriptorSetUpdateAfterBindAccelerationStructures < BindlessTable::MAX_TLAS) {
+            throw std::runtime_error("insufficient acceleration-structure descriptor limit");
+        }
+    }
 
     // Initialize VMA
     VmaAllocatorCreateInfo allocatorInfo = {};
@@ -1074,7 +1159,7 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
     this->commandPool = createCommandPool(this->device, this->graphicsQueueIndex);
 
     // Init bindless descriptor table
-    this->bindlessTable.init(this->device, this->limits.maxPushConstantsSize);
+    this->bindlessTable.init(this->device, this->limits.maxPushConstantsSize, options.enableRayTracing);
 
     {
         VkPhysicalDeviceProperties props;
@@ -1094,15 +1179,10 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
 
     g_context.contextInstance = this;
 
-    // Transition swapchain images using Commands
-    Commands imageInitCmd = Commands::oneShot();
-    for (VkImage & image : this->swapchainImages) {
-        Barrier(imageInitCmd).image(image)
-            .from(Stage::None, Access::None, Layout::Undefined)
-            .to(Stage::None, Access::None, Layout::PresentSrc)
-            .record();
-    }
-    imageInitCmd.submitAndWait();
+    // No initial swapchain-image layout transition: each frame begins by transitioning the image
+    // from Layout::Undefined (frame.cpp), which discards prior contents and is valid as a first use.
+    // Pre-transitioning presentable images here is both unnecessary and a validation error, since
+    // the images have not been acquired via vkAcquireNextImageKHR.
 
     for (size_t i = 0; i < swapchainImageCount; i++) {
         imageAvailableSemaphores.push_back(createSemaphore());
@@ -1120,6 +1200,7 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
 
 VulkanContext::~VulkanContext() {
     vkQueueWaitIdle(graphicsQueue);
+    destroyThreadLocalSubmitFence(device);
 
     for (auto& cb : preDestroyCallbacks) cb();
     preDestroyCallbacks.clear();
@@ -1168,4 +1249,3 @@ void VulkanContext::waitIdle() {
 void VulkanContext::flushDestroys() {
     for (auto& dg : destroyGenerations) dg.destroy();
 }
-

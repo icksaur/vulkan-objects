@@ -6,6 +6,17 @@
 
 // --- Commands ---
 
+static thread_local VkFence submitAndWaitFence = VK_NULL_HANDLE;
+static thread_local VkDevice submitAndWaitFenceDevice = VK_NULL_HANDLE;
+
+void destroyThreadLocalSubmitFence(VkDevice device) {
+    if (submitAndWaitFence != VK_NULL_HANDLE && submitAndWaitFenceDevice == device) {
+        vkDestroyFence(device, submitAndWaitFence, nullptr);
+        submitAndWaitFence = VK_NULL_HANDLE;
+        submitAndWaitFenceDevice = VK_NULL_HANDLE;
+    }
+}
+
 Commands::Commands(VkCommandBuffer cmd, bool owns) : commandBuffer(cmd), ended(false), ownsBuffer(owns), frame(nullptr) {
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -364,6 +375,21 @@ void Commands::bufferBarriers(std::span<const BufferBarrierDesc> barriers) {
     vkCmdPipelineBarrier2(commandBuffer, &depInfo);
 }
 
+void Commands::blasToTlasBarrier(std::span<const VkBuffer> blasBackings) {
+    std::vector<BufferBarrierDesc> barriers;
+    barriers.reserve(blasBackings.size());
+    for (VkBuffer backing : blasBackings) {
+        barriers.push_back({backing, Stage::AccelStructureBuild, Access::AccelStructureWrite,
+                            Stage::AccelStructureBuild, Access::AccelStructureRead});
+    }
+    bufferBarriers(barriers);
+}
+
+void Commands::tlasToShaderReadBarrier(VkBuffer tlasBacking) {
+    bufferBarrier(tlasBacking, Stage::AccelStructureBuild, Access::AccelStructureWrite,
+                  Stage::AllCommands, Access::AccelStructureRead);
+}
+
 void Commands::imageBarrier(VkImage img, Stage srcStage, Access srcAccess, Layout oldLayout,
                             Stage dstStage, Access dstAccess, Layout newLayout, uint32_t mipLevels, uint32_t layerCount) {
     Barrier(commandBuffer).image(img, mipLevels, layerCount)
@@ -394,19 +420,16 @@ void Commands::submitAndWait() {
     // Reuse one fence per thread across submitAndWait calls: this function always waits for
     // completion before returning, so the fence is idle by the next call. vkCreateFence /
     // vkDestroyFence per submit cost ~0.3ms each on this driver — ~7ms over a ~12-submit bind.
-    static thread_local VkFence s_fence = VK_NULL_HANDLE;
-    static thread_local VkDevice s_fenceDevice = VK_NULL_HANDLE;
     VkDevice device = g_context().device;
-    if (s_fence == VK_NULL_HANDLE || s_fenceDevice != device) {
-        if (s_fence != VK_NULL_HANDLE) vkDestroyFence(s_fenceDevice, s_fence, nullptr);
-        if (vkCreateFence(device, &fenceInfo, nullptr, &s_fence) != VK_SUCCESS) {
+    if (submitAndWaitFence == VK_NULL_HANDLE || submitAndWaitFenceDevice != device) {
+        if (vkCreateFence(device, &fenceInfo, nullptr, &submitAndWaitFence) != VK_SUCCESS) {
             throw std::runtime_error("failed to create fence for submitAndWait");
         }
-        s_fenceDevice = device;
+        submitAndWaitFenceDevice = device;
     } else {
-        vkResetFences(device, 1, &s_fence);
+        vkResetFences(device, 1, &submitAndWaitFence);
     }
-    VkFence fence = s_fence;
+    VkFence fence = submitAndWaitFence;
     auto tFence = now();
 
     vkQueueSubmit2(g_context().graphicsQueue, 1, &submitInfo, fence);

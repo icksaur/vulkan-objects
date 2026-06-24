@@ -30,6 +30,7 @@ set(LIB_SOURCES
     src/image.cpp
     src/barrier.cpp
     src/commands.cpp
+    src/accel.cpp
     src/frame.cpp
     src/pipeline.cpp
     src/pipelinecache.cpp
@@ -128,3 +129,26 @@ add_custom_target(shaders ALL DEPENDS ${SPIRV_BINARIES})
 
 # Make the demo depend on shaders
 add_dependencies(vulkan-demo shaders)
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+enable_testing()
+
+set(TEST_SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders)
+set(TEST_SPIRV ${CMAKE_CURRENT_BINARY_DIR}/tests/shaders/as_oracle.comp.spv)
+add_custom_command(
+    OUTPUT ${TEST_SPIRV}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tests/shaders
+    COMMAND ${GLSLC} --target-env=vulkan1.2 ${TEST_SHADER_DIR}/as_oracle.comp -o ${TEST_SPIRV}
+    DEPENDS ${TEST_SHADER_DIR}/as_oracle.comp
+    COMMENT "Compiling test shader as_oracle.comp"
+)
+add_custom_target(test-shaders DEPENDS ${TEST_SPIRV})
+
+add_executable(vkobjects-accel-structure-tests tests/accel_structure_tests.cpp)
+target_include_directories(vkobjects-accel-structure-tests PRIVATE src)
+target_link_libraries(vkobjects-accel-structure-tests PRIVATE vkobjects)
+add_dependencies(vkobjects-accel-structure-tests test-shaders)
+add_test(NAME vkobjects-accel-structure-tests COMMAND vkobjects-accel-structure-tests
+         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})

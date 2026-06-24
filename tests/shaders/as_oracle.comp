@@ -1,0 +1,31 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(set = 0, binding = 0) buffer StorageBuffers { uint data[]; } storageBuffers[];
+layout(set = 0, binding = 3) uniform accelerationStructureEXT tlasTable[];
+
+layout(push_constant) uniform Push {
+    uint tlasRID;
+    uint outRID;
+} pc;
+
+void main() {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, tlasTable[nonuniformEXT(pc.tlasRID)], gl_RayFlagsOpaqueEXT,
+                          0xFFu, vec3(0.25, 0.25, 1.0), 0.001, vec3(0.0, 0.0, -1.0), 10.0);
+    while (rayQueryProceedEXT(rq)) {}
+
+    uint base = gl_GlobalInvocationID.x * 4u;
+    if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
+        storageBuffers[nonuniformEXT(pc.outRID)].data[base + 0u] =
+            uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
+        storageBuffers[nonuniformEXT(pc.outRID)].data[base + 1u] =
+            rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+        storageBuffers[nonuniformEXT(pc.outRID)].data[base + 2u] =
+            floatBitsToUint(rayQueryGetIntersectionTEXT(rq, true));
+        storageBuffers[nonuniformEXT(pc.outRID)].data[base + 3u] = 1u;
+    } else {
+        storageBuffers[nonuniformEXT(pc.outRID)].data[base + 3u] = 0u;
+    }
+}

@@ -123,13 +123,10 @@ void Frame::submit(Commands & cmd) {
         getSwapChainImageHandles(context.device, context.swapchain, context.swapchainImages);
         makeChainImageViews(context.device, context.colorFormat, context.swapchainImages, context.swapchainImageViews);
 
+        // Recreated swapchain images start in Layout::Undefined; the next frame's begin transitions
+        // each from Undefined (a valid first use). Pre-transitioning unacquired presentable images
+        // is unnecessary and a validation error, so it is omitted here.
         Commands rebuildCmd = Commands::oneShot();
-        for (VkImage & img : context.swapchainImages) {
-            Barrier(rebuildCmd).image(img)
-                .from(Stage::None, Access::None, Layout::Undefined)
-                .to(Stage::None, Access::None, Layout::PresentSrc)
-                .record();
-        }
         if (context.resizeCallback) {
             VkExtent2D extent = {(uint32_t)w, (uint32_t)h};
             context.resizeCallback(rebuildCmd, extent);

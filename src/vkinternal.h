@@ -19,9 +19,15 @@ void recordCopyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buffer, VkI
 void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, VkDevice device, VkSwapchainKHR& outSwapChain);
 void getSwapChainImageHandles(VkDevice device, VkSwapchainKHR chain, std::vector<VkImage>& outImageHandles);
 void makeChainImageViews(VkDevice device, VkFormat colorFormat, std::vector<VkImage> & images, std::vector<VkImageView> & imageViews);
+void destroyThreadLocalSubmitFence(VkDevice device);
 
 // Loaded function pointers (set by VulkanContext constructor)
 extern PFN_vkCmdDrawMeshTasksEXT vkCmdDrawMeshTasks;
 extern PFN_vkCmdDrawMeshTasksIndirectEXT vkCmdDrawMeshTasksIndirect;
 extern PFN_vkCmdBeginRendering vkBeginRendering;
 extern PFN_vkCmdEndRendering vkEndRendering;
+extern PFN_vkGetAccelerationStructureBuildSizesKHR rtGetAccelerationStructureBuildSizes;
+extern PFN_vkCreateAccelerationStructureKHR rtCreateAccelerationStructure;
+extern PFN_vkDestroyAccelerationStructureKHR rtDestroyAccelerationStructure;
+extern PFN_vkCmdBuildAccelerationStructuresKHR rtCmdBuildAccelerationStructures;
+extern PFN_vkGetAccelerationStructureDeviceAddressKHR rtGetAccelerationStructureDeviceAddress;

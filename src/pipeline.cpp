@@ -73,9 +73,11 @@ static void validateShaderBindings(const ShaderReflection & r, const std::string
             throw std::runtime_error("pipeline build error: shader '" + name +
                 "' references descriptor set " + std::to_string(set) + " (only set 0 allowed in bindless)");
         }
-        if (binding > 2) {
+        uint32_t maxBinding = g_context().rayTracingEnabled() ? 3u : 2u;
+        if (binding > maxBinding) {
             throw std::runtime_error("pipeline build error: shader '" + name +
-                "' references binding " + std::to_string(binding) + " (valid: 0=storage, 1=samplers, 2=storage images)");
+                "' references binding " + std::to_string(binding) +
+                " (valid: 0=storage, 1=samplers, 2=storage images, 3=TLAS when rayTracing() is enabled)");
         }
     }
 }
