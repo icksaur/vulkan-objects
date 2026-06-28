@@ -452,6 +452,10 @@ public:
     VkAccelerationStructureKHR handle() const;
     Buffer& backing();
     uint32_t rid() const;
+    // RID of the host-visible instance-descriptor buffer that buildTlas() uploads into each call.
+    // A ringed Tlas (one slot per frame in flight) lets the owner mark this buffer as ring-safe so
+    // the frame-write audit does not flag the legitimate per-frame rebuild.
+    uint32_t instanceBufferRid() const;
     operator VkAccelerationStructureKHR() const;
 };
 
@@ -639,6 +643,11 @@ public:
         Frame* frame = Frame::current();
         uint32_t slot = frame ? static_cast<uint32_t>(frame->inFlight()) : 0;
         return slots_[slot % slots_.size()];
+    }
+
+    T& at(uint32_t i) {
+        assert(i < slots_.size());
+        return slots_[i];
     }
 
     uint32_t size() const { return static_cast<uint32_t>(slots_.size()); }

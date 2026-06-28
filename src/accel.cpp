@@ -271,6 +271,7 @@ void Tlas::destroyHandle() {
 VkAccelerationStructureKHR Tlas::handle() const { return handle_; }
 Buffer& Tlas::backing() { return *backing_; }
 uint32_t Tlas::rid() const { return rid_; }
+uint32_t Tlas::instanceBufferRid() const { return instanceBuf_->rid(); }
 Tlas::operator VkAccelerationStructureKHR() const { return handle_; }
 
 void Commands::buildBlas(Blas& blas, bool refit) {
