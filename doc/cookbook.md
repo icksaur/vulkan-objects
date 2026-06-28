@@ -302,3 +302,40 @@ cmd.submitAndWait();   // blocks until all work completes
 ```
 
 After `submitAndWait()`, the command buffer is freed automatically.
+
+---
+
+## Ray-tracing per-instance side table (`InstanceTable<Payload>`)
+
+`InstanceTable<Payload>` maps a hit's `instanceCustomIndex` to app data the shader reads (vertex/index
+RIDs, albedo, material). It is a passive, **single-buffered** host-visible buffer — the app owns when
+to ring it.
+
+```cpp
+struct HitPayload { uint32_t posedVtxRID, indexRID; float albedo[4]; };   // trivially copyable
+
+// Static payload: build + upload ONCE, share across all frames.
+InstanceTable<HitPayload> materials(maxInstances);
+for (auto & inst : scene) materials.set(inst.customIndex, inst.payload);
+materials.upload(setupCmd);                      // once; never re-uploaded
+push.materialRID = materials.rid();
+```
+
+`upload()` is an **unsynchronized host write** (no WAR barrier). If any payload field changes per frame
+— e.g. a `posedVtxRID` that is itself ringed per in-flight slot — re-uploading one shared table races
+the GPU still reading it from a prior in-flight frame. **Ring it instead:**
+
+```cpp
+// Per-frame payload: one table per in-flight slot, indexed by Frame::inFlight().
+std::array<InstanceTable<HitPayload>, kFramesInFlight> materialRing{ /* ...(maxInstances) */ };
+// (or AccelStructureRing<InstanceTable<HitPayload>> — same rotation contract)
+
+auto & materials = materialRing[Frame::current()->inFlight()];
+for (auto & inst : scene) materials.set(inst.customIndex, perFramePayload(inst));
+materials.upload(cmd);
+push.materialRID = materials.rid();
+```
+
+The `BufferWriteHook` audit flags an unringed per-frame table (a single-buffered per-frame host write),
+so misuse fails loudly rather than corrupting silently. `InstanceTable` is intentionally not coupled to
+`Frame`; ringing is the caller's choice, exactly like the AS objects in `AccelStructureRing`.

@@ -14,6 +14,8 @@ layout(push_constant) uniform PushConstants {
     uint shadowMapRID;
     uint lightBufferRID;
     float rotationAngle;
+    uint tlasRID;
+    uint useRT;
 };
 
 mat3 rotateY(float angle) {

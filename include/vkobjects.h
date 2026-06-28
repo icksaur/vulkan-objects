@@ -156,7 +156,7 @@ struct BindlessTable {
     static constexpr uint32_t MAX_STORAGE_BUFFERS = 16384;
     static constexpr uint32_t MAX_SAMPLERS = 16384;
     static constexpr uint32_t MAX_STORAGE_IMAGES = 4096;
-    static constexpr uint32_t MAX_TLAS = 4;
+    static constexpr uint32_t MAX_TLAS = 16;
 
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -270,15 +270,9 @@ public:
     // freed before vmaDestroyAllocator. Callbacks run in registration order.
     void onPreDestroy(std::function<void()> callback);
 
-    // Raw handle accessors (spike-rt-blas): needed to load RT extension entrypoints via
-    // vkGetDeviceProcAddr and to record acceleration-structure builds on a one-shot queue.
     VkDevice deviceHandle() const { return device; }
     VkPhysicalDevice physicalDeviceHandle() const { return physicalDevice; }
-    VkCommandPool commandPoolHandle() const { return commandPool; }
-    uint32_t queueFamilyIndex() const { return graphicsQueueIndex; }
 
-    // Bindless set-0 handles (spike-trace-cost): a custom pipeline (e.g. a ray-query compute pass
-    // with an extra TLAS set) reuses the bindless storage-buffer set as set 0.
     VkDescriptorSetLayout bindlessSetLayout() const { return bindlessTable.layout; }
     VkDescriptorSet bindlessDescriptorSet() const { return bindlessTable.set; }
     uint32_t accelerationStructureScratchAlignment() const { return minAccelerationStructureScratchOffsetAlignment; }
@@ -346,9 +340,9 @@ struct BufferBuilder {
     BufferBuilder & transferDestination();
     BufferBuilder & readback();
     BufferBuilder & size(size_t byteCount);
-    // spike-rt-blas: OR in arbitrary usage (e.g. acceleration-structure storage / build input,
-    // shader device address). Requires a context created with rayTracing() for device-address use.
-    BufferBuilder & usageFlags(VkBufferUsageFlags extra);
+    BufferBuilder & deviceAddress();
+    BufferBuilder & accelerationStructureInput();
+    BufferBuilder & accelerationStructureStorage();
 };
 
 class Buffer {
@@ -363,8 +357,6 @@ public:
     void upload(void * bytes, size_t size);
     void upload(void * bytes, size_t size, VkDeviceSize offset);
     void download(void * bytes, size_t size);
-    // spike-rt-blas: GPU virtual address (buffer must be created with usageFlags including
-    // VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT on a rayTracing() context).
     VkDeviceAddress deviceAddress() const;
     Buffer(BufferBuilder & builder);
     Buffer(Buffer && other);
@@ -375,24 +367,31 @@ public:
 
 // --- Acceleration structures ---
 
-struct BlasTriangles {
-    VkDeviceAddress vertices = 0;
-    uint32_t vertexCount = 0;
-    uint32_t vertexStride = 12;
-    VkFormat vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-    VkDeviceAddress indices = 0;
-    uint32_t triangleCount = 0;
-    VkIndexType indexType = VK_INDEX_TYPE_UINT32;
-    bool opaque = true;
+// One triangle geometry in a BLAS. Fluent builder over a VkAccelerationStructureGeometryKHR: the
+// constructor takes the vertex Buffer (for its device address) and sane triangle defaults
+// (R32G32B32 positions, 12-byte stride, non-indexed); the setters override only what differs.
+class BlasGeometry {
+    friend class Blas;
+    friend struct Commands;
+    VkAccelerationStructureGeometryKHR geom_{};
+    uint32_t primitiveCount_ = 0;
+
+public:
+    explicit BlasGeometry(Buffer& vertices);
+    BlasGeometry& vertexCount(uint32_t count);          // sets maxVertex = count - 1
+    BlasGeometry& vertexStrideBytes(uint32_t stride);
+    BlasGeometry& vertexFormat(VkFormat format);
+    BlasGeometry& indexBuffer(Buffer& indices, VkIndexType type = VK_INDEX_TYPE_UINT32);
+    BlasGeometry& triangleCount(uint32_t count);
+    BlasGeometry& opaque(bool value = true);
 };
 
 struct BlasBuilder {
-    std::vector<BlasTriangles> geoms;
+    std::vector<BlasGeometry> geoms;
     bool allowUpdate = false;
     bool fastTrace = true;
 
-    BlasBuilder& triangles(Buffer& vtx, uint32_t vtxCount, Buffer& idx, uint32_t triCount);
-    BlasBuilder& triangles(const BlasTriangles&);
+    BlasBuilder& addGeometry(const BlasGeometry&);
     BlasBuilder& refittable();
     BlasBuilder& fastBuild();
 };
@@ -400,7 +399,7 @@ struct BlasBuilder {
 class Blas {
     friend struct Commands;
     std::unique_ptr<Buffer> backing_, scratch_, updateScratch_;
-    std::vector<BlasTriangles> geometry_;
+    std::vector<BlasGeometry> geometry_;
     VkAccelerationStructureKHR handle_ = VK_NULL_HANDLE;
     VkDeviceAddress address_ = 0;
     VkDeviceAddress scratchAddress_ = 0;
@@ -427,6 +426,7 @@ public:
 
 struct TlasInstances {
     std::vector<VkAccelerationStructureInstanceKHR> raw;
+    TlasInstances& add(const Blas&, uint32_t customIndex, uint8_t mask = 0xFF);  // identity transform
     TlasInstances& add(const Blas&, const float (&xform3x4)[12], uint32_t customIndex, uint8_t mask = 0xFF);
     void clear();
 };

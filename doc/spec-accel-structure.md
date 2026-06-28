@@ -171,6 +171,21 @@ The `customIndex` is the seam — the same value the hardware returns at a hit. 
 RT-internal `VkAccelerationStructureInstanceKHR` array; `InstanceTable<T>` owns the app payload; they
 share nothing but the index.
 
+**Single-buffered — ring it when the payload mutates per frame (sharp edge).** `InstanceTable` holds
+**one** host-visible buffer, and `upload()` is an **unsynchronized host write** (a mapped-memory copy;
+no fence wait, no WAR barrier — the `Commands&` arg is API-shape only). Two safe patterns:
+- **Static payload** (e.g. albedo, fixed RIDs): build + `upload()` **once**, never re-upload ⇒ a single
+  ×1 table is safe and shared across frames/TLASes.
+- **Per-frame payload** (e.g. a posed-vertex RID that is itself ringed, so the entry differs per
+  in-flight slot): **ring the table** — `AccelStructureRing<InstanceTable<P>>` or
+  `std::array<InstanceTable<P>, swapchainImageCount>` indexed by `Frame::inFlight()`. Re-uploading one
+  shared table every frame while a prior in-flight frame still reads it is a **write-after-read hazard**.
+
+Deliberately **not** coupled to `Frame`: `InstanceTable` stays a passive typed buffer the app rings
+(same reason it is not owned by `Tlas`). The failure mode is caught at runtime by the existing
+`BufferWriteHook` audit (it flags single-buffered per-frame host writes), so an unringed per-frame
+table trips the audit rather than corrupting silently.
+
 ### 5. Binding the TLAS into shaders — **DECIDED: option A (bindless TLAS slot)**
 
 A ray query needs the TLAS as a descriptor (`VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR`), but the

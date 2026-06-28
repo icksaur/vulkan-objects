@@ -4,56 +4,28 @@
 
 namespace {
 
-constexpr VkBufferUsageFlags kAsInputUsage =
-    VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-constexpr VkBufferUsageFlags kAsStorageUsage =
-    VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
-    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-constexpr VkBufferUsageFlags kScratchUsage =
-    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+enum class AsBuffer { Storage, Scratch, Input };
 
 VkDeviceAddress alignUp(VkDeviceAddress value, uint32_t alignment) {
     return (value + alignment - 1) & ~VkDeviceAddress(alignment - 1);
 }
 
-std::unique_ptr<Buffer> makeBuffer(size_t bytes, VkBufferUsageFlags usage, bool hostVisible = false) {
+std::unique_ptr<Buffer> makeBuffer(size_t bytes, AsBuffer kind, bool hostVisible = false) {
     BufferBuilder builder(std::max<size_t>(bytes, 4));
-    builder.storage().usageFlags(usage);
+    switch (kind) {
+        case AsBuffer::Storage: builder.accelerationStructureStorage(); break;
+        case AsBuffer::Scratch: builder.storage().deviceAddress(); break;
+        case AsBuffer::Input:   builder.accelerationStructureInput(); break;
+    }
     if (hostVisible) builder.hostVisible();
     return std::make_unique<Buffer>(builder);
 }
 
 std::unique_ptr<Buffer> makeScratch(VkDeviceSize bytes, VkDeviceAddress& outAddress) {
     uint32_t align = g_context().accelerationStructureScratchAlignment();
-    auto buffer = makeBuffer(bytes + align, kScratchUsage);
+    auto buffer = makeBuffer(bytes + align, AsBuffer::Scratch);
     outAddress = alignUp(buffer->deviceAddress(), align);
     return buffer;
-}
-
-std::vector<VkAccelerationStructureGeometryKHR> triangleGeometry(const std::vector<BlasTriangles>& triangles) {
-    std::vector<VkAccelerationStructureGeometryKHR> out(triangles.size());
-    for (size_t i = 0; i < triangles.size(); ++i) {
-        out[i] = {};
-        out[i].sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
-        out[i].geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-        out[i].flags = triangles[i].opaque ? VK_GEOMETRY_OPAQUE_BIT_KHR : 0;
-        auto& tri = out[i].geometry.triangles;
-        tri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
-        tri.vertexFormat = triangles[i].vertexFormat;
-        tri.vertexData.deviceAddress = triangles[i].vertices;
-        tri.vertexStride = triangles[i].vertexStride;
-        tri.maxVertex = triangles[i].vertexCount ? triangles[i].vertexCount - 1 : 0;
-        tri.indexType = triangles[i].indices ? triangles[i].indexType : VK_INDEX_TYPE_NONE_KHR;
-        tri.indexData.deviceAddress = triangles[i].indices;
-    }
-    return out;
-}
-
-std::vector<uint32_t> primitiveCounts(const std::vector<BlasTriangles>& triangles) {
-    std::vector<uint32_t> out(triangles.size());
-    for (size_t i = 0; i < triangles.size(); ++i) out[i] = triangles[i].triangleCount;
-    return out;
 }
 
 VkBuildAccelerationStructureFlagsKHR buildFlags(bool fastTrace, bool allowUpdate) {
@@ -66,18 +38,46 @@ VkBuildAccelerationStructureFlagsKHR buildFlags(bool fastTrace, bool allowUpdate
 
 } // namespace
 
-BlasBuilder& BlasBuilder::triangles(Buffer& vtx, uint32_t vtxCount, Buffer& idx, uint32_t triCount) {
-    BlasTriangles t;
-    t.vertices = vtx.deviceAddress();
-    t.vertexCount = vtxCount;
-    t.indices = idx.deviceAddress();
-    t.triangleCount = triCount;
-    geoms.push_back(t);
+BlasGeometry::BlasGeometry(Buffer& vertices) {
+    geom_.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geom_.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+    geom_.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    auto& tri = geom_.geometry.triangles;
+    tri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+    tri.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+    tri.vertexData.deviceAddress = vertices.deviceAddress();
+    tri.vertexStride = 12;
+    tri.indexType = VK_INDEX_TYPE_NONE_KHR;
+}
+
+BlasGeometry& BlasGeometry::vertexCount(uint32_t count) {
+    geom_.geometry.triangles.maxVertex = count ? count - 1 : 0;
+    return *this;
+}
+BlasGeometry& BlasGeometry::vertexStrideBytes(uint32_t stride) {
+    geom_.geometry.triangles.vertexStride = stride;
+    return *this;
+}
+BlasGeometry& BlasGeometry::vertexFormat(VkFormat format) {
+    geom_.geometry.triangles.vertexFormat = format;
+    return *this;
+}
+BlasGeometry& BlasGeometry::indexBuffer(Buffer& indices, VkIndexType type) {
+    geom_.geometry.triangles.indexType = type;
+    geom_.geometry.triangles.indexData.deviceAddress = indices.deviceAddress();
+    return *this;
+}
+BlasGeometry& BlasGeometry::triangleCount(uint32_t count) {
+    primitiveCount_ = count;
+    return *this;
+}
+BlasGeometry& BlasGeometry::opaque(bool value) {
+    geom_.flags = value ? VK_GEOMETRY_OPAQUE_BIT_KHR : 0;
     return *this;
 }
 
-BlasBuilder& BlasBuilder::triangles(const BlasTriangles& t) {
-    geoms.push_back(t);
+BlasBuilder& BlasBuilder::addGeometry(const BlasGeometry& geometry) {
+    geoms.push_back(geometry);
     return *this;
 }
 
@@ -95,8 +95,9 @@ Blas::Blas(BlasBuilder& builder)
     : geometry_(builder.geoms), updatable_(builder.allowUpdate),
       flags_(buildFlags(builder.fastTrace, builder.allowUpdate)) {
     assert(!geometry_.empty());
-    auto geoms = triangleGeometry(geometry_);
-    auto counts = primitiveCounts(geometry_);
+    std::vector<VkAccelerationStructureGeometryKHR> geoms;
+    std::vector<uint32_t> counts;
+    for (const BlasGeometry& g : geometry_) { geoms.push_back(g.geom_); counts.push_back(g.primitiveCount_); }
     VkAccelerationStructureBuildGeometryInfoKHR build = {};
     build.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
     build.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
@@ -109,7 +110,7 @@ Blas::Blas(BlasBuilder& builder)
     sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
     rtGetAccelerationStructureBuildSizes(g_context().deviceHandle(), VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
                                          &build, counts.data(), &sizes);
-    backing_ = makeBuffer(sizes.accelerationStructureSize, kAsStorageUsage);
+    backing_ = makeBuffer(sizes.accelerationStructureSize, AsBuffer::Storage);
     scratch_ = makeScratch(std::max<VkDeviceSize>(sizes.buildScratchSize, 4), scratchAddress_);
     if (updatable_) updateScratch_ = makeScratch(std::max<VkDeviceSize>(sizes.updateScratchSize, 4), updateScratchAddress_);
 
@@ -175,6 +176,15 @@ Buffer& Blas::backing() { return *backing_; }
 bool Blas::updatable() const { return updatable_; }
 Blas::operator VkAccelerationStructureKHR() const { return handle_; }
 
+TlasInstances& TlasInstances::add(const Blas& blas, uint32_t customIndex, uint8_t mask) {
+    const float identity[12] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+    };
+    return add(blas, identity, customIndex, mask);
+}
+
 TlasInstances& TlasInstances::add(const Blas& blas, const float (&xform3x4)[12], uint32_t customIndex, uint8_t mask) {
     assert(customIndex < (1u << 24));
     VkAccelerationStructureInstanceKHR inst = {};
@@ -194,7 +204,7 @@ void TlasInstances::clear() { raw.clear(); }
 
 Tlas::Tlas(uint32_t maxInstances) : maxInstances_(maxInstances) {
     assert(maxInstances > 0);
-    instanceBuf_ = makeBuffer(sizeof(VkAccelerationStructureInstanceKHR) * maxInstances, kAsInputUsage, true);
+    instanceBuf_ = makeBuffer(sizeof(VkAccelerationStructureInstanceKHR) * maxInstances, AsBuffer::Input, true);
 
     VkAccelerationStructureGeometryKHR geom = {};
     geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
@@ -214,7 +224,7 @@ Tlas::Tlas(uint32_t maxInstances) : maxInstances_(maxInstances) {
     sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
     rtGetAccelerationStructureBuildSizes(g_context().deviceHandle(), VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
                                          &build, &maxInstances, &sizes);
-    backing_ = makeBuffer(sizes.accelerationStructureSize, kAsStorageUsage);
+    backing_ = makeBuffer(sizes.accelerationStructureSize, AsBuffer::Storage);
     scratch_ = makeScratch(std::max<VkDeviceSize>(sizes.buildScratchSize, 4), scratchAddress_);
 
     VkAccelerationStructureCreateInfoKHR create = {};
@@ -279,13 +289,16 @@ void Commands::buildBlas(Blas& blas, bool refit) {
         assert(blas.updatable_ && blas.built_);
         if (!blas.updatable_ || !blas.built_) throw std::runtime_error("invalid BLAS refit before build");
     }
-    auto geoms = triangleGeometry(blas.geometry_);
-    std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges(blas.geometry_.size());
-    std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> rangePtrs(blas.geometry_.size());
-    for (size_t i = 0; i < blas.geometry_.size(); ++i) {
-        ranges[i].primitiveCount = blas.geometry_[i].triangleCount;
-        rangePtrs[i] = &ranges[i];
+    std::vector<VkAccelerationStructureGeometryKHR> geoms;
+    std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
+    for (const BlasGeometry& g : blas.geometry_) {
+        geoms.push_back(g.geom_);
+        VkAccelerationStructureBuildRangeInfoKHR range = {};
+        range.primitiveCount = g.primitiveCount_;
+        ranges.push_back(range);
     }
+    std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> rangePtrs(ranges.size());
+    for (size_t i = 0; i < ranges.size(); ++i) rangePtrs[i] = &ranges[i];
 
     VkAccelerationStructureBuildGeometryInfoKHR build = {};
     build.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;

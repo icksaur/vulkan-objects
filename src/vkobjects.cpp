@@ -486,7 +486,7 @@ VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& p
     imageAtomicInt64Features.pNext = previousInChain;
     previousInChain = &imageAtomicInt64Features;
 
-    // spike-rt-blas: hardware ray tracing acceleration-structure + ray-query features.
+    // Hardware ray tracing: acceleration-structure + ray-query features.
     VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeatures = {};
     asFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
     asFeatures.accelerationStructure = VK_TRUE;

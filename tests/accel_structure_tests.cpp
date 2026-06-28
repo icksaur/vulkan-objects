@@ -61,8 +61,7 @@ std::unique_ptr<Buffer> makeTriangleVertices(float z = 0.0f) {
         0.0f, 1.0f, z,
     };
     BufferBuilder builder(sizeof(vertices));
-    builder.hostVisible().usageFlags(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-                                     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    builder.hostVisible().accelerationStructureInput();
     auto buffer = std::make_unique<Buffer>(builder);
     buffer->upload(vertices, sizeof(vertices));
     return buffer;
@@ -71,11 +70,17 @@ std::unique_ptr<Buffer> makeTriangleVertices(float z = 0.0f) {
 std::unique_ptr<Buffer> makeTriangleIndices() {
     uint32_t indices[3] = {0, 1, 2};
     BufferBuilder builder(sizeof(indices));
-    builder.hostVisible().usageFlags(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-                                     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    builder.hostVisible().accelerationStructureInput();
     auto buffer = std::make_unique<Buffer>(builder);
     buffer->upload(indices, sizeof(indices));
     return buffer;
+}
+
+Blas makeTriangleBlas(Buffer& vertices, Buffer& indices, bool refittable = false) {
+    BlasBuilder builder;
+    builder.addGeometry(BlasGeometry(vertices).vertexCount(3).indexBuffer(indices).triangleCount(1));
+    if (refittable) builder.refittable();
+    return Blas(builder);
 }
 
 Hit trace(Tlas& tlas) {
@@ -83,7 +88,7 @@ Hit trace(Tlas& tlas) {
     Pipeline pipeline = createComputePipeline(shader);
 
     BufferBuilder outBuilder(sizeof(Hit));
-    outBuilder.hostVisible().usageFlags(VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    outBuilder.hostVisible();
     Buffer out(outBuilder);
     Hit zero = {};
     out.upload(&zero, sizeof(zero));
@@ -104,12 +109,7 @@ Hit trace(Tlas& tlas) {
 Tlas buildScene(Blas& blas, uint32_t customIndex = 7) {
     Tlas tlas(1);
     TlasInstances instances;
-    const float identity[12] = {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-    };
-    instances.add(blas, identity, customIndex);
+    instances.add(blas, customIndex);
     auto cmd = Commands::oneShot();
     VkBuffer backing = blas.backing();
     cmd.blasToTlasBarrier(std::span<const VkBuffer>(&backing, 1));
@@ -124,9 +124,7 @@ void testOracleAndRefit() {
     auto vertices = makeTriangleVertices(0.0f);
     auto indices = makeTriangleIndices();
 
-    BlasBuilder builder;
-    builder.triangles(*vertices, 3, *indices, 1).refittable();
-    Blas blas(builder);
+    Blas blas = makeTriangleBlas(*vertices, *indices, true);
     {
         auto cmd = Commands::oneShot();
         cmd.buildBlas(blas, false);
@@ -163,9 +161,7 @@ void testMoveAndRaii(bool immediateDestroy) {
     for (uint32_t i = 0; i < 4; ++i) {
         auto vertices = makeTriangleVertices();
         auto indices = makeTriangleIndices();
-        BlasBuilder builder;
-        builder.triangles(*vertices, 3, *indices, 1);
-        Blas blas(builder);
+        Blas blas = makeTriangleBlas(*vertices, *indices);
         Blas movedBlas(std::move(blas));
         {
             auto cmd = Commands::oneShot();
@@ -186,9 +182,7 @@ void testTlasRidFenceGate() {
     TestContext ctx;
     auto vertices = makeTriangleVertices();
     auto indices = makeTriangleIndices();
-    BlasBuilder builder;
-    builder.triangles(*vertices, 3, *indices, 1);
-    Blas blas(builder);
+    Blas blas = makeTriangleBlas(*vertices, *indices);
     {
         auto cmd = Commands::oneShot();
         cmd.buildBlas(blas, false);
@@ -235,9 +229,7 @@ void testRingDistinctAddresses() {
     vertices.push_back(makeTriangleVertices(0.25f));
     AccelStructureRing<Blas> ring;
     ring.init(2, [&](uint32_t slot) {
-        BlasBuilder builder;
-        builder.triangles(*vertices[slot], 3, *indices, 1);
-        return Blas(builder);
+        return makeTriangleBlas(*vertices[slot], *indices);
     });
     assert(ring.size() == 2);
     assert(vertices[0]->deviceAddress() != vertices[1]->deviceAddress());
@@ -260,9 +252,7 @@ int refitBeforeBuildChild() {
     TestContext ctx;
     auto vertices = makeTriangleVertices();
     auto indices = makeTriangleIndices();
-    BlasBuilder builder;
-    builder.triangles(*vertices, 3, *indices, 1).refittable();
-    Blas blas(builder);
+    Blas blas = makeTriangleBlas(*vertices, *indices, true);
     auto cmd = Commands::oneShot();
     cmd.buildBlas(blas, true);
     cmd.submitAndWait();

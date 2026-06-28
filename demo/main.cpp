@@ -84,6 +84,8 @@ struct PushConstants : PushConstantBase<PushConstants> {
     uint32_t shadowMapRID;
     uint32_t lightBufferRID;
     float rotationAngle;
+    uint32_t tlasRID;   // ray-query shadow source
+    uint32_t useRT;     // 1 = ray-query shadows, 0 = shadow-map shadows (flips every 1s)
 };
 
 // Light data stored in a storage buffer (accessed by RID)
@@ -108,7 +110,7 @@ int main(int argc, char *argv[]) {
     (void)argv;
     SDLWindow window("VulkanApp - Shadow Maps", windowWidth, windowHeight);
 
-    VulkanContext context(window, VulkanContextOptions().validation().meshShaders());
+    VulkanContext context(window, VulkanContextOptions().validation().meshShaders().rayTracing());
 
     // Shaders
     ShaderModule cubeMeshModule(ShaderBuilder().mesh().fromFile("demo/shaders/cube.mesh.spv"));
@@ -143,9 +145,26 @@ int main(int argc, char *argv[]) {
         }
     });
 
-    // Vertex buffer: cubeCount cubes × 36 verts × 8 floats (pos3, normal3, uv2)
-    const size_t vertexBufferSize = sizeof(float) * 8 * 36 * cubeCount;
-    Buffer vertexBuffer(BufferBuilder(vertexBufferSize).storage());
+    // Cube vertex layout the compute pass writes and the BLAS reads (position at offset 0).
+    struct CubeVertex { vec3f position; vec3f normal; float u, v; };
+    const uint32_t sceneVertexCount = 36 * cubeCount;
+    const uint32_t sceneTriangleCount = 12 * cubeCount;
+    Buffer vertexBuffer(BufferBuilder(sizeof(CubeVertex) * sceneVertexCount).storage().accelerationStructureInput());
+
+    // One BLAS over the whole compute-generated (world-space) vertex buffer, plus a single
+    // identity-instance TLAS, per swapchain image. Rebuilt each frame as the cubes rotate; the
+    // fragment shader ray-queries the TLAS for shadows.
+    BlasBuilder sceneBlasBuilder;
+    sceneBlasBuilder.addGeometry(BlasGeometry(vertexBuffer)
+        .vertexCount(sceneVertexCount)
+        .vertexStrideBytes(sizeof(CubeVertex))
+        .triangleCount(sceneTriangleCount));
+    std::vector<Blas> sceneBlas;
+    std::vector<Tlas> sceneTlas;
+    for (size_t i = 0; i < context.swapchainImageCount; ++i) {
+        sceneBlas.emplace_back(sceneBlasBuilder);
+        sceneTlas.emplace_back(1);
+    }
 
     // Light data buffer (light VP matrix, accessed via RID)
     Buffer lightBuffer(BufferBuilder(sizeof(LightData)).storage().hostVisible());
@@ -208,6 +227,8 @@ int main(int argc, char *argv[]) {
         push.shadowMapRID = shadowMaps[idx].rid();
         push.lightBufferRID = lightBuffer.rid();
         push.rotationAngle = totalTime * (float)M_PI / 6.0f;
+        push.tlasRID = sceneTlas[idx].rid();
+        push.useRT = (((uint32_t)totalTime) % 2u == 0u) ? 1u : 0u;   // flip ray-query vs shadow-map every 1s
 
         auto cmd = frame.beginCommands();
 
@@ -216,8 +237,19 @@ int main(int argc, char *argv[]) {
         cmd.pushConstants(push);
         cmd.dispatch(cubeCount, 1, 1);
 
-        // Barrier: compute writes → mesh shader reads
-        cmd.bufferBarrier(vertexBuffer, Stage::Compute, Stage::MeshShader);
+        // Barrier: compute writes → mesh shader reads AND acceleration-structure build reads
+        cmd.bufferBarrier(vertexBuffer, Stage::Compute, Access::ShaderWrite,
+                          Stage::MeshShader | Stage::AccelStructureBuild,
+                          Access::ShaderRead | Access::AccelStructureRead);
+
+        // 1b. Build ray-tracing acceleration structures from the freshly-generated geometry.
+        cmd.buildBlas(sceneBlas[idx], false);
+        VkBuffer blasBacking = sceneBlas[idx].backing();
+        cmd.blasToTlasBarrier(std::span<const VkBuffer>(&blasBacking, 1));
+        TlasInstances sceneInstances;
+        sceneInstances.add(sceneBlas[idx], 0);
+        cmd.buildTlas(sceneTlas[idx], sceneInstances);
+        cmd.tlasToShaderReadBarrier(sceneTlas[idx].backing());
 
         // 2. Shadow pass: render depth from light's perspective
         cmd.beginRendering(shadowMaps[idx].imageView, {shadowMapRes, shadowMapRes});

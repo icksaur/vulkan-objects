@@ -25,7 +25,20 @@ BufferBuilder & BufferBuilder::readback() {
     return *this;
 }
 BufferBuilder & BufferBuilder::size(size_t byteCount) { this->byteCount = byteCount; return *this; }
-BufferBuilder & BufferBuilder::usageFlags(VkBufferUsageFlags extra) { usage |= extra; return *this; }
+BufferBuilder & BufferBuilder::deviceAddress() {
+    usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    return *this;
+}
+BufferBuilder & BufferBuilder::accelerationStructureInput() {
+    usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    return *this;
+}
+BufferBuilder & BufferBuilder::accelerationStructureStorage() {
+    usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    return *this;
+}
 
 Buffer::Buffer(BufferBuilder & builder) : buffer(VK_NULL_HANDLE), allocation(VK_NULL_HANDLE), size(builder.byteCount), rid_(UINT32_MAX) {
     // All buffers get STORAGE_BUFFER_BIT for bindless registration
