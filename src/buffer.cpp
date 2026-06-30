@@ -132,6 +132,13 @@ Buffer::~Buffer() {
     gen.bufferAllocations.push_back({buffer, allocation});
 }
 Buffer::operator VkBuffer() const { return buffer; }Buffer::operator VkBuffer*() const { return (VkBuffer*)&buffer; }
+bool Buffer::isHostVisible() const {
+    // Query the ACTUAL allocated memory type (VMA AUTO may differ from the requested properties),
+    // so tests can structurally assert a buffer landed in device-local (non-host-mapped) memory.
+    VkMemoryPropertyFlags flags = 0;
+    vmaGetAllocationMemoryProperties(g_allocator, allocation, &flags);
+    return (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+}
 VkDeviceAddress Buffer::deviceAddress() const {
     VkBufferDeviceAddressInfo info = {};
     info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;

@@ -354,6 +354,7 @@ class Buffer {
 public:
     uint32_t rid() const;
     size_t byteSize() const;
+    bool isHostVisible() const;
     void upload(void * bytes, size_t size);
     void upload(void * bytes, size_t size, VkDeviceSize offset);
     void download(void * bytes, size_t size);
