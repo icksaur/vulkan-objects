@@ -156,7 +156,7 @@ struct BindlessTable {
     static constexpr uint32_t MAX_STORAGE_BUFFERS = 16384;
     static constexpr uint32_t MAX_SAMPLERS = 16384;
     static constexpr uint32_t MAX_STORAGE_IMAGES = 4096;
-    static constexpr uint32_t MAX_TLAS = 16;
+    static constexpr uint32_t MAX_TLAS = 8;
 
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     VkDescriptorPool pool = VK_NULL_HANDLE;
