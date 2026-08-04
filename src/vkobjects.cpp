@@ -455,6 +455,22 @@ VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& p
         if (options.enableVerbose) std::cout << "applying device extension: " << name << std::endl;
     }
 
+    // Query actual device support BEFORE unconditionally requesting a
+    // feature at vkCreateDevice time -- sampleRateShading is not
+    // universally supported, and requesting it unconditionally (the
+    // prior behavior) would surface as whatever generic error
+    // vkCreateDevice/validation happens to produce, deep past this
+    // call, rather than a clear, purpose-written message pointing at
+    // the actual unmet requirement.
+    if (options.shaderSampleRateShading > 0.0f) {
+        VkPhysicalDeviceFeatures supportedFeatures;
+        vkGetPhysicalDeviceFeatures(physicalDevice, &supportedFeatures);
+        if (!supportedFeatures.sampleRateShading) {
+            throw std::runtime_error("VulkanContextOptions::sampleRateShading() was requested, but the "
+                                      "selected physical device does not support VkPhysicalDeviceFeatures::sampleRateShading");
+        }
+    }
+
     VkDeviceQueueCreateInfo queueCreateInfo = {};
     queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     queueCreateInfo.queueFamilyIndex = queueFamilyIndex;
@@ -1118,6 +1134,26 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
 
     this->graphicsQueueIndex = -1;
     selectGPU(this->instance, this->physicalDevice, this->graphicsQueueIndex, this->maxSamples, this->limits, options.enableVerbose);
+
+    // Confirm the requested multisample count is actually supported for
+    // BOTH color and depth attachments (maxSamples is already
+    // framebufferColorSampleCounts & framebufferDepthSampleCounts, see
+    // selectGPU) before proceeding -- failing loudly here, at context
+    // construction, rather than letting an unsupported count surface
+    // later as whichever generic error a specific Image/pipeline
+    // creation call happens to produce for that specific format.
+    // getSampleBits() (not a raw bitmask test against multisampleCount
+    // itself) both converts the count to its VkSampleCountFlagBits value
+    // AND rejects a non-power-of-two count like 3 up front -- a plain
+    // `maxSamples & multisampleCount` bitmask test would have silently
+    // passed for such an invalid count whenever it happened to share set
+    // bits with a valid supported value (e.g. 3 vs. a device supporting
+    // 2x), caught in review.
+    if (options.multisampleCount > 1 && !(this->maxSamples & getSampleBits(options.multisampleCount))) {
+        throw std::runtime_error("VulkanContextOptions::multisample() requested a sample count the "
+                                  "selected physical device does not support (framebufferColorSampleCounts & "
+                                  "framebufferDepthSampleCounts)");
+    }
 
     this->device = createLogicalDevice(options, this->physicalDevice, this->graphicsQueueIndex);
     if (options.enableRayTracing) {
