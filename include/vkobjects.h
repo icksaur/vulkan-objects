@@ -156,7 +156,8 @@ struct BindlessTable {
     static constexpr uint32_t MAX_STORAGE_BUFFERS = 16384;
     static constexpr uint32_t MAX_SAMPLERS = 16384;
     static constexpr uint32_t MAX_STORAGE_IMAGES = 4096;
-    static constexpr uint32_t MAX_TLAS = 8;
+    // A swapchain-deep TLAS ring may be replaced every frame while prior rings await fence-gated release.
+    static constexpr uint32_t MAX_TLAS = 16;
 
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -277,6 +278,16 @@ public:
     VkDescriptorSet bindlessDescriptorSet() const { return bindlessTable.set; }
     uint32_t accelerationStructureScratchAlignment() const { return minAccelerationStructureScratchOffsetAlignment; }
     bool rayTracingEnabled() const { return options.enableRayTracing; }
+
+    // The actual color format the swapchain was created with (see
+    // createSwapChain()'s getSurfaceFormat() call) -- exposed for a caller
+    // that needs to create ANOTHER image guaranteed format-compatible with
+    // the swapchain (e.g. an MSAA color attachment meant to resolve into
+    // it). getSurfaceFormat() can fall back away from the preferred
+    // VK_FORMAT_B8G8R8A8_SRGB on some GPU/driver combos, so this must be
+    // read back from the actual created swapchain, not assumed/hardcoded
+    // by a caller.
+    VkFormat swapchainColorFormat() const { return colorFormat; }
 };
 
 struct VulkanContextSingleton {
@@ -686,8 +697,23 @@ public:
     }
     void beginRendering();
     void beginRendering(float r, float g, float b, float a);
+    // Multisample variant: draws into msaaColorView (a multisampled color
+    // attachment), auto-resolving into resolveView (a single-sample
+    // attachment, e.g. the swapchain image) via VK_RESOLVE_MODE_AVERAGE_BIT
+    // when the render pass ends -- Vulkan's own dynamic-rendering resolve,
+    // not a manual downsample pass. resolveView must be format-compatible
+    // with msaaColorView (see MsaaRenderTarget). Additive: the existing
+    // non-resolve overload above is unchanged, still used by any caller
+    // that doesn't need MSAA.
+    void beginRendering(float r, float g, float b, float a, VkImageView msaaColorView, VkImageView resolveView);
     void resumeRendering();
     void beginRenderingOffscreen(VkImageView colorImage, VkExtent2D extent);
+    // Multisample variant of beginRenderingOffscreen -- see the
+    // beginRendering(..., msaaColorView, resolveView) overload's comment
+    // above for the resolve semantics; identical here, just off the
+    // swapchain (no frame-bound Commands precondition, matching the
+    // existing beginRenderingOffscreen's own offscreen-only contract).
+    void beginRenderingOffscreen(VkImageView msaaColorView, VkImageView resolveView, VkExtent2D extent);
     void beginRendering(VkImageView depthImage);
     void beginRendering(VkImageView depthImage, VkExtent2D extent);
     void beginRendering(VkImageView colorImage, VkImageView depthImage, VkExtent2D extent);

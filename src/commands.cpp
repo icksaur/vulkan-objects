@@ -112,6 +112,41 @@ void Commands::beginRendering(float r, float g, float b, float a) {
     vkBeginRendering(commandBuffer, &renderingInfo);
 }
 
+void Commands::beginRendering(float r, float g, float b, float a, VkImageView msaaColorView, VkImageView resolveView) {
+    if (!frame) throw std::runtime_error("beginRendering requires a frame-bound Commands (use frame.beginCommands())");
+
+    VkRenderingAttachmentInfo colorAttachment = {};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = msaaColorView;
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    colorAttachment.resolveImageView = resolveView;
+    colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkClearValue clearColor = { .color = { r, g, b, a } };
+    colorAttachment.clearValue = clearColor;
+
+    VkRenderingInfo renderingInfo = {};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea = { 0, 0, (uint32_t)g_context().windowWidth, (uint32_t)g_context().windowHeight };
+    renderingInfo.layerCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pDepthAttachment = nullptr;
+
+    VkViewport vp = {};
+    vp.width = (float)g_context().windowWidth;
+    vp.height = (float)g_context().windowHeight;
+    vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &vp);
+    VkRect2D sc = {};
+    sc.extent = { (uint32_t)g_context().windowWidth, (uint32_t)g_context().windowHeight };
+    vkCmdSetScissor(commandBuffer, 0, 1, &sc);
+
+    vkBeginRendering(commandBuffer, &renderingInfo);
+}
+
 void Commands::resumeRendering() {
     if (!frame) throw std::runtime_error("resumeRendering requires a frame-bound Commands");
 
@@ -147,6 +182,38 @@ void Commands::beginRenderingOffscreen(VkImageView colorImage, VkExtent2D extent
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     colorAttachment.imageView = colorImage;
     colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkClearValue clearColor = { .color = { 0.0f, 0.0f, 0.0f, 0.0f } };
+    colorAttachment.clearValue = clearColor;
+
+    VkRenderingInfo renderingInfo = {};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea = { 0, 0, extent.width, extent.height };
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.pDepthAttachment = nullptr;
+
+    VkViewport vp = {};
+    vp.width = (float)extent.width; vp.height = (float)extent.height;
+    vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &vp);
+    VkRect2D sc = {};
+    sc.extent = extent;
+    vkCmdSetScissor(commandBuffer, 0, 1, &sc);
+
+    vkBeginRendering(commandBuffer, &renderingInfo);
+}
+
+void Commands::beginRenderingOffscreen(VkImageView msaaColorView, VkImageView resolveView, VkExtent2D extent) {
+    VkRenderingAttachmentInfo colorAttachment = {};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = msaaColorView;
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    colorAttachment.resolveImageView = resolveView;
+    colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     VkClearValue clearColor = { .color = { 0.0f, 0.0f, 0.0f, 0.0f } };
