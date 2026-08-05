@@ -718,6 +718,32 @@ public:
     void beginRendering(VkImageView depthImage, VkExtent2D extent);
     void beginRendering(VkImageView colorImage, VkImageView depthImage, VkExtent2D extent);
     void beginRendering(std::span<const VkImageView> colorImages, VkImageView depthImage, VkExtent2D extent);
+    // Typed per-attachment clear values and load-op control.
+    //
+    // The overloads above hardcode LOAD_OP_CLEAR with a FLOAT (0,0,0,1). That is silently wrong for
+    // an integer attachment: VkClearColorValue is a union, so writing float 0.0 and reading uint32
+    // yields 0 by luck and any other float yields garbage. A UINT G-buffer target that must clear to
+    // a sentinel (e.g. 0xffff for "no temporal id") cannot be expressed at all.
+    //
+    // ColorAttachment makes the clear value's TYPE a compile-time choice via named constructors, so
+    // the float/uint confusion is not representable rather than merely discouraged; and it carries
+    // the load op so an attachment can be preserved across passes instead of always cleared.
+    struct ColorAttachment {
+        VkImageView view = VK_NULL_HANDLE;
+        VkClearValue clearValue = {};
+        VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+
+        // Clear a float/UNORM/SFLOAT attachment.
+        static ColorAttachment clearFloat(VkImageView view, float r, float g, float b, float a);
+        // Clear an integer (UINT) attachment. Distinct from clearFloat precisely because the
+        // underlying union makes the mistake invisible at the call site.
+        static ColorAttachment clearUint(VkImageView view, uint32_t r, uint32_t g, uint32_t b, uint32_t a);
+        // Preserve existing contents (LOAD_OP_LOAD); the caller is responsible for the prior layout.
+        static ColorAttachment load(VkImageView view);
+    };
+    // depthClear < 0 means LOAD_OP_LOAD (preserve depth); otherwise clear to that value.
+    void beginRendering(std::span<const ColorAttachment> colorAttachments, VkImageView depthImage,
+                        VkExtent2D extent, float depthClear = 1.0f);
     void endRendering();
     void setViewport(float x, float y, float width, float height);
     void setScissor(int32_t x, int32_t y, uint32_t width, uint32_t height);

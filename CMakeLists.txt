@@ -152,3 +152,9 @@ target_link_libraries(vkobjects-accel-structure-tests PRIVATE vkobjects)
 add_dependencies(vkobjects-accel-structure-tests test-shaders)
 add_test(NAME vkobjects-accel-structure-tests COMMAND vkobjects-accel-structure-tests
          WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_executable(vkobjects-clear-value-tests tests/clear_value_tests.cpp)
+target_include_directories(vkobjects-clear-value-tests PRIVATE src)
+target_link_libraries(vkobjects-clear-value-tests PRIVATE vkobjects)
+add_test(NAME vkobjects-clear-value-tests COMMAND vkobjects-clear-value-tests
+         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})

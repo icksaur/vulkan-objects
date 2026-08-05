@@ -316,35 +316,73 @@ void Commands::beginRendering(VkImageView colorImage, VkImageView depthImage, Vk
 }
 
 void Commands::beginRendering(std::span<const VkImageView> colorImages, VkImageView depthImage, VkExtent2D extent) {
-    std::vector<VkRenderingAttachmentInfo> colorAttachments;
-    for (auto view : colorImages) {
+    // Preserved behaviour: every attachment cleared to float (0,0,0,1). Expressed in terms of the
+    // typed API below so there is one implementation of the rendering-info assembly, not two.
+    std::vector<ColorAttachment> attachments;
+    attachments.reserve(colorImages.size());
+    for (auto view : colorImages)
+        attachments.push_back(ColorAttachment::clearFloat(view, 0.0f, 0.0f, 0.0f, 1.0f));
+    beginRendering(std::span<const ColorAttachment>(attachments), depthImage, extent);
+}
+
+Commands::ColorAttachment Commands::ColorAttachment::clearFloat(VkImageView view, float r, float g, float b, float a) {
+    ColorAttachment att;
+    att.view = view;
+    att.clearValue.color.float32[0] = r;
+    att.clearValue.color.float32[1] = g;
+    att.clearValue.color.float32[2] = b;
+    att.clearValue.color.float32[3] = a;
+    return att;
+}
+
+Commands::ColorAttachment Commands::ColorAttachment::clearUint(VkImageView view, uint32_t r, uint32_t g, uint32_t b, uint32_t a) {
+    ColorAttachment att;
+    att.view = view;
+    att.clearValue.color.uint32[0] = r;
+    att.clearValue.color.uint32[1] = g;
+    att.clearValue.color.uint32[2] = b;
+    att.clearValue.color.uint32[3] = a;
+    return att;
+}
+
+Commands::ColorAttachment Commands::ColorAttachment::load(VkImageView view) {
+    ColorAttachment att;
+    att.view = view;
+    att.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    return att;
+}
+
+void Commands::beginRendering(std::span<const ColorAttachment> colorAttachments, VkImageView depthImage,
+                              VkExtent2D extent, float depthClear) {
+    std::vector<VkRenderingAttachmentInfo> infos;
+    infos.reserve(colorAttachments.size());
+    for (const ColorAttachment & a : colorAttachments) {
         VkRenderingAttachmentInfo att = {};
         att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        att.imageView = view;
+        att.imageView = a.view;
         att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        att.loadOp = a.loadOp;
         att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        VkClearValue clearColor = { .color = { 0.0f, 0.0f, 0.0f, 1.0f } };
-        att.clearValue = clearColor;
-        colorAttachments.push_back(att);
+        att.clearValue = a.clearValue;
+        infos.push_back(att);
     }
 
     VkRenderingAttachmentInfo depthAttachmentInfo = {};
     depthAttachmentInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     depthAttachmentInfo.imageView = depthImage;
     depthAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depthAttachmentInfo.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachmentInfo.loadOp = depthClear < 0.0f ? VK_ATTACHMENT_LOAD_OP_LOAD
+                                                   : VK_ATTACHMENT_LOAD_OP_CLEAR;
     depthAttachmentInfo.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    VkClearValue clearDepth = { .depthStencil = { 1.0f, 0 } };
-    depthAttachmentInfo.clearValue = clearDepth;
+    depthAttachmentInfo.clearValue.depthStencil = { depthClear < 0.0f ? 1.0f : depthClear, 0 };
 
     VkRenderingInfo renderingInfo = {};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.renderArea = { 0, 0, extent.width, extent.height };
+    renderingInfo.renderArea = { {0, 0}, extent };
     renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = (uint32_t)colorAttachments.size();
-    renderingInfo.pColorAttachments = colorAttachments.data();
-    renderingInfo.pDepthAttachment = &depthAttachmentInfo;
+    renderingInfo.colorAttachmentCount = (uint32_t)infos.size();
+    renderingInfo.pColorAttachments = infos.empty() ? nullptr : infos.data();
+    renderingInfo.pDepthAttachment = depthImage != VK_NULL_HANDLE ? &depthAttachmentInfo : nullptr;
 
     VkViewport vp = {};
     vp.width = (float)extent.width; vp.height = (float)extent.height;
