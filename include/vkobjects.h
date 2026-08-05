@@ -135,6 +135,7 @@ struct VulkanContextOptions {
     bool enableThrowOnValidationError;
     bool enableVerbose;
     bool enableGpuAssistedValidation;
+    bool enableSynchronizationValidation;
     bool enableImmediateDestroy;
     bool enableRayTracing;
     std::string pipelineCacheDir;
@@ -148,6 +149,16 @@ struct VulkanContextOptions {
     VulkanContextOptions & throwOnValidationError();
     VulkanContextOptions & verbose();
     VulkanContextOptions & gpuAssistedValidation(bool enable = true);
+    // Enables Vulkan-ValidationLayers' Synchronization Validation object
+    // (VK_VALIDATION_VALIDATE_SYNC=1) -- detects RAW/WAR/WAW/WRW/RRW
+    // memory-access hazards from missing or incorrectly-ordered
+    // pipeline barriers between commands in the same command buffer.
+    // Distinct from GPU-Assisted Validation above (a different
+    // validation feature covering different bug classes) -- see
+    // doc/spec-external-image-fill.md in the vui project for why this
+    // is the specific feature needed to catch a missing/misordered
+    // image barrier, which ordinary core/GPUAV validation does not.
+    VulkanContextOptions & synchronizationValidation(bool enable = true);
     VulkanContextOptions & immediateDestroy(bool v = true);
     VulkanContextOptions & pipelineCache(const std::string & dir);
 };
@@ -741,9 +752,20 @@ public:
         // Preserve existing contents (LOAD_OP_LOAD); the caller is responsible for the prior layout.
         static ColorAttachment load(VkImageView view);
     };
-    // depthClear < 0 means LOAD_OP_LOAD (preserve depth); otherwise clear to that value.
-    void beginRendering(std::span<const ColorAttachment> colorAttachments, VkImageView depthImage,
-                        VkExtent2D extent, float depthClear = 1.0f);
+    // Depth gets the same treatment as colour rather than a magic sentinel: an earlier draft used
+    // "depthClear < 0 means LOAD", which conflates a value with an operation and admits invalid
+    // states (what is a clear to -0.5?).
+    struct DepthAttachment {
+        VkImageView view = VK_NULL_HANDLE;
+        float clearValue = 1.0f;
+        VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+
+        static DepthAttachment clear(VkImageView view, float depth = 1.0f);
+        static DepthAttachment load(VkImageView view);
+        static DepthAttachment none();          // no depth attachment at all
+    };
+    void beginRendering(std::span<const ColorAttachment> colorAttachments,
+                        DepthAttachment depth, VkExtent2D extent);
     void endRendering();
     void setViewport(float x, float y, float width, float height);
     void setScissor(int32_t x, int32_t y, uint32_t width, uint32_t height);

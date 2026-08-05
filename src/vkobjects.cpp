@@ -46,6 +46,7 @@ VulkanContextOptions::VulkanContextOptions() :
     enableThrowOnValidationError(false),
     enableVerbose(false),
     enableGpuAssistedValidation(true),
+    enableSynchronizationValidation(false),
     enableImmediateDestroy(false),
     enableRayTracing(false) {}
 VulkanContextOptions & VulkanContextOptions::pipelineCache(const std::string & dir) {
@@ -86,6 +87,10 @@ VulkanContextOptions & VulkanContextOptions::verbose() {
 }
 VulkanContextOptions & VulkanContextOptions::gpuAssistedValidation(bool enable) {
     enableGpuAssistedValidation = enable;
+    return *this;
+}
+VulkanContextOptions & VulkanContextOptions::synchronizationValidation(bool enable) {
+    enableSynchronizationValidation = enable;
     return *this;
 }
 VulkanContextOptions & VulkanContextOptions::immediateDestroy(bool v) {
@@ -1124,6 +1129,19 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
         SDL_setenv_unsafe("VK_LAYER_MESSAGE_ID_FILTER", "0x7f1922d7", 1);
     } else if (options.enableValidationLayers) {
         SDL_setenv_unsafe("VK_LAYER_GPUAV_ENABLE", "0", 1);
+    }
+
+    // VK_VALIDATION_VALIDATE_SYNC is the official Vulkan-ValidationLayers
+    // environment variable for the Synchronization Validation object (see
+    // that project's own docs/syncval_usage.md) -- a DIFFERENT validation
+    // feature from GPU-Assisted Validation above, covering a different bug
+    // class (RAW/WAR/WAW/WRW/RRW memory-access hazards from missing or
+    // incorrectly-ordered pipeline barriers) that ordinary core/GPUAV
+    // validation does not catch. Opt-in (default false) since it's
+    // noticeably slower than ordinary validation -- see
+    // VulkanContextOptions::synchronizationValidation()'s own doc comment.
+    if (options.enableValidationLayers && options.enableSynchronizationValidation) {
+        SDL_setenv_unsafe("VK_VALIDATION_VALIDATE_SYNC", "1", 1);
     }
 
     createVulkanInstance(enabledLayers, foundExtensions, this->instance);

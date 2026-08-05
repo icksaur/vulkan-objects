@@ -104,7 +104,7 @@ void testUintSentinelClear() {
         Commands::ColorAttachment att =
             Commands::ColorAttachment::clearUint(img.imageView, kSentinel, 0u, 0u, 0u);
         cmd.beginRendering(std::span<const Commands::ColorAttachment>(&att, 1),
-                           VK_NULL_HANDLE, VkExtent2D{kW, kH});
+                           Commands::DepthAttachment::none(), VkExtent2D{kW, kH});
         cmd.endRendering();
         cmd.submitAndWait();
     }
@@ -133,7 +133,7 @@ void testFloatClearStillWorks() {
         Commands::ColorAttachment att =
             Commands::ColorAttachment::clearFloat(img.imageView, 1.0f, 0.0f, 0.5f, 1.0f);
         cmd.beginRendering(std::span<const Commands::ColorAttachment>(&att, 1),
-                           VK_NULL_HANDLE, VkExtent2D{kW, kH});
+                           Commands::DepthAttachment::none(), VkExtent2D{kW, kH});
         cmd.endRendering();
         cmd.submitAndWait();
     }
@@ -159,15 +159,22 @@ void testLoadOpPreserves() {
         Commands::ColorAttachment first =
             Commands::ColorAttachment::clearUint(img.imageView, kFirst, 0u, 0u, 0u);
         cmd.beginRendering(std::span<const Commands::ColorAttachment>(&first, 1),
-                           VK_NULL_HANDLE, VkExtent2D{kW, kH});
+                           Commands::DepthAttachment::none(), VkExtent2D{kW, kH});
         cmd.endRendering();
+        // Dynamic rendering provides NO implicit dependency between two rendering instances, so
+        // without this barrier the second pass could observe the first pass's writes only by luck --
+        // the preservation test would be non-deterministic rather than wrong, which is worse.
+        cmd.imageBarrier(img, Stage::ColorOutput, Access::ColorAttachmentWrite,
+                         Layout::ColorAttachment,
+                         Stage::ColorOutput, Access::ColorAttachmentRead | Access::ColorAttachmentWrite,
+                         Layout::ColorAttachment);
         // Second pass LOADS. If load-op control were broken and it cleared instead, the sentinel
         // would be replaced -- so this distinguishes LOAD from CLEAR, rather than merely observing
         // that the value is still there after doing nothing.
         Commands::ColorAttachment second = Commands::ColorAttachment::load(img.imageView);
         second.clearValue.color.uint32[0] = kSecondIfCleared;   // must be IGNORED under LOAD_OP_LOAD
         cmd.beginRendering(std::span<const Commands::ColorAttachment>(&second, 1),
-                           VK_NULL_HANDLE, VkExtent2D{kW, kH});
+                           Commands::DepthAttachment::none(), VkExtent2D{kW, kH});
         cmd.endRendering();
         cmd.submitAndWait();
     }
@@ -195,7 +202,7 @@ void testMixedTypeMrt() {
             Commands::ColorAttachment::clearUint(uintImg.imageView, 0x0000ffffu, 0u, 0u, 0u),
         };
         cmd.beginRendering(std::span<const Commands::ColorAttachment>(atts, 2),
-                           VK_NULL_HANDLE, VkExtent2D{kW, kH});
+                           Commands::DepthAttachment::none(), VkExtent2D{kW, kH});
         cmd.endRendering();
         cmd.submitAndWait();
     }

@@ -322,7 +322,7 @@ void Commands::beginRendering(std::span<const VkImageView> colorImages, VkImageV
     attachments.reserve(colorImages.size());
     for (auto view : colorImages)
         attachments.push_back(ColorAttachment::clearFloat(view, 0.0f, 0.0f, 0.0f, 1.0f));
-    beginRendering(std::span<const ColorAttachment>(attachments), depthImage, extent);
+    beginRendering(std::span<const ColorAttachment>(attachments), DepthAttachment::clear(depthImage), extent);
 }
 
 Commands::ColorAttachment Commands::ColorAttachment::clearFloat(VkImageView view, float r, float g, float b, float a) {
@@ -352,8 +352,16 @@ Commands::ColorAttachment Commands::ColorAttachment::load(VkImageView view) {
     return att;
 }
 
-void Commands::beginRendering(std::span<const ColorAttachment> colorAttachments, VkImageView depthImage,
-                              VkExtent2D extent, float depthClear) {
+Commands::DepthAttachment Commands::DepthAttachment::clear(VkImageView view, float depth) {
+    DepthAttachment d; d.view = view; d.clearValue = depth; return d;
+}
+Commands::DepthAttachment Commands::DepthAttachment::load(VkImageView view) {
+    DepthAttachment d; d.view = view; d.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; return d;
+}
+Commands::DepthAttachment Commands::DepthAttachment::none() { return DepthAttachment{}; }
+
+void Commands::beginRendering(std::span<const ColorAttachment> colorAttachments,
+                              DepthAttachment depth, VkExtent2D extent) {
     std::vector<VkRenderingAttachmentInfo> infos;
     infos.reserve(colorAttachments.size());
     for (const ColorAttachment & a : colorAttachments) {
@@ -369,12 +377,11 @@ void Commands::beginRendering(std::span<const ColorAttachment> colorAttachments,
 
     VkRenderingAttachmentInfo depthAttachmentInfo = {};
     depthAttachmentInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depthAttachmentInfo.imageView = depthImage;
+    depthAttachmentInfo.imageView = depth.view;
     depthAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depthAttachmentInfo.loadOp = depthClear < 0.0f ? VK_ATTACHMENT_LOAD_OP_LOAD
-                                                   : VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachmentInfo.loadOp = depth.loadOp;
     depthAttachmentInfo.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depthAttachmentInfo.clearValue.depthStencil = { depthClear < 0.0f ? 1.0f : depthClear, 0 };
+    depthAttachmentInfo.clearValue.depthStencil = { depth.clearValue, 0 };
 
     VkRenderingInfo renderingInfo = {};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -382,7 +389,7 @@ void Commands::beginRendering(std::span<const ColorAttachment> colorAttachments,
     renderingInfo.layerCount = 1;
     renderingInfo.colorAttachmentCount = (uint32_t)infos.size();
     renderingInfo.pColorAttachments = infos.empty() ? nullptr : infos.data();
-    renderingInfo.pDepthAttachment = depthImage != VK_NULL_HANDLE ? &depthAttachmentInfo : nullptr;
+    renderingInfo.pDepthAttachment = depth.view != VK_NULL_HANDLE ? &depthAttachmentInfo : nullptr;
 
     VkViewport vp = {};
     vp.width = (float)extent.width; vp.height = (float)extent.height;
