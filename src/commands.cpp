@@ -602,12 +602,15 @@ void Commands::end() {
         // invalid vkCmd* silently and only report at end. Discarding this result leaves the buffer
         // invalid, so the failure re-emerges as an unexplained submit error one call later.
         VkResult result = vkEndCommandBuffer(commandBuffer);
+        // Mark ended BEFORE throwing. A failed vkEndCommandBuffer still leaves the buffer in the
+        // invalid state, and throwing here unwinds into ~Commands(), which calls vkEndCommandBuffer
+        // again when !ended — a second call on an invalid buffer.
+        ended = true;
         if (result != VK_SUCCESS) {
             throw std::runtime_error(std::string("failed to end command buffer: ")
                                      + vkResultName(result)
-                                     + " (a command recorded into this buffer was invalid)");
+                                     + " (an invalid recorded command, or host/device OOM)");
         }
-        ended = true;
     }
 }
 
