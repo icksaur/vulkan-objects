@@ -673,8 +673,13 @@ bool getSurfaceFormat(VkPhysicalDevice device, VkSurfaceKHR surface, VkSurfaceFo
             return true;
         }
     }
-    outFormat = foundFormats[0];
-    return true;
+    // NO SILENT FALLBACK. This used to return foundFormats[0] when the requested format was absent,
+    // which quietly changed the surface's transfer function: picking a UNORM surface where an SRGB
+    // one was requested means the hardware stops applying the OETF, and every shader that writes
+    // linear light (expecting the OETF) renders a systematically too-dark image with no diagnostic.
+    // Consumers now encode/decode against the requested format, so it is load-bearing rather than a
+    // preference, and failing loudly is the only safe answer.
+    return false;
 }
 
 void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, VkDevice device, VkSwapchainKHR& outSwapChain) {
@@ -702,7 +707,10 @@ void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDe
 
     VkSurfaceFormatKHR imageFormat;
     if (!getSurfaceFormat(physicalDevice, surface, imageFormat)) {
-        throw std::runtime_error("failed to get surface format");
+        throw std::runtime_error(
+            "this surface does not support the required swapchain format "
+            "(VK_FORMAT_B8G8R8A8_SRGB). Rendering assumes the surface applies the sRGB OETF; "
+            "silently substituting another format would make the whole image too dark.");
     }
     context.colorFormat = imageFormat.format;
 
