@@ -21,6 +21,15 @@ void getSwapChainImageHandles(VkDevice device, VkSwapchainKHR chain, std::vector
 void makeChainImageViews(VkDevice device, VkFormat colorFormat, std::vector<VkImage> & images, std::vector<VkImageView> & imageViews);
 void destroyThreadLocalSubmitFence(VkDevice device);
 
+// A VkResult rendered as its spec name ("VK_ERROR_DEVICE_LOST"), for error messages.
+//
+// Motivation: `vkEndCommandBuffer` and the `submitAndWait` `vkQueueSubmit2`/`vkWaitForFences`
+// used to discard their VkResult entirely. A recording error therefore produced no diagnostic at
+// all, and a device loss during setup stayed silent until the NEXT checked submit threw a bare
+// "failed to submit command buffer" — pointing at innocent code, with the real failure long past.
+// Every submit-path result is now checked and named.
+const char* vkResultName(VkResult result);
+
 // Loaded function pointers (set by VulkanContext constructor)
 extern PFN_vkCmdDrawMeshTasksEXT vkCmdDrawMeshTasks;
 extern PFN_vkCmdDrawMeshTasksIndirectEXT vkCmdDrawMeshTasksIndirect;

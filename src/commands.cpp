@@ -6,6 +6,23 @@
 
 // --- Commands ---
 
+const char* vkResultName(VkResult result) {
+    switch (result) {
+        case VK_SUCCESS:                        return "VK_SUCCESS";
+        case VK_NOT_READY:                      return "VK_NOT_READY";
+        case VK_TIMEOUT:                        return "VK_TIMEOUT";
+        case VK_ERROR_OUT_OF_HOST_MEMORY:       return "VK_ERROR_OUT_OF_HOST_MEMORY";
+        case VK_ERROR_OUT_OF_DEVICE_MEMORY:     return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+        case VK_ERROR_INITIALIZATION_FAILED:    return "VK_ERROR_INITIALIZATION_FAILED";
+        case VK_ERROR_DEVICE_LOST:              return "VK_ERROR_DEVICE_LOST";
+        case VK_ERROR_MEMORY_MAP_FAILED:        return "VK_ERROR_MEMORY_MAP_FAILED";
+        case VK_ERROR_OUT_OF_POOL_MEMORY:       return "VK_ERROR_OUT_OF_POOL_MEMORY";
+        case VK_ERROR_INVALID_EXTERNAL_HANDLE:  return "VK_ERROR_INVALID_EXTERNAL_HANDLE";
+        case VK_ERROR_UNKNOWN:                  return "VK_ERROR_UNKNOWN";
+        default:                                return "VK_ERROR_<unmapped>";
+    }
+}
+
 static thread_local VkFence submitAndWaitFence = VK_NULL_HANDLE;
 static thread_local VkDevice submitAndWaitFenceDevice = VK_NULL_HANDLE;
 
@@ -544,12 +561,24 @@ void Commands::submitAndWait() {
     VkFence fence = submitAndWaitFence;
     auto tFence = now();
 
-    vkQueueSubmit2(g_context().graphicsQueue, 1, &submitInfo, fence);
+    // Checked: an UNCHECKED submit here is how a setup-phase device loss stays invisible. The next
+    // checked submit (typically the first Frame::submit) then throws, blaming the wrong code.
+    VkResult submitResult = vkQueueSubmit2(g_context().graphicsQueue, 1, &submitInfo, fence);
+    if (submitResult != VK_SUCCESS) {
+        throw std::runtime_error(std::string("failed to submit one-shot command buffer: ")
+                                 + vkResultName(submitResult));
+    }
     auto tSubmit = now();
     if (std::getenv("HULL_FENCE_SLACK_POLL") != nullptr) {
         while (vkGetFenceStatus(g_context().device, fence) == VK_NOT_READY) { /* busy spin */ }
     } else {
-        vkWaitForFences(g_context().device, 1, &fence, VK_TRUE, UINT64_MAX);
+        // vkWaitForFences reports VK_ERROR_DEVICE_LOST — this is where a GPU fault caused by the
+        // work just submitted actually becomes observable, so it is the most informative check.
+        VkResult waitResult = vkWaitForFences(g_context().device, 1, &fence, VK_TRUE, UINT64_MAX);
+        if (waitResult != VK_SUCCESS) {
+            throw std::runtime_error(std::string("one-shot command buffer failed on the GPU: ")
+                                     + vkResultName(waitResult));
+        }
     }
     auto tWait = now();
     auto tDestroy = now();
@@ -569,7 +598,15 @@ void Commands::submitAndWait() {
 
 void Commands::end() {
     if (!ended) {
-        vkEndCommandBuffer(commandBuffer);
+        // vkEndCommandBuffer is where a deferred RECORDING error surfaces: the driver may accept an
+        // invalid vkCmd* silently and only report at end. Discarding this result leaves the buffer
+        // invalid, so the failure re-emerges as an unexplained submit error one call later.
+        VkResult result = vkEndCommandBuffer(commandBuffer);
+        if (result != VK_SUCCESS) {
+            throw std::runtime_error(std::string("failed to end command buffer: ")
+                                     + vkResultName(result)
+                                     + " (a command recorded into this buffer was invalid)");
+        }
         ended = true;
     }
 }

@@ -92,8 +92,11 @@ void Frame::submit(Commands & cmd) {
     submitInfo.signalSemaphoreInfoCount = 1;
     submitInfo.pSignalSemaphoreInfos = &signalSemaphoreInfo;
 
-    if (vkQueueSubmit2(context.graphicsQueue, 1, &submitInfo, submittedBuffersFinishedFence) != VK_SUCCESS) {
-        throw std::runtime_error("failed to submit command buffer");
+    VkResult submitResult =
+        vkQueueSubmit2(context.graphicsQueue, 1, &submitInfo, submittedBuffersFinishedFence);
+    if (submitResult != VK_SUCCESS) {
+        throw std::runtime_error(std::string("failed to submit command buffer: ")
+                                 + vkResultName(submitResult));
     }
 
     // Present
