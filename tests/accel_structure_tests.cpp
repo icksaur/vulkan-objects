@@ -2,7 +2,6 @@
 #include "vkinternal.h"
 
 #include <SDL3/SDL.h>
-#include <cassert>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -14,6 +13,14 @@
 #include <unistd.h>
 
 namespace {
+
+// A test oracle that survives NDEBUG. assert() is compiled out of the Release/
+// RelWithDebInfo build these tests run in, which silently disables the check and
+// leaves its inputs set-but-unused; check() throws instead, and main() reports it.
+void check(bool ok, const char* what) {
+    if (!ok) throw std::runtime_error(std::string("check failed: ") + what);
+}
+
 
 struct TestContext {
     SDL_Window* window = nullptr;
@@ -132,10 +139,10 @@ void testOracleAndRefit() {
     }
     Tlas tlas = buildScene(blas);
     Hit hit = trace(tlas);
-    assert(hit.hit == 1);
-    assert(hit.instanceCustomIndex == 7);
-    assert(hit.primitiveIndex == 0);
-    assert(std::fabs(hit.t - 1.0f) < 0.001f);
+    check(hit.hit == 1, "trace hits the built TLAS");
+    check(hit.instanceCustomIndex == 7, "hit carries the instance custom index");
+    check(hit.primitiveIndex == 0, "hit reports the first primitive");
+    check(std::fabs(hit.t - 1.0f) < 0.001f, "hit distance is 1.0 before the vertex move");
 
     float moved[9] = {
         0.0f, 0.0f, 0.5f,
@@ -150,8 +157,8 @@ void testOracleAndRefit() {
     }
     Tlas movedTlas = buildScene(blas);
     Hit movedHit = trace(movedTlas);
-    assert(movedHit.hit == 1);
-    assert(std::fabs(movedHit.t - 0.5f) < 0.001f);
+    check(movedHit.hit == 1, "trace still hits after the refit");
+    check(std::fabs(movedHit.t - 0.5f) < 0.001f, "refit moved the surface to distance 0.5");
 }
 
 void testMoveAndRaii(bool immediateDestroy) {
@@ -175,7 +182,7 @@ void testMoveAndRaii(bool immediateDestroy) {
     ctx.context->waitIdle();
     ctx.context->flushDestroys();
     uint64_t after = allocatedBytes();
-    assert(after <= before + (1u << 20));
+    check(after <= before + (1u << 20), "move + RAII destroy leaks no acceleration-structure memory");
 }
 
 void testTlasRidFenceGate() {
@@ -198,13 +205,13 @@ void testTlasRidFenceGate() {
     {
         Tlas tlas = buildScene(blas);
         second = tlas.rid();
-        assert(tlas.rid() != first);
+        check(tlas.rid() != first, "a live second TLAS gets a distinct rid");
     }
     ctx.context->waitIdle();
     ctx.context->flushDestroys();
     {
         Tlas tlas = buildScene(blas);
-        assert(tlas.rid() == first || tlas.rid() == second);
+        check(tlas.rid() == first || tlas.rid() == second, "rid is reused only after the fence releases it");
     }
 }
 
@@ -213,12 +220,12 @@ void testInstanceTable() {
     struct Payload { uint32_t a; float b; };
     InstanceTable<Payload> table(4);
     uint32_t i = table.add({3, 4.0f});
-    assert(i == 0);
+    check(i == 0, "first InstanceTable::add returns index 0");
     table.set(0, {5, 6.0f});
     auto cmd = Commands::oneShot();
     table.upload(cmd);
     cmd.submitAndWait();
-    assert(table.rid() != kNullRid);
+    check(table.rid() != kNullRid, "an uploaded InstanceTable has a valid rid");
 }
 
 void testRingDistinctAddresses() {
@@ -231,21 +238,21 @@ void testRingDistinctAddresses() {
     ring.init(2, [&](uint32_t slot) {
         return makeTriangleBlas(*vertices[slot], *indices);
     });
-    assert(ring.size() == 2);
-    assert(vertices[0]->deviceAddress() != vertices[1]->deviceAddress());
-    assert(&ring.current() != nullptr);
+    check(ring.size() == 2, "ring reports the requested slot count");
+    check(vertices[0]->deviceAddress() != vertices[1]->deviceAddress(), "ring slots have distinct device addresses");
+    check(&ring.current() != nullptr, "ring exposes a current slot");
 }
 
 void expectRefitAssert(const char* self) {
     pid_t pid = fork();
-    assert(pid >= 0);
+    check(pid >= 0, "fork for the refit-abort child succeeds");
     if (pid == 0) {
         execl(self, self, "--refit-before-build-child", nullptr);
         _exit(127);
     }
     int status = 0;
     waitpid(pid, &status, 0);
-    assert(!WIFEXITED(status) || WEXITSTATUS(status) != 0);
+    check(!WIFEXITED(status) || WEXITSTATUS(status) != 0, "refit-before-build aborts the child process");
 }
 
 int refitBeforeBuildChild() {
