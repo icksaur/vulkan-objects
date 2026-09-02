@@ -444,6 +444,9 @@ public:
     VkDeviceAddress address() const;
     Buffer& backing();
     bool updatable() const;
+    VkGeometryFlagsKHR geometryFlags(uint32_t geometryIndex = 0) const {
+        return geometry_.at(geometryIndex).geom_.flags;
+    }
     operator VkAccelerationStructureKHR() const;
 };
 

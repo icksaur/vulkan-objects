@@ -161,6 +161,28 @@ void testOracleAndRefit() {
     check(std::fabs(movedHit.t - 0.5f) < 0.001f, "refit moved the surface to distance 0.5");
 }
 
+void testGeometryFlagsAreObservable() {
+    TestContext ctx;
+    auto vertices = makeTriangleVertices();
+    auto indices = makeTriangleIndices();
+    Blas opaque = makeTriangleBlas(*vertices, *indices);
+    check(
+        opaque.geometryFlags() == VK_GEOMETRY_OPAQUE_BIT_KHR,
+        "triangle geometry reports its default opaque flag");
+
+    BlasBuilder builder;
+    builder.addGeometry(
+        BlasGeometry(*vertices)
+            .vertexCount(3)
+            .indexBuffer(*indices)
+            .triangleCount(1)
+            .opaque(false));
+    Blas alphaTested(builder);
+    check(
+        alphaTested.geometryFlags() == 0u,
+        "triangle geometry reports a cleared opaque flag");
+}
+
 void testMoveAndRaii(bool immediateDestroy) {
     TestContext ctx(immediateDestroy);
     ctx.context->flushDestroys();
@@ -272,6 +294,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "--refit-before-build-child") return refitBeforeBuildChild();
     try {
         testOracleAndRefit();
+        testGeometryFlagsAreObservable();
         testMoveAndRaii(false);
         testMoveAndRaii(true);
         testTlasRidFenceGate();
