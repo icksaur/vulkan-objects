@@ -28,7 +28,9 @@ enum class Stage : uint64_t {
     Transfer    = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
     Compute     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
     Fragment    = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+    VertexShader = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
     MeshShader  = VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT,
+    IndexInput  = VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
     ColorOutput = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
     EarlyFragment = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
     LateFragment  = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
@@ -57,6 +59,7 @@ enum class Access : uint64_t {
     DepthStencilRead     = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
     DepthStencilWrite    = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
     IndirectCommandRead  = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
+    IndexRead            = VK_ACCESS_2_INDEX_READ_BIT,
     AccelStructureRead   = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
     AccelStructureWrite  = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
 };
@@ -317,6 +320,7 @@ struct ShaderBuilder {
     ShaderBuilder();
     ShaderBuilder& fragment();
     ShaderBuilder& compute();
+    ShaderBuilder& vertex();
     ShaderBuilder& mesh();
     ShaderBuilder& fromFile(const char * fileName);
     ShaderBuilder& fromBuffer(const uint8_t * data, size_t size);
@@ -703,6 +707,14 @@ public:
     void dispatchIndirect(VkBuffer buffer, VkDeviceSize offset = 0);
     void drawMeshTasks(uint32_t x, uint32_t y, uint32_t z);
     void drawMeshTasksIndirect(VkBuffer buffer, uint32_t drawCount, VkDeviceSize offset = 0, uint32_t stride = 12);
+    // Vertex path. There are no vertex buffer bindings: the vertex shader pulls its data from
+    // a storage buffer by RID using gl_VertexIndex.
+    void draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
+    void bindIndexBuffer(VkBuffer buffer, VkIndexType indexType = VK_INDEX_TYPE_UINT32, VkDeviceSize offset = 0);
+    void drawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t firstIndex = 0,
+                     int32_t vertexOffset = 0, uint32_t firstInstance = 0);
+    void drawIndirect(VkBuffer buffer, uint32_t drawCount, VkDeviceSize offset = 0, uint32_t stride = 16);
+    void drawIndexedIndirect(VkBuffer buffer, uint32_t drawCount, VkDeviceSize offset = 0, uint32_t stride = 20);
     void pushConstants(const void * data, uint32_t size);
     template<typename T>
     void pushConstants(const T & data) {
@@ -827,10 +839,18 @@ struct GraphicsPipelineBuilder {
     bool enableAlphaBlend;
     bool disableDepthTest;
     VkFormat depthOnlyFormat;
+    VkPrimitiveTopology primitiveTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     std::vector<VkFormat> colorAttachmentFormats;
     GraphicsPipelineBuilder();
     GraphicsPipelineBuilder & meshShader(ShaderModule & meshShaderModule, const char * entryPoint = "main");
+    // The vertex path pulls vertex data from a storage buffer by RID through gl_VertexIndex.
+    // No vertex input bindings or attribute descriptions exist, by design -- bindless makes
+    // them unnecessary and they are the complexity this library avoids. Do not add them.
+    // Mutually exclusive with meshShader(); build() throws if both are set.
+    GraphicsPipelineBuilder & vertexShader(ShaderModule & vertexShaderModule, const char * entryPoint = "main");
     GraphicsPipelineBuilder & fragmentShader(ShaderModule & fragmentShaderModule, const char *entryPoint = "main");
+    // Vertex path only; ignored by mesh pipelines, whose topology comes from the mesh shader.
+    GraphicsPipelineBuilder & topology(VkPrimitiveTopology topology);
     GraphicsPipelineBuilder & sampleCount(size_t sampleCount);
     GraphicsPipelineBuilder & depthOnly(VkFormat format = VK_FORMAT_D32_SFLOAT);
     GraphicsPipelineBuilder & colorFormats(std::vector<VkFormat> formats);

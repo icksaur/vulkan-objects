@@ -217,6 +217,64 @@ std::array colorViews = { albedo.imageView, normals.imageView };
 cmd.beginRendering(colorViews, depthImage.imageView, extent);
 ```
 
+## geometry paths
+
+A graphics pipeline has exactly one pre-rasterization stage. `GraphicsPipelineBuilder::build()`
+throws if both `vertexShader()` and `meshShader()` were supplied.
+
+### vertex pipelines
+
+The vertex path uses **programmable vertex pulling** exclusively. There are no vertex input
+bindings, no attribute descriptions, and no vertex buffer binding command. A vertex shader reads
+its data from a storage buffer addressed by RID, indexed by `gl_VertexIndex` — the same access
+pattern mesh and compute shaders already use.
+
+This is deliberate. Vertex input state exists to describe memory layout to fixed-function fetch;
+bindless already describes it in the shader. Adding vertex input descriptors would reintroduce
+per-mesh format plumbing without enabling anything the pulling path cannot express.
+
+```glsl
+layout(set=0, binding=0) buffer StorageBuffers { float data[]; } storageBuffers[];
+layout(push_constant) uniform PushConstants { uint vertexBufferRID; };
+
+void main() {
+    uint base = uint(gl_VertexIndex) * 2u;
+    gl_Position = vec4(storageBuffers[nonuniformEXT(vertexBufferRID)].data[base],
+                       storageBuffers[nonuniformEXT(vertexBufferRID)].data[base + 1u], 0.0, 1.0);
+}
+```
+
+```cpp
+Pipeline pipeline = GraphicsPipelineBuilder()
+    .vertexShader(vertShader)
+    .fragmentShader(fragShader)
+    .topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)   // optional; triangle list is the default
+    .build();
+
+cmd.bindGraphics(pipeline);
+cmd.pushConstants(&push, sizeof(push));
+cmd.draw(vertexCount);
+// or, to keep index reuse:
+cmd.bindIndexBuffer(indexBuffer);
+cmd.drawIndexed(indexCount);
+```
+
+Because the bindless set declares writable storage buffers to every stage, the device enables
+`vertexPipelineStoresAndAtomics`. Without it, a vertex shader merely *reading* the bindless
+declaration is invalid, even though the identical declaration is fine in every other stage.
+
+### when to use mesh shaders instead
+
+Mesh shaders pay off when a task/mesh stage removes work — meshlet culling, LOD selection,
+compaction — or when geometry is generated procedurally on the GPU. They do not pay off as a
+drop-in substitute for an equivalent vertex draw: meshlets duplicate boundary vertices, there is
+no post-transform vertex cache, and a small meshlet cannot amortize its workgroup launch cost.
+Depth and shadow passes with little meshlet rejection are the worst conversions.
+
+They also constrain portability. `VK_EXT_mesh_shader` is absent on pre-Turing NVIDIA, pre-RDNA2
+AMD, pre-Xe Intel, MoltenVK, and most mobile drivers, and must be opted into with
+`VulkanContextOptions::meshShaders()`. The vertex path has no such requirement.
+
 ## synchronization model
 
 ### frame lifecycle
@@ -315,12 +373,12 @@ SPIR-V binaries are self-describing. The library parses SPIR-V at shader load ti
 
 The SPIR-V module contains all of the following, extractable by walking the instruction stream:
 
-- **Entry point** — name and execution model (Fragment, GLCompute, MeshEXT)
+- **Entry point** — name and execution model (Vertex, Fragment, GLCompute, MeshEXT)
 - **Push constant block** — total size, member offsets and types
 - **Descriptor set/binding usage** — which (set, binding) pairs the shader references
 - **Compute local_size** — workgroup dimensions (local_size_x/y/z)
 - **Mesh shader output geometry** — max_vertices, max_primitives, output primitive topology (triangles/lines/points)
-- **Input/output locations** — location numbers for inter-stage variables (mesh→fragment)
+- **Input/output locations** — location numbers for inter-stage variables (vertex/mesh→fragment)
 
 ### compile-time correctness checks
 
@@ -328,7 +386,11 @@ The pipeline builder validates shader metadata at `build()` time. These are prog
 
 **Push constant consistency** — All stages in a pipeline must declare the same push constant block size. A mismatch (e.g., fragment shader declares 76 bytes, mesh shader declares 80 bytes) means one shader is using a stale or wrong struct. The builder throws with both sizes printed.
 
-**Inter-stage location matching** — The mesh shader's output locations must be a superset of the fragment shader's input locations. A fragment shader reading `location=1` that the mesh shader never writes is a silent black-screen bug. The builder throws listing the unmatched locations.
+**Inter-stage location matching** — The pre-rasterization stage's output locations (vertex or mesh) must be a superset of the fragment shader's input locations. A fragment shader reading `location=1` that the prior stage never writes is a silent black-screen bug. The builder throws listing the unmatched locations.
+
+**Vertex attribute inputs** — A vertex shader declaring input locations is rejected. The library supplies no vertex input state, so those attributes would read undefined data with no Vulkan validation error. The error names vertex pulling as the alternative.
+
+**One pre-rasterization stage** — Supplying both a vertex and a mesh shader to one builder throws. A graphics pipeline has exactly one pre-rasterization stage.
 
 **Descriptor set compatibility** — Every shader should only reference set=0 (the bindless set). Any reference to set≥1 is a mistake in a bindless architecture. The builder throws identifying the unexpected set.
 

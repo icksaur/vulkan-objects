@@ -5,6 +5,79 @@ Each recipe shows the minimal code to get a technique working correctly.
 
 ---
 
+## Drawing with a vertex shader (vertex pulling)
+
+The vertex path needs no vertex input bindings or attribute descriptions. The shader reads
+positions from a storage buffer by RID, indexed by `gl_VertexIndex`.
+
+**Shader** (`pull.vert`):
+
+```glsl
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(set=0, binding=0) buffer StorageBuffers { float data[]; } storageBuffers[];
+layout(push_constant) uniform PushConstants {
+    mat4 viewProjection;
+    uint vertexBufferRID;
+};
+layout(location = 0) out vec3 outNormal;
+
+void main() {
+    uint base = uint(gl_VertexIndex) * 6u;   // vec3 position + vec3 normal
+    vec3 p = vec3(storageBuffers[nonuniformEXT(vertexBufferRID)].data[base + 0u],
+                  storageBuffers[nonuniformEXT(vertexBufferRID)].data[base + 1u],
+                  storageBuffers[nonuniformEXT(vertexBufferRID)].data[base + 2u]);
+    outNormal = vec3(storageBuffers[nonuniformEXT(vertexBufferRID)].data[base + 3u],
+                     storageBuffers[nonuniformEXT(vertexBufferRID)].data[base + 4u],
+                     storageBuffers[nonuniformEXT(vertexBufferRID)].data[base + 5u]);
+    gl_Position = viewProjection * vec4(p, 1.0);
+}
+```
+
+**Setup:**
+
+```cpp
+ShaderModule vertShader(ShaderBuilder().vertex().fromFile("pull.vert.spv"));
+ShaderModule fragShader(ShaderBuilder().fragment().fromFile("shade.frag.spv"));
+
+Pipeline pipeline = GraphicsPipelineBuilder()
+    .vertexShader(vertShader)
+    .fragmentShader(fragShader)
+    .build();
+
+Buffer vertices(BufferBuilder(vertexBytes).storage());
+```
+
+**Per frame:**
+
+```cpp
+cmd.beginRendering(depthImage.imageView);
+cmd.bindGraphics(pipeline);
+push.vertexBufferRID = vertices.rid();
+cmd.pushConstants(push);
+cmd.draw(vertexCount);
+cmd.endRendering();
+```
+
+To keep vertex reuse on a shared, high-poly mesh, bind an index buffer and use `drawIndexed`.
+The index buffer is fixed-function; only the attribute data is pulled.
+
+```cpp
+Buffer indices(BufferBuilder(indexBytes).index());
+// ...
+cmd.bindIndexBuffer(indices);
+cmd.drawIndexed(indexCount);
+```
+
+A compute shader that writes geometry barriers into the vertex stage rather than the mesh stage:
+
+```cpp
+cmd.bufferBarrier(vertices, Stage::Compute, Stage::VertexShader);
+```
+
+---
+
 ## Compute shader writing geometry
 
 A compute shader generates vertex data into a storage buffer.

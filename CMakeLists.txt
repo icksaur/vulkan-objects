@@ -144,7 +144,27 @@ add_custom_command(
     DEPENDS ${TEST_SHADER_DIR}/as_oracle.comp
     COMMENT "Compiling test shader as_oracle.comp"
 )
-add_custom_target(test-shaders DEPENDS ${TEST_SPIRV})
+
+# stage name -> glslc -fshader-stage argument, for test shaders whose extension glslc
+# cannot infer or whose stage must be forced.
+set(TEST_STAGED_SHADERS pull.vert:vert pull.frag:frag attributes.vert:vert)
+set(TEST_STAGED_SPIRV)
+foreach(ENTRY ${TEST_STAGED_SHADERS})
+    string(REPLACE ":" ";" PARTS ${ENTRY})
+    list(GET PARTS 0 SHADER)
+    list(GET PARTS 1 STAGE)
+    set(OUT ${CMAKE_CURRENT_BINARY_DIR}/tests/shaders/${SHADER}.spv)
+    add_custom_command(
+        OUTPUT ${OUT}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tests/shaders
+        COMMAND ${GLSLC} --target-env=vulkan1.2 -fshader-stage=${STAGE} ${TEST_SHADER_DIR}/${SHADER} -o ${OUT}
+        DEPENDS ${TEST_SHADER_DIR}/${SHADER}
+        COMMENT "Compiling test shader ${SHADER}"
+    )
+    list(APPEND TEST_STAGED_SPIRV ${OUT})
+endforeach()
+
+add_custom_target(test-shaders DEPENDS ${TEST_SPIRV} ${TEST_STAGED_SPIRV})
 
 add_executable(vkobjects-accel-structure-tests tests/accel_structure_tests.cpp)
 target_include_directories(vkobjects-accel-structure-tests PRIVATE src)
@@ -157,4 +177,11 @@ add_executable(vkobjects-clear-value-tests tests/clear_value_tests.cpp)
 target_include_directories(vkobjects-clear-value-tests PRIVATE src)
 target_link_libraries(vkobjects-clear-value-tests PRIVATE vkobjects)
 add_test(NAME vkobjects-clear-value-tests COMMAND vkobjects-clear-value-tests
+         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_executable(vkobjects-vertex-pipeline-tests tests/vertex_pipeline_tests.cpp)
+target_include_directories(vkobjects-vertex-pipeline-tests PRIVATE src)
+target_link_libraries(vkobjects-vertex-pipeline-tests PRIVATE vkobjects)
+add_dependencies(vkobjects-vertex-pipeline-tests test-shaders)
+add_test(NAME vkobjects-vertex-pipeline-tests COMMAND vkobjects-vertex-pipeline-tests
          WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})

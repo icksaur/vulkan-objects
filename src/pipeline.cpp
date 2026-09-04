@@ -17,6 +17,20 @@ GraphicsPipelineBuilder & GraphicsPipelineBuilder::meshShader(ShaderModule & mes
     shaderModules.push_back(&meshShaderModule);
     return *this;
 }
+GraphicsPipelineBuilder & GraphicsPipelineBuilder::vertexShader(ShaderModule & vertexShaderModule, const char * entryPoint) {
+    if (vertexShaderModule.reflection.executionModel != VK_SHADER_STAGE_VERTEX_BIT) {
+        throw std::runtime_error("pipeline build error: shader '" + vertexShaderModule.fileName +
+            "' is not a vertex shader (wrong execution model)");
+    }
+    VkPipelineShaderStageCreateInfo stageInfo = {};
+    stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stageInfo.module = vertexShaderModule.module;
+    stageInfo.pName = entryPoint;
+    shaderStages.push_back(stageInfo);
+    shaderModules.push_back(&vertexShaderModule);
+    return *this;
+}
 GraphicsPipelineBuilder & GraphicsPipelineBuilder::fragmentShader(ShaderModule & fragmentShaderModule, const char *entryPoint) {
     if (fragmentShaderModule.reflection.executionModel != VK_SHADER_STAGE_FRAGMENT_BIT) {
         throw std::runtime_error("pipeline build error: shader '" + fragmentShaderModule.fileName +
@@ -31,6 +45,11 @@ GraphicsPipelineBuilder & GraphicsPipelineBuilder::fragmentShader(ShaderModule &
     shaderModules.push_back(&fragmentShaderModule);
     return *this;
 }
+GraphicsPipelineBuilder & GraphicsPipelineBuilder::topology(VkPrimitiveTopology topology) {
+    primitiveTopology = topology;
+    return *this;
+}
+
 GraphicsPipelineBuilder & GraphicsPipelineBuilder::sampleCount(size_t sampleCount) {
     if (sampleCount > g_context().maxSamples) {
         throw std::runtime_error("requested sample count exceeds maximum supported by device");
@@ -126,31 +145,57 @@ Pipeline GraphicsPipelineBuilder::build() {
         }
     }
 
-    // inter-stage location matching: fragment inputs must be subset of mesh outputs
+    // inter-stage location matching: fragment inputs must be a subset of the
+    // pre-rasterization stage's outputs. Vertex and mesh differ only in which stage that is.
     ShaderModule * meshSM = nullptr;
+    ShaderModule * vertexSM = nullptr;
     ShaderModule * fragSM = nullptr;
     for (auto * sm : shaderModules) {
         if (sm->reflection.executionModel == VK_SHADER_STAGE_MESH_BIT_EXT) meshSM = sm;
+        if (sm->reflection.executionModel == VK_SHADER_STAGE_VERTEX_BIT) vertexSM = sm;
         if (sm->reflection.executionModel == VK_SHADER_STAGE_FRAGMENT_BIT) fragSM = sm;
     }
-    if (meshSM && fragSM) {
+
+    if (meshSM && vertexSM) {
+        throw std::runtime_error("pipeline build error: both a mesh shader ('" + meshSM->fileName +
+            "') and a vertex shader ('" + vertexSM->fileName +
+            "') were supplied; a graphics pipeline has exactly one pre-rasterization stage");
+    }
+
+    // No vertex input state is ever supplied, so a vertex shader declaring attribute inputs
+    // would read undefined data with no validation error. Reject it at build time.
+    if (vertexSM && !vertexSM->reflection.inputLocations.empty()) {
+        std::string locs = "{";
+        for (uint32_t l : vertexSM->reflection.inputLocations) {
+            if (locs.size() > 1) locs += ", ";
+            locs += std::to_string(l);
+        }
+        locs += "}";
+        throw std::runtime_error("pipeline build error: vertex shader '" + vertexSM->fileName +
+            "' declares input locations " + locs + "\n"
+            "  this library has no vertex input bindings; pull vertex data from a storage buffer\n"
+            "  indexed by gl_VertexIndex and a RID push constant instead");
+    }
+
+    ShaderModule * preRasterSM = meshSM ? meshSM : vertexSM;
+    if (preRasterSM && fragSM) {
         for (uint32_t loc : fragSM->reflection.inputLocations) {
-            if (!meshSM->reflection.outputLocations.count(loc)) {
+            if (!preRasterSM->reflection.outputLocations.count(loc)) {
                 std::string outputs = "{";
-                for (uint32_t o : meshSM->reflection.outputLocations) {
+                for (uint32_t o : preRasterSM->reflection.outputLocations) {
                     if (outputs.size() > 1) outputs += ", ";
                     outputs += std::to_string(o);
                 }
                 outputs += "}";
                 throw std::runtime_error("pipeline build error: unmatched fragment input location\n"
                     "  " + fragSM->fileName + " reads location " + std::to_string(loc) + "\n"
-                    "  " + meshSM->fileName + " outputs: " + outputs);
+                    "  " + preRasterSM->fileName + " outputs: " + outputs);
             }
         }
     }
 
     // depth-only: skip location validation when no fragment shader
-    // (mesh shader outputs are unused by rasterizer for depth-only)
+    // (pre-rasterization outputs are unused by the rasterizer for depth-only)
 
 #ifndef NDEBUG
     if (g_context().options.enableVerbose) {
@@ -253,12 +298,23 @@ Pipeline GraphicsPipelineBuilder::build() {
     renderingInfo.depthAttachmentFormat = isDepthOnly ? depthOnlyFormat : (noColorAttachments && disableDepthTest ? VK_FORMAT_UNDEFINED : depthFormat);
     renderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 
+    // Supplied only for the vertex path. Mesh pipelines must leave both null: a mesh shader
+    // assembles its own primitives, and VkGraphicsPipelineCreateInfo ignores these when a
+    // mesh stage is present.
+    VkPipelineVertexInputStateCreateInfo vertexInput = {};
+    vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = primitiveTopology;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
     VkGraphicsPipelineCreateInfo pipelineCreateInfo = {};
     pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipelineCreateInfo.stageCount = shaderStages.size();
     pipelineCreateInfo.pStages = shaderStages.data();
-    pipelineCreateInfo.pVertexInputState = nullptr;
-    pipelineCreateInfo.pInputAssemblyState = nullptr;
+    pipelineCreateInfo.pVertexInputState = vertexSM ? &vertexInput : nullptr;
+    pipelineCreateInfo.pInputAssemblyState = vertexSM ? &inputAssembly : nullptr;
     pipelineCreateInfo.pViewportState = &viewportState;
     pipelineCreateInfo.pRasterizationState = &rasterizer;
     pipelineCreateInfo.pMultisampleState = &multisampling;

@@ -89,6 +89,22 @@ void Commands::drawMeshTasks(uint32_t x, uint32_t y, uint32_t z) {
 void Commands::drawMeshTasksIndirect(VkBuffer buffer, uint32_t drawCount, VkDeviceSize offset, uint32_t stride) {
     vkCmdDrawMeshTasksIndirect(commandBuffer, buffer, offset, drawCount, stride);
 }
+void Commands::draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance) {
+    vkCmdDraw(commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
+}
+void Commands::bindIndexBuffer(VkBuffer buffer, VkIndexType indexType, VkDeviceSize offset) {
+    vkCmdBindIndexBuffer(commandBuffer, buffer, offset, indexType);
+}
+void Commands::drawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex,
+                           int32_t vertexOffset, uint32_t firstInstance) {
+    vkCmdDrawIndexed(commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+}
+void Commands::drawIndirect(VkBuffer buffer, uint32_t drawCount, VkDeviceSize offset, uint32_t stride) {
+    vkCmdDrawIndirect(commandBuffer, buffer, offset, drawCount, stride);
+}
+void Commands::drawIndexedIndirect(VkBuffer buffer, uint32_t drawCount, VkDeviceSize offset, uint32_t stride) {
+    vkCmdDrawIndexedIndirect(commandBuffer, buffer, offset, drawCount, stride);
+}
 void Commands::pushConstants(const void * data, uint32_t size) {
     vkCmdPushConstants(commandBuffer, g_context().bindlessTable.pipelineLayout, VK_SHADER_STAGE_ALL, 0, size, data);
 }
@@ -462,6 +478,7 @@ static Access inferDstAccess(Stage s) {
     if (v & static_cast<uint64_t>(Stage::Transfer)) return Access::TransferRead;
     if (v & static_cast<uint64_t>(Stage::Host)) return Access::HostRead;
     if (v & static_cast<uint64_t>(Stage::DrawIndirect)) return Access::IndirectCommandRead;
+    if (v & static_cast<uint64_t>(Stage::IndexInput)) return Access::IndexRead;
     return Access::ShaderRead;
 }
 

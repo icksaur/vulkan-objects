@@ -548,6 +548,10 @@ VkDevice createLogicalDevice(VulkanContextOptions & options, VkPhysicalDevice& p
     deviceFeatures2.features.shaderInt64 = VK_TRUE;
     deviceFeatures2.features.shaderFloat64 = VK_TRUE;
     deviceFeatures2.features.fragmentStoresAndAtomics = VK_TRUE;
+    // The bindless set declares writable storage buffers to every stage. Without this, a vertex
+    // shader merely READING that declaration is invalid (VUID-RuntimeSpirv-NonWritable-06341),
+    // even though the identical declaration is fine in mesh, compute, and fragment stages.
+    deviceFeatures2.features.vertexPipelineStoresAndAtomics = VK_TRUE;
     deviceFeatures2.pNext = previousInChain;
     if (options.shaderSampleRateShading > 0.0f) {
         deviceFeatures2.features.sampleRateShading = VK_TRUE;

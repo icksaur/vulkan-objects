@@ -6,6 +6,7 @@
 ShaderBuilder::ShaderBuilder() : stage(VK_SHADER_STAGE_FRAGMENT_BIT) {}
 ShaderBuilder& ShaderBuilder::fragment() { stage = VK_SHADER_STAGE_FRAGMENT_BIT; return *this; }
 ShaderBuilder& ShaderBuilder::compute() { stage = VK_SHADER_STAGE_COMPUTE_BIT; return *this; }
+ShaderBuilder& ShaderBuilder::vertex() { stage = VK_SHADER_STAGE_VERTEX_BIT; return *this; }
 ShaderBuilder& ShaderBuilder::mesh() { stage = VK_SHADER_STAGE_MESH_BIT_EXT; return *this; }
 
 ShaderBuilder& ShaderBuilder::fromFile(const char * name) {
@@ -47,6 +48,7 @@ static uint32_t spirvTypeSize(uint32_t typeId,
 
 static VkShaderStageFlagBits executionModelToStage(uint32_t model) {
     switch (model) {
+        case 0:    return VK_SHADER_STAGE_VERTEX_BIT;
         case 4:    return VK_SHADER_STAGE_FRAGMENT_BIT;
         case 5:    return VK_SHADER_STAGE_COMPUTE_BIT;
         case 5267: return VK_SHADER_STAGE_TASK_BIT_EXT;  // TaskNV

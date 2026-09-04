@@ -7,7 +7,8 @@ Vulkan wrapper library for C++. Automatic lifetime management, bindless descript
 - Bindless descriptors — single global descriptor set, resources get an ID on construction
 - RAII for all GPU resources — buffers, images, pipelines, command buffers
 - Deferred destruction — resources are freed only after the GPU is done with them
-- Mesh shader support (VK_EXT_mesh_shader)
+- Vertex shader pipelines with programmable vertex pulling — no vertex input or attribute descriptions
+- Mesh shader support (VK_EXT_mesh_shader), optional
 - Dynamic rendering (no render passes)
 - Synchronization2 barriers with typed `Stage`, `Access`, `Layout` enums
 - SPIR-V introspection — shaders are validated at pipeline build time (push constant consistency, inter-stage location matching, descriptor set/binding checks)
@@ -99,6 +100,36 @@ layout(push_constant) uniform PushConstants {
 | `Barrier` | Synchronization2 barrier builder (`.from()`, `.to()`, `.record()`) |
 | `ShaderModule` | SPIR-V shader with reflection data (push constant size, locations, bindings) |
 | `GraphicsPipelineBuilder` | Builds a graphics pipeline with shader validation |
+
+## Choosing a geometry path
+
+A graphics pipeline has exactly one pre-rasterization stage: vertex or mesh.
+
+**Vertex is the default.** It runs everywhere, keeps indexed vertex reuse, and the application
+just draws — no meshlet splitting, no output limits. Because the library is bindless, a vertex
+pipeline needs no vertex input bindings or attribute descriptions: the shader pulls its data
+from a storage buffer by RID using `gl_VertexIndex`.
+
+```cpp
+ShaderModule vertShader(ShaderBuilder().vertex().fromFile("pull.vert.spv"));
+Pipeline pipeline = GraphicsPipelineBuilder()
+    .vertexShader(vertShader)
+    .fragmentShader(fragShader)
+    .build();
+
+cmd.bindGraphics(pipeline);
+cmd.pushConstants(&push, sizeof(push));
+cmd.draw(vertexCount);
+```
+
+**Reach for mesh shaders** when the geometry is generated on the GPU, or when a task/mesh stage
+removes work through meshlet culling, LOD selection, or compaction. Substituting a mesh shader
+for an equivalent vertex draw generally gains nothing and can cost: meshlets duplicate boundary
+vertices, there is no post-transform vertex cache, and each workgroup pays a launch cost that a
+small meshlet cannot amortize. Depth and shadow passes with little meshlet rejection are the
+worst conversions. Mesh shaders also require `VK_EXT_mesh_shader` — absent on pre-Turing NVIDIA,
+pre-RDNA2 AMD, pre-Xe Intel, MoltenVK, and most mobile drivers — and must be opted into with
+`VulkanContextOptions::meshShaders()`.
 
 ## Project Structure
 
