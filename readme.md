@@ -31,7 +31,7 @@ make run        # build and run
 
 ## Usage
 
-From [demo/main.cpp](demo/main.cpp):
+From [demo/vert_main.cpp](demo/vert_main.cpp):
 
 ```cpp
 #include "vkobjects.h"
@@ -131,12 +131,25 @@ worst conversions. Mesh shaders also require `VK_EXT_mesh_shader` — absent on 
 pre-RDNA2 AMD, pre-Xe Intel, MoltenVK, and most mobile drivers — and must be opted into with
 `VulkanContextOptions::meshShaders()`.
 
+## Demos
+
+Two binaries render the same scene — rotating cubes, a compute pass that generates the geometry,
+a shadow map, and a ray-queried shadow alternative — by different geometry paths:
+
+- `mesh_demo` (`demo/mesh_main.cpp`) — mesh shader path. Requires `VK_EXT_mesh_shader`.
+- `vert_demo` (`demo/vert_main.cpp`) — vertex pulling path. Builds its context *without*
+  `meshShaders()`, so it runs on hardware where `mesh_demo` cannot.
+
+The two differ only in shader stage, pipeline builder call, and draw command; everything else —
+fragment shaders, compute pass, barriers, acceleration structures — is shared verbatim.
+`make run` builds and runs `mesh_demo`, `make run-vert` runs `vert_demo`.
+
 ## Project Structure
 
 ```
 include/        # public header (vkobjects.h)
 src/            # library implementation (static library)
-demo/           # demo application
+demo/           # demo applications (mesh_main.cpp, vert_main.cpp)
 demo/shaders/   # GLSL shaders (compiled to .spv by CMake)
 doc/            # spec.md, bindless.md, backlog.md
 plan.md         # active implementation plan

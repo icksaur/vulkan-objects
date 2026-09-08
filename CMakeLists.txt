@@ -60,19 +60,20 @@ target_link_libraries(vkobjects PUBLIC
 )
 
 # ---------------------------------------------------------------------------
-# vulkan-demo — demo executable
+# mesh_demo / vert_demo — same scene, two geometry paths
 # ---------------------------------------------------------------------------
-set(DEMO_SOURCES
-    demo/main.cpp
+set(DEMO_COMMON_SOURCES
     demo/camera.cpp
     demo/tga.cpp
 )
 
-add_executable(vulkan-demo ${DEMO_SOURCES})
+add_executable(mesh_demo demo/mesh_main.cpp ${DEMO_COMMON_SOURCES})
+add_executable(vert_demo demo/vert_main.cpp ${DEMO_COMMON_SOURCES})
 
-target_include_directories(vulkan-demo PRIVATE demo)
-
-target_link_libraries(vulkan-demo PRIVATE vkobjects)
+foreach(DEMO_TARGET mesh_demo vert_demo)
+    target_include_directories(${DEMO_TARGET} PRIVATE demo)
+    target_link_libraries(${DEMO_TARGET} PRIVATE vkobjects)
+endforeach()
 
 # ---------------------------------------------------------------------------
 # Shader compilation — SPV output next to source
@@ -84,6 +85,7 @@ set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/demo/shaders)
 set(FRAGMENT_SHADERS shadow.frag blit.frag)
 set(COMPUTE_SHADERS cubes.comp)
 set(MESH_SHADERS cube.mesh shadow.mesh fullscreen.mesh)
+set(VERTEX_SHADERS cubes.vert shadow.vert fullscreen.vert)
 
 # Compile fragment shaders
 foreach(SHADER ${FRAGMENT_SHADERS})
@@ -124,11 +126,25 @@ foreach(SHADER ${MESH_SHADERS})
     list(APPEND SPIRV_BINARIES ${SHADER_OUTPUT})
 endforeach()
 
+# Compile vertex shaders
+foreach(SHADER ${VERTEX_SHADERS})
+    set(SHADER_SOURCE ${SHADER_DIR}/${SHADER})
+    set(SHADER_OUTPUT ${SHADER_DIR}/${SHADER}.spv)
+    add_custom_command(
+        OUTPUT ${SHADER_OUTPUT}
+        COMMAND ${GLSLC} --target-env=vulkan1.2 -fshader-stage=vertex ${SHADER_SOURCE} -o ${SHADER_OUTPUT}
+        DEPENDS ${SHADER_SOURCE}
+        COMMENT "Compiling vertex shader ${SHADER}"
+    )
+    list(APPEND SPIRV_BINARIES ${SHADER_OUTPUT})
+endforeach()
+
 # Add custom target for shaders
 add_custom_target(shaders ALL DEPENDS ${SPIRV_BINARIES})
 
-# Make the demo depend on shaders
-add_dependencies(vulkan-demo shaders)
+# Make the demos depend on shaders
+add_dependencies(mesh_demo shaders)
+add_dependencies(vert_demo shaders)
 
 # ---------------------------------------------------------------------------
 # Tests
