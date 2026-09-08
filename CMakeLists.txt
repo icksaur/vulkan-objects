@@ -201,3 +201,22 @@ target_link_libraries(vkobjects-vertex-pipeline-tests PRIVATE vkobjects)
 add_dependencies(vkobjects-vertex-pipeline-tests test-shaders)
 add_test(NAME vkobjects-vertex-pipeline-tests COMMAND vkobjects-vertex-pipeline-tests
          WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+# ---------------------------------------------------------------------------
+# Geometry path benchmark — measurement only, deliberately not an add_test
+# ---------------------------------------------------------------------------
+# Its shader lands in the source tree next to the demo shaders it is measured against,
+# because the benchmark runs from the source directory to reach demo/shaders/*.spv.
+set(BENCH_SPIRV ${TEST_SHADER_DIR}/bench.frag.spv)
+add_custom_command(
+    OUTPUT ${BENCH_SPIRV}
+    COMMAND ${GLSLC} --target-env=vulkan1.2 -fshader-stage=frag ${TEST_SHADER_DIR}/bench.frag -o ${BENCH_SPIRV}
+    DEPENDS ${TEST_SHADER_DIR}/bench.frag
+    COMMENT "Compiling bench shader bench.frag"
+)
+add_custom_target(bench-shaders DEPENDS ${BENCH_SPIRV})
+
+add_executable(geometry-path-bench tests/geometry_path_bench.cpp demo/camera.cpp)
+target_include_directories(geometry-path-bench PRIVATE src demo)
+target_link_libraries(geometry-path-bench PRIVATE vkobjects)
+add_dependencies(geometry-path-bench bench-shaders shaders)
