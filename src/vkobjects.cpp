@@ -639,6 +639,11 @@ VkExtent2D chooseSwapExtent(VkExtent2D requestedSize, const VkSurfaceCapabilitie
     return size;
 }
 
+bool needsSwapchainRebuild(VkExtent2D windowPixelSize, VkExtent2D swapchainRequestedSize) {
+    return windowPixelSize.width != swapchainRequestedSize.width ||
+           windowPixelSize.height != swapchainRequestedSize.height;
+}
+
 bool getImageUsage(const VkSurfaceCapabilitiesKHR& capabilities, VkImageUsageFlags& foundUsages) {
     foundUsages = desiredImageUsage;
     VkImageUsageFlags image_usage = desiredImageUsage & capabilities.supportedUsageFlags;
@@ -700,8 +705,12 @@ void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDe
     }
 
     uint32_t swapImageCount = getNumberOfSwapImages(surfaceCapabilities);
-    VkExtent2D swap_image_extent = chooseSwapExtent(
-        { (uint32_t)context.windowWidth, (uint32_t)context.windowHeight }, surfaceCapabilities);
+    VkExtent2D requestedExtent = { (uint32_t)context.windowWidth, (uint32_t)context.windowHeight };
+    VkExtent2D swap_image_extent = chooseSwapExtent(requestedExtent, surfaceCapabilities);
+    // The requested (pre-clamp) size is what Frame must compare the window's pixel size against --
+    // see needsSwapchainRebuild()'s doc comment for why the clamped extent below cannot serve that
+    // purpose.
+    context.swapchainRequestedSize = requestedExtent;
     // The chosen extent (post-clamp) is the single source of truth for "the swapchain's current
     // size" -- callers elsewhere (viewport/scissor, offscreen targets sized from windowWidth/Height)
     // must see the extent the swapchain was actually created with, not merely what was requested.

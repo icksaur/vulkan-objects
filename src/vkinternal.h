@@ -22,6 +22,12 @@ void recordCopyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buffer, VkI
 // platforms dictate currentExtent exactly and requestedSize is ignored. Pure and free of SDL/Vulkan
 // device state so it can be unit-tested against synthetic capabilities.
 VkExtent2D chooseSwapExtent(VkExtent2D requestedSize, const VkSurfaceCapabilitiesKHR & capabilities);
+// Whether the window's pixel size has moved away from the size the current swapchain was
+// requested at. Compared against the requested size rather than the swapchain's actual (possibly
+// clamped) extent -- a window pixel size outside the surface's [min, max] image extent clamps to a
+// different extent every time chooseSwapExtent runs, so comparing against the clamped extent would
+// never converge and rebuild the swapchain every single frame.
+bool needsSwapchainRebuild(VkExtent2D windowPixelSize, VkExtent2D swapchainRequestedSize);
 void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, VkDevice device, VkSwapchainKHR& outSwapChain);
 void getSwapChainImageHandles(VkDevice device, VkSwapchainKHR chain, std::vector<VkImage>& outImageHandles);
 void makeChainImageViews(VkDevice device, VkFormat colorFormat, std::vector<VkImage> & images, std::vector<VkImageView> & imageViews);

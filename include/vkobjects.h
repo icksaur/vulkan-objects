@@ -245,6 +245,13 @@ class VulkanContext {
     std::function<void(Commands &, VkExtent2D)> resizeCallback;
     std::vector<VkCommandBuffer> frameCommandBuffers;
 
+    // The pixel size the current swapchain was requested at (set by createSwapChain, before
+    // chooseSwapExtent's clamp). Frame compares the window's live pixel size against this, not
+    // against windowWidth/windowHeight, which hold the swapchain's actual (possibly clamped)
+    // extent and would otherwise never match a window size outside the surface's image extent
+    // limits.
+    VkExtent2D swapchainRequestedSize;
+
     // Rebuilds the swapchain (and dependent images, via resizeCallback) at the window's current
     // pixel size. A no-op while isMinimized() -- there is no valid extent to create a swapchain
     // with, so the stale swapchain is left in place until the window is restored. Called both when

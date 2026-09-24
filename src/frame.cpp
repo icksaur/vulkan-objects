@@ -33,10 +33,11 @@ Frame::Frame() :
 
     // Wayland (and other platforms) do not reliably report a resize through
     // VK_ERROR_OUT_OF_DATE_KHR/VK_SUBOPTIMAL_KHR at all, so the window's pixel size is compared
-    // against the swapchain's current extent every frame rather than relying on those results.
+    // against the size the swapchain was requested at every frame rather than relying on those
+    // results.
     int pixelWidth, pixelHeight;
     SDL_GetWindowSizeInPixels(context.window, &pixelWidth, &pixelHeight);
-    if ((size_t)pixelWidth != context.windowWidth || (size_t)pixelHeight != context.windowHeight) {
+    if (needsSwapchainRebuild({ (uint32_t)pixelWidth, (uint32_t)pixelHeight }, context.swapchainRequestedSize)) {
         context.recreateSwapchain();
     }
 

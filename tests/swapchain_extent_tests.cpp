@@ -73,6 +73,45 @@ void testZeroRequestedSizeClampsToMinimum() {
     check(equal(chosen, {1, 1}), "a zero requested size is clamped up to minImageExtent, never zero");
 }
 
+void testMatchingPixelSizeNeedsNoRebuild() {
+    check(!needsSwapchainRebuild({1280, 720}, {1280, 720}),
+        "a window pixel size equal to the requested size needs no rebuild");
+}
+
+void testChangedPixelSizeNeedsRebuild() {
+    check(needsSwapchainRebuild({1920, 1080}, {1280, 720}),
+        "a window pixel size different from the requested size needs a rebuild");
+}
+
+void testPixelSizeAboveMaxImageExtentNeedsNoRebuildAfterFirst() {
+    // Regression test: a window pixel size outside the surface's [min, max] image extent (e.g. a
+    // fullscreen surface larger than maxImageExtent) makes chooseSwapExtent's OUTPUT differ from
+    // the window's pixel size on every single call, forever. Comparing Frame's live pixel size
+    // against that clamped extent (windowWidth/windowHeight) would therefore never converge and
+    // rebuild the swapchain every frame. Comparing against swapchainRequestedSize -- the input to
+    // chooseSwapExtent, captured before the clamp -- converges after the first rebuild instead.
+    auto capabilities = makeCapabilities({UINT32_MAX, UINT32_MAX}, {1, 1}, {2048, 2048});
+    VkExtent2D windowPixelSize{4096, 3000};
+
+    // First frame: nothing has been requested yet, so a rebuild is due.
+    VkExtent2D swapchainRequestedSize{0, 0};
+    check(needsSwapchainRebuild(windowPixelSize, swapchainRequestedSize),
+        "an unset requested size differing from the window needs a rebuild");
+
+    // createSwapChain's sequence: capture the pre-clamp requested size, then clamp for the actual
+    // swapchain extent (which the caller must NOT compare against -- see windowWidth/windowHeight's
+    // doc comment).
+    swapchainRequestedSize = windowPixelSize;
+    VkExtent2D actualSwapchainExtent = chooseSwapExtent(windowPixelSize, capabilities);
+    check(equal(actualSwapchainExtent, {2048, 2048}),
+        "the window pixel size above maxImageExtent clamps the actual swapchain extent");
+
+    // Second (and every subsequent) frame, with the window unchanged: no rebuild, because the
+    // comparison is against the requested size rather than the ever-reclamped actual extent.
+    check(!needsSwapchainRebuild(windowPixelSize, swapchainRequestedSize),
+        "pixel size larger than maxImageExtent -> no rebuild after the first");
+}
+
 } // namespace
 
 int main() {
@@ -81,6 +120,9 @@ int main() {
     testRequestedSizeClampedToMinimum();
     testRequestedSizeClampedToMaximum();
     testZeroRequestedSizeClampsToMinimum();
+    testMatchingPixelSizeNeedsNoRebuild();
+    testChangedPixelSizeNeedsRebuild();
+    testPixelSizeAboveMaxImageExtentNeedsNoRebuildAfterFirst();
 
     if (failures) {
         std::cout << failures << " swapchain-extent assertion(s) failed\n";
