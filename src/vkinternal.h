@@ -16,6 +16,12 @@ VkSampler createShadowSampler(VkDevice device);
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags imageAspects, size_t mipLevelCount);
 void recordMipmapGeneration(VkCommandBuffer commandBuffer, VkImage image, int width, int height, size_t mipLevelCount);
 void recordCopyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
+// The extent a new swapchain should be created with, given the window's current pixel size and
+// the surface's reported capabilities. On Wayland, currentExtent.width == UINT32_MAX means the
+// compositor defers to the requested size (clamped to the surface's min/max image extent); other
+// platforms dictate currentExtent exactly and requestedSize is ignored. Pure and free of SDL/Vulkan
+// device state so it can be unit-tested against synthetic capabilities.
+VkExtent2D chooseSwapExtent(VkExtent2D requestedSize, const VkSurfaceCapabilitiesKHR & capabilities);
 void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, VkDevice device, VkSwapchainKHR& outSwapChain);
 void getSwapChainImageHandles(VkDevice device, VkSwapchainKHR chain, std::vector<VkImage>& outImageHandles);
 void makeChainImageViews(VkDevice device, VkFormat colorFormat, std::vector<VkImage> & images, std::vector<VkImageView> & imageViews);

@@ -88,6 +88,20 @@ layout(push_constant) uniform PushConstants {
 };
 ```
 
+## Resizable windows
+
+Create the window with `SDL_WINDOW_RESIZABLE`. `Frame` compares the window's current pixel size
+(`SDL_GetWindowSizeInPixels`) against the swapchain's extent every frame and recreates the
+swapchain when they differ — this is what makes resizing work on Wayland, where a resize does not
+reliably surface through `VK_ERROR_OUT_OF_DATE_KHR`/`VK_SUBOPTIMAL_KHR` the way it does elsewhere.
+Register `context.onSwapchainResize(callback)` to rebuild extent-dependent resources (depth
+buffers, offscreen targets); the callback receives the new `VkExtent2D` and a `Commands` to record
+into.
+
+A minimized window has zero pixel size, which is not a valid swapchain extent. Check
+`context.isMinimized()` before constructing a `Frame` and skip rendering while it is true —
+`Frame`'s constructor throws if called while minimized.
+
 ## API Reference
 
 | Type | Purpose |

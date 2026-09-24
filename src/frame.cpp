@@ -24,9 +24,35 @@ Frame::Frame() :
     // Clean up oldest generation
     context.destroyGenerations[inFlightIndex].destroy();
 
-    // Acquire next image
-    if (VK_SUCCESS != vkAcquireNextImageKHR(context.device, context.swapchain, UINT64_MAX,
-            imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex)) {
+    if (context.isMinimized()) {
+        // A zero-size window has no valid swapchain extent; the caller must check isMinimized()
+        // before constructing a Frame rather than have this fail silently every frame.
+        throw std::runtime_error("cannot construct Frame while the window is minimized "
+                                  "(VulkanContext::isMinimized()); skip rendering until it is false");
+    }
+
+    // Wayland (and other platforms) do not reliably report a resize through
+    // VK_ERROR_OUT_OF_DATE_KHR/VK_SUBOPTIMAL_KHR at all, so the window's pixel size is compared
+    // against the swapchain's current extent every frame rather than relying on those results.
+    int pixelWidth, pixelHeight;
+    SDL_GetWindowSizeInPixels(context.window, &pixelWidth, &pixelHeight);
+    if ((size_t)pixelWidth != context.windowWidth || (size_t)pixelHeight != context.windowHeight) {
+        context.recreateSwapchain();
+    }
+
+    // Acquire next image, recreating and retrying once if the swapchain was already out of date
+    // (e.g. a resize the check above missed by one frame, or a transform/present-engine change
+    // rather than a size change).
+    VkResult acquireResult = vkAcquireNextImageKHR(context.device, context.swapchain, UINT64_MAX,
+        imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+    if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+        context.recreateSwapchain();
+        acquireResult = vkAcquireNextImageKHR(context.device, context.swapchain, UINT64_MAX,
+            imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+    }
+    // VK_SUBOPTIMAL_KHR is a successful acquire (the image is still presentable this frame); it is
+    // handled after present, alongside the same result there, so it is not a recreate trigger here.
+    if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
         throw std::runtime_error("failed to acquire next swapchain image");
     }
     renderFinishedSemaphore = context.renderFinishedSemaphores[imageIndex];
@@ -112,29 +138,7 @@ void Frame::submit(Commands & cmd) {
     VkResult result = vkQueuePresentKHR(context.presentationQueue, &presentInfo);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
-        vkDeviceWaitIdle(context.device);
-
-        int w, h;
-        SDL_GetWindowSize(context.window, &w, &h);
-        context.windowWidth = w;
-        context.windowHeight = h;
-
-        for (VkImageView view : context.swapchainImageViews) {
-            vkDestroyImageView(context.device, view, nullptr);
-        }
-        createSwapChain(context, context.presentationSurface, context.physicalDevice, context.device, context.swapchain);
-        getSwapChainImageHandles(context.device, context.swapchain, context.swapchainImages);
-        makeChainImageViews(context.device, context.colorFormat, context.swapchainImages, context.swapchainImageViews);
-
-        // Recreated swapchain images start in Layout::Undefined; the next frame's begin transitions
-        // each from Undefined (a valid first use). Pre-transitioning unacquired presentable images
-        // is unnecessary and a validation error, so it is omitted here.
-        Commands rebuildCmd = Commands::oneShot();
-        if (context.resizeCallback) {
-            VkExtent2D extent = {(uint32_t)w, (uint32_t)h};
-            context.resizeCallback(rebuildCmd, extent);
-        }
-        rebuildCmd.submitAndWait();
+        context.recreateSwapchain();
     } else if (result != VK_SUCCESS) {
         throw std::runtime_error("failed to present queue");
     }

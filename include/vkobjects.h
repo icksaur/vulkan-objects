@@ -245,6 +245,14 @@ class VulkanContext {
     std::function<void(Commands &, VkExtent2D)> resizeCallback;
     std::vector<VkCommandBuffer> frameCommandBuffers;
 
+    // Rebuilds the swapchain (and dependent images, via resizeCallback) at the window's current
+    // pixel size. A no-op while isMinimized() -- there is no valid extent to create a swapchain
+    // with, so the stale swapchain is left in place until the window is restored. Called both when
+    // present/acquire report the swapchain is out of date and when Frame notices the window's
+    // pixel size no longer matches the swapchain's (Wayland does not reliably signal a resize
+    // through those results at all).
+    void recreateSwapchain();
+
     size_t frameInFlightIndex;
 
     std::vector<VkSemaphore> imageAvailableSemaphores;
@@ -278,6 +286,12 @@ public:
     void onSwapchainResize(std::function<void(Commands &, VkExtent2D)> callback);
     void waitIdle();
     void flushDestroys();
+
+    // The window's pixel size is currently zero (minimized). A zero-size swapchain is invalid to
+    // create, so callers must not construct a Frame while this is true -- Frame's constructor
+    // throws rather than silently doing nothing, since a caller that never checks this would
+    // otherwise busy-loop failing to render with no diagnostic.
+    bool isMinimized() const;
 
     // Register a callback to run at the very start of ~VulkanContext, before the device,
     // allocator, and pipelines are torn down. Use for releasing long-lived caches that own

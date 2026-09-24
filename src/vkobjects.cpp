@@ -628,8 +628,8 @@ T clamp(T value, T min, T max) {
     return (value < min) ? min : (value > max) ? max : value;
 }
 
-VkExtent2D getSwapImageSize(VulkanContext & context, const VkSurfaceCapabilitiesKHR& capabilities) {
-    VkExtent2D size = { (uint32_t)context.windowWidth, (uint32_t)context.windowHeight };
+VkExtent2D chooseSwapExtent(VkExtent2D requestedSize, const VkSurfaceCapabilitiesKHR& capabilities) {
+    VkExtent2D size = requestedSize;
     if (capabilities.currentExtent.width == UINT32_MAX) {
         size.width  = clamp(size.width,  capabilities.minImageExtent.width,  capabilities.maxImageExtent.width);
         size.height = clamp(size.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
@@ -700,7 +700,13 @@ void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDe
     }
 
     uint32_t swapImageCount = getNumberOfSwapImages(surfaceCapabilities);
-    VkExtent2D swap_image_extent = getSwapImageSize(context, surfaceCapabilities);
+    VkExtent2D swap_image_extent = chooseSwapExtent(
+        { (uint32_t)context.windowWidth, (uint32_t)context.windowHeight }, surfaceCapabilities);
+    // The chosen extent (post-clamp) is the single source of truth for "the swapchain's current
+    // size" -- callers elsewhere (viewport/scissor, offscreen targets sized from windowWidth/Height)
+    // must see the extent the swapchain was actually created with, not merely what was requested.
+    context.windowWidth = swap_image_extent.width;
+    context.windowHeight = swap_image_extent.height;
 
     VkImageUsageFlags usageFlags;
     if (!getImageUsage(surfaceCapabilities, usageFlags)) {
@@ -734,7 +740,13 @@ void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDe
     swapInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     swapInfo.presentMode = presentation_mode;
     swapInfo.clipped = true;
-    swapInfo.oldSwapchain = NULL;
+    // oldSwapchain tells the WSI this call REPLACES the surface's existing swapchain rather than
+    // creating a second, independent one for the same surface. Without it, some Wayland WSI/
+    // compositor combinations (surface-bound presentation-extension protocol objects, e.g. tearing
+    // control) see two live swapchains claim the same wl_surface at once and reject the create --
+    // exactly the case exercised by a resize, since the old swapchain is intentionally still alive
+    // when the new one is created (destroyed only after, below).
+    swapInfo.oldSwapchain = oldSwapChain;
 
     if (VK_SUCCESS != vkCreateSwapchainKHR(device, &swapInfo, nullptr, &outSwapChain)) {
         throw std::runtime_error("unable to create swap chain");
@@ -1110,7 +1122,7 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
     }
 
     int windowWidth, windowHeight;
-    SDL_GetWindowSize(window, &windowWidth, &windowHeight);
+    SDL_GetWindowSizeInPixels(window, &windowWidth, &windowHeight);
     this->windowWidth = windowWidth;
     this->windowHeight = windowHeight;
 
@@ -1326,6 +1338,42 @@ void VulkanContext::onPreDestroy(std::function<void()> callback) {
 
 void VulkanContext::onSwapchainResize(std::function<void(Commands &, VkExtent2D)> callback) {
     resizeCallback = callback;
+}
+
+bool VulkanContext::isMinimized() const {
+    int w, h;
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    return w == 0 || h == 0;
+}
+
+void VulkanContext::recreateSwapchain() {
+    int w, h;
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    if (w == 0 || h == 0) {
+        return; // isMinimized(); nothing valid to recreate until the window is restored
+    }
+
+    vkDeviceWaitIdle(device);
+
+    windowWidth = (size_t)w;
+    windowHeight = (size_t)h;
+
+    for (VkImageView view : swapchainImageViews) {
+        vkDestroyImageView(device, view, nullptr);
+    }
+    createSwapChain(*this, presentationSurface, physicalDevice, device, swapchain);
+    getSwapChainImageHandles(device, swapchain, swapchainImages);
+    makeChainImageViews(device, colorFormat, swapchainImages, swapchainImageViews);
+
+    // Recreated swapchain images start in Layout::Undefined; the next frame's begin transitions
+    // each from Undefined (a valid first use). Pre-transitioning unacquired presentable images
+    // is unnecessary and a validation error, so it is omitted here.
+    Commands rebuildCmd = Commands::oneShot();
+    if (resizeCallback) {
+        VkExtent2D extent = { (uint32_t)windowWidth, (uint32_t)windowHeight };
+        resizeCallback(rebuildCmd, extent);
+    }
+    rebuildCmd.submitAndWait();
 }
 
 void VulkanContext::waitIdle() {

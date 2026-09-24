@@ -202,6 +202,12 @@ add_dependencies(vkobjects-vertex-pipeline-tests test-shaders)
 add_test(NAME vkobjects-vertex-pipeline-tests COMMAND vkobjects-vertex-pipeline-tests
          WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+add_executable(vkobjects-swapchain-extent-tests tests/swapchain_extent_tests.cpp)
+target_include_directories(vkobjects-swapchain-extent-tests PRIVATE src)
+target_link_libraries(vkobjects-swapchain-extent-tests PRIVATE vkobjects)
+add_test(NAME vkobjects-swapchain-extent-tests COMMAND vkobjects-swapchain-extent-tests
+         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
 # ---------------------------------------------------------------------------
 # Geometry path benchmark — measurement only, deliberately not an add_test
 # ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ struct SDLWindow {
         if (false == SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
             throw std::runtime_error("Failed to initialize SDL");
         }
-        window = SDL_CreateWindow(title, w, h, SDL_WINDOW_VULKAN);
+        window = SDL_CreateWindow(title, w, h, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
         if (window == nullptr) {
             throw std::runtime_error("Failed to create SDL window");
         }
@@ -207,9 +207,17 @@ int main(int argc, char *argv[]) {
     while (!done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_EVENT_QUIT) {
+            if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
                 done = true;
             }
+        }
+
+        // A minimized window has a zero-pixel-size framebuffer -- there is no valid swapchain
+        // extent to acquire or present into, so skip the frame entirely rather than let Frame's
+        // constructor throw on every iteration.
+        if (context.isMinimized()) {
+            SDL_Delay(10);
+            continue;
         }
 
         Frame frame;
