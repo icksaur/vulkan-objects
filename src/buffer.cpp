@@ -98,14 +98,22 @@ void Buffer::upload(void * bytes, size_t size) {
     void* mapped;
     vmaMapMemory(g_allocator, allocation, &mapped);
     memcpy(mapped, bytes, size);
+    if (vmaFlushAllocation(g_allocator, allocation, 0, size) != VK_SUCCESS) {
+        vmaUnmapMemory(g_allocator, allocation);
+        throw std::runtime_error("failed to flush buffer upload");
+    }
     vmaUnmapMemory(g_allocator, allocation);
     if (g_bufferWriteHook) g_bufferWriteHook(rid_);
 }
 void Buffer::upload(void * bytes, size_t size, VkDeviceSize offset) {
-    if (size > this->size) throw std::runtime_error("buffer size mismatch");
+    if (offset > this->size || size > this->size - offset) throw std::runtime_error("buffer size mismatch");
     void* mapped;
     vmaMapMemory(g_allocator, allocation, &mapped);
     memcpy(static_cast<char*>(mapped) + offset, bytes, size);
+    if (vmaFlushAllocation(g_allocator, allocation, offset, size) != VK_SUCCESS) {
+        vmaUnmapMemory(g_allocator, allocation);
+        throw std::runtime_error("failed to flush buffer upload");
+    }
     vmaUnmapMemory(g_allocator, allocation);
     if (g_bufferWriteHook) g_bufferWriteHook(rid_);
 }
@@ -113,6 +121,10 @@ void Buffer::download(void * bytes, size_t size) {
     if (size > this->size) throw std::runtime_error("buffer size mismatch");
     void* mapped;
     vmaMapMemory(g_allocator, allocation, &mapped);
+    if (vmaInvalidateAllocation(g_allocator, allocation, 0, size) != VK_SUCCESS) {
+        vmaUnmapMemory(g_allocator, allocation);
+        throw std::runtime_error("failed to invalidate buffer download");
+    }
     memcpy(bytes, mapped, size);
     vmaUnmapMemory(g_allocator, allocation);
 }
