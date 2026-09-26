@@ -254,14 +254,19 @@ void testRingDistinctAddresses() {
     TestContext ctx;
     auto indices = makeTriangleIndices();
     std::vector<std::unique_ptr<Buffer>> vertices;
-    vertices.push_back(makeTriangleVertices(0.0f));
-    vertices.push_back(makeTriangleVertices(0.25f));
+    const size_t slotCount = ctx.context->frameInFlightCount();
+    for (size_t slot = 0; slot < slotCount; ++slot) {
+        vertices.push_back(makeTriangleVertices(static_cast<float>(slot) * 0.25f));
+    }
     AccelStructureRing<Blas> ring;
-    ring.init(2, [&](uint32_t slot) {
+    ring.init([&](uint32_t slot) {
         return makeTriangleBlas(*vertices[slot], *indices);
     });
-    check(ring.size() == 2, "ring reports the requested slot count");
-    check(vertices[0]->deviceAddress() != vertices[1]->deviceAddress(), "ring slots have distinct device addresses");
+    check(ring.size() == slotCount, "ring has one entry per frame-in-flight slot");
+    for (size_t slot = 1; slot < slotCount; ++slot) {
+        check(vertices[slot - 1]->deviceAddress() != vertices[slot]->deviceAddress(),
+              "ring slots have distinct device addresses");
+    }
     check(&ring.current() != nullptr, "ring exposes a current slot");
 }
 

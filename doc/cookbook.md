@@ -346,18 +346,21 @@ Register a callback that recreates resolution-dependent images.
 Fixed-resolution resources (e.g. shadow maps) can stay as-is.
 
 ```cpp
-context.onSwapchainResize([&](Commands & cmd, VkExtent2D extent) {
+context.onSwapchainResize([&](Commands & cmd, SwapchainInfo info) {
     depthImages.clear();
     offscreenColors.clear();
-    for (size_t i = 0; i < context.swapchainImageCount; ++i) {
+    for (size_t i = 0; i < context.frameInFlightCount(); ++i) {
         depthImages.emplace_back(ImageBuilder().depth(), cmd);
-        offscreenColors.emplace_back(ImageBuilder().colorTarget(extent.width, extent.height), cmd);
+        offscreenColors.emplace_back(
+            ImageBuilder().colorTarget(info.extent.width, info.extent.height), cmd);
     }
 });
 ```
 
-The callback receives a `Commands` reference for any transitions the new
-images need.  RAII cleanup of the old images happens via `clear()`.
+The callback receives the current `SwapchainInfo` and a `Commands` reference for transitions the
+new images need. RAII cleanup of the old images happens via `clear()`. These targets are indexed by
+`Frame::inFlight()`, so their ring retains `frameInFlightCount()` entries even if `info.imageCount`
+changes.
 
 ---
 

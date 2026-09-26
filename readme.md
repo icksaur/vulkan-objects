@@ -95,8 +95,13 @@ Create the window with `SDL_WINDOW_RESIZABLE`. `Frame` compares the window's cur
 swapchain when they differ — this is what makes resizing work on Wayland, where a resize does not
 reliably surface through `VK_ERROR_OUT_OF_DATE_KHR`/`VK_SUBOPTIMAL_KHR` the way it does elsewhere.
 Register `context.onSwapchainResize(callback)` to rebuild extent-dependent resources (depth
-buffers, offscreen targets); the callback receives the new `VkExtent2D` and a `Commands` to record
-into.
+buffers, offscreen targets); the callback receives `SwapchainInfo` containing the new extent and
+current image count, plus a `Commands` to record into.
+
+Size mutable resource rings with `context.frameInFlightCount()` and index them with
+`Frame::inFlight()`. That coordinate remains stable when swapchain recreation changes its image
+count. Reserve `context.swapchainImageCount()` and `Frame::swapchainImageIndex()` for resources
+that intentionally follow swapchain image ownership.
 
 A minimized window has zero pixel size, which is not a valid swapchain extent. Check
 `context.isMinimized()` before constructing a `Frame` and skip rendering while it is true —

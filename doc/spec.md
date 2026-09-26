@@ -35,18 +35,18 @@ int main() {
     auto setupCmd = Commands::oneShot();
     Image texture = createImageFromTGAFile(setupCmd, "texture.tga");
 
-    // Per-swapchain-image render targets (one per frame in flight)
+    // Per-frame mutable render targets
     std::vector<Image> depthImages, shadowMaps;
-    for (size_t i = 0; i < context.swapchainImageCount; ++i) {
+    for (size_t i = 0; i < context.frameInFlightCount(); ++i) {
         depthImages.emplace_back(ImageBuilder().depth(), setupCmd);
         shadowMaps.emplace_back(ImageBuilder().depthSampled(1024, 1024), setupCmd);
     }
     setupCmd.submitAndWait();
 
-    context.onSwapchainResize([&](Commands & cmd, VkExtent2D extent) {
-        (void)extent;
+    context.onSwapchainResize([&](Commands & cmd, SwapchainInfo info) {
+        (void)info;
         depthImages.clear();
-        for (size_t i = 0; i < context.swapchainImageCount; ++i)
+        for (size_t i = 0; i < context.frameInFlightCount(); ++i)
             depthImages.emplace_back(ImageBuilder().depth(), cmd);
         // shadowMaps are fixed resolution — no rebuild needed
     });
@@ -67,7 +67,7 @@ int main() {
 
     while (!done) {
         Frame frame;
-        uint32_t idx = frame.swapchainImageIndex();
+        size_t idx = frame.inFlight();
 
         auto cmd = frame.beginCommands();
 
@@ -106,10 +106,10 @@ int main() {
 
 ### per-frame vs static render targets
 
-With N frames in flight (equals `swapchainImageCount`, typically 3), frames N and N-1 can execute on the GPU simultaneously. Any image written during the render loop needs **one copy per swapchain image count** to avoid cross-frame hazards.
+With N frame slots, frames N and N-1 can execute on the GPU simultaneously. Any image written during the render loop needs **one copy per `frameInFlightCount()`** to avoid cross-frame hazards. This stable coordinate is independent of the current swapchain image count.
 
-**Per-frame targets** (one per `swapchainImageCount`):
-- Main-pass depth buffers — different frames use different swapchain images
+**Per-frame targets** (one per `frameInFlightCount()`):
+- Main-pass depth buffers — different in-flight frames use different slots
 - Shadow maps re-rendered each frame — frame N's write would stomp frame N-1's read
 - G-buffer targets (future) — written and consumed within each frame
 
@@ -289,7 +289,8 @@ The frame-in-flight system manages all GPU/CPU synchronization:
 6. `frame.submit(cmd)` transitions swapchain image ColorAttachment→PresentSrc, ends recording, submits via `vkQueueSubmit2`, presents
 7. `~Frame()` advances `frameInFlightIndex`
 
-The number of frames in flight equals `swapchainImageCount` (typically 3).
+The number of frame slots is fixed when `VulkanContext` is constructed and exposed by
+`frameInFlightCount()`. Swapchain recreation cannot change it.
 
 ### deferred destruction
 
@@ -341,7 +342,7 @@ Shadow map pass → barrier → main pass, all in a single command buffer per fr
 2. `imageBarrier(...)` — transition shadow map to shader-readable
 3. `beginRendering(depthImage.imageView)` — main pass, fragment shader samples shadow map via RID
 
-Render targets that are written each frame need one per `swapchainImageCount` (see render target model above).
+Render targets that are written each frame need one per `frameInFlightCount()` (see render target model above).
 
 ### render to offscreen image ✓
 

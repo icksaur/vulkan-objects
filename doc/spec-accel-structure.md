@@ -178,7 +178,7 @@ no fence wait, no WAR barrier — the `Commands&` arg is API-shape only). Two sa
   ×1 table is safe and shared across frames/TLASes.
 - **Per-frame payload** (e.g. a posed-vertex RID that is itself ringed, so the entry differs per
   in-flight slot): **ring the table** — `AccelStructureRing<InstanceTable<P>>` or
-  `std::array<InstanceTable<P>, swapchainImageCount>` indexed by `Frame::inFlight()`. Re-uploading one
+  a container sized by `VulkanContext::frameInFlightCount()` and indexed by `Frame::inFlight()`. Re-uploading one
   shared table every frame while a prior in-flight frame still reads it is a **write-after-read hazard**.
 
 Deliberately **not** coupled to `Frame`: `InstanceTable` stays a passive typed buffer the app rings
@@ -209,7 +209,7 @@ TLAS binds exactly like a buffer; no special-case descriptor set in RT passes.
 ### 6. N-buffering dynamic AS — `AccelStructureRing` (optional sibling)
 
 A dynamic BLAS/TLAS is GPU-rebuilt each frame while a prior in-flight frame may still read it ⇒ needs
-**N = swapchainImageCount** copies, indexed by `Frame::inFlight()`. Hull's `FrameRing<T>` is
+**N = `frameInFlightCount()`** copies, indexed by `Frame::inFlight()`. Hull's `FrameRing<T>` is
 host-written POD only (`static_assert(trivially_copyable<T>)`), so it **cannot** hold a GPU-owned RAII
 `Blas`. Provide a sibling:
 
@@ -217,7 +217,7 @@ host-written POD only (`static_assert(trivially_copyable<T>)`), so it **cannot**
 template<class T>                              // T = Blas or Tlas
 class AccelStructureRing {
 public:
-    void init(uint32_t n, const std::function<T(uint32_t slot)>& makeSlot);  // MF6: factory gets slot
+    void init(const std::function<T(uint32_t slot)>& makeSlot);  // one slot per frameInFlightCount()
     T& current();                              // by Frame::inFlight(); slot 0 when no Frame is live
     uint32_t size() const;
 };

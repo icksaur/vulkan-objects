@@ -32,6 +32,7 @@ set(LIB_SOURCES
     src/commands.cpp
     src/accel.cpp
     src/frame.cpp
+    src/frame_slots.cpp
     src/pipeline.cpp
     src/pipelinecache.cpp
     src/timestamp.cpp
@@ -206,6 +207,12 @@ add_executable(vkobjects-swapchain-extent-tests tests/swapchain_extent_tests.cpp
 target_include_directories(vkobjects-swapchain-extent-tests PRIVATE src)
 target_link_libraries(vkobjects-swapchain-extent-tests PRIVATE vkobjects)
 add_test(NAME vkobjects-swapchain-extent-tests COMMAND vkobjects-swapchain-extent-tests
+         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_executable(vkobjects-frame-slot-tests tests/frame_slot_tests.cpp)
+target_include_directories(vkobjects-frame-slot-tests PRIVATE src)
+target_link_libraries(vkobjects-frame-slot-tests PRIVATE vkobjects)
+add_test(NAME vkobjects-frame-slot-tests COMMAND vkobjects-frame-slot-tests
          WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 # ---------------------------------------------------------------------------

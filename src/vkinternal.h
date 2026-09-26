@@ -28,6 +28,11 @@ VkExtent2D chooseSwapExtent(VkExtent2D requestedSize, const VkSurfaceCapabilitie
 // different extent every time chooseSwapExtent runs, so comparing against the clamped extent would
 // never converge and rebuild the swapchain every single frame.
 bool needsSwapchainRebuild(VkExtent2D windowPixelSize, VkExtent2D swapchainRequestedSize);
+size_t nextFrameInFlightSlot(size_t currentSlot, size_t frameSlotCount);
+bool swapchainImageSlotsConsistent(
+    size_t imageCount,
+    size_t imageViewCount,
+    size_t renderFinishedSemaphoreCount);
 void createSwapChain(VulkanContext & context, VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, VkDevice device, VkSwapchainKHR& outSwapChain);
 void getSwapChainImageHandles(VkDevice device, VkSwapchainKHR chain, std::vector<VkImage>& outImageHandles);
 void makeChainImageViews(VkDevice device, VkFormat colorFormat, std::vector<VkImage> & images, std::vector<VkImageView> & imageViews);

@@ -6,7 +6,7 @@
 #include "vk_mem_alloc.h"
 #pragma GCC diagnostic pop
 
-#include "vkobjects.h"
+#include "vkinternal.h"
 #include "pipelinecache.h"
 #include <cstddef>
 #include <vulkan/vulkan_core.h>
@@ -1102,7 +1102,6 @@ VkFence createFence() {
     if (VK_SUCCESS != vkCreateFence(g_context().device, &createInfo, nullptr, &fence)) {
         throw std::runtime_error("failed to create fence");
     }
-    g_context().fences.push_back(fence);
     return fence;
 }
 
@@ -1113,7 +1112,6 @@ VkSemaphore createSemaphore() {
     if (vkCreateSemaphore(g_context().device, &createInfo, NULL, &semaphore) != VK_SUCCESS) {
         throw std::runtime_error("failed to create semaphore");
     }
-    g_context().semaphores.push_back(semaphore);
     return semaphore;
 }
 
@@ -1260,7 +1258,6 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
     createSwapChain(*this, this->presentationSurface, this->physicalDevice, this->device, this->swapchain);
     getSwapChainImageHandles(this->device, this->swapchain, this->swapchainImages);
 
-    this->swapchainImageCount = this->swapchainImages.size();
     makeChainImageViews(this->device, this->colorFormat, this->swapchainImages, this->swapchainImageViews);
 
     this->commandPool = createCommandPool(this->device, this->graphicsQueueIndex);
@@ -1276,11 +1273,12 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
     }
 
     // Pre-allocate frame command buffers
-    for (size_t i = 0; i < swapchainImageCount; i++) {
+    const size_t frameSlotCount = swapchainImages.size();
+    for (size_t i = 0; i < frameSlotCount; i++) {
         frameCommandBuffers.push_back(createCommandBuffer(this->device, this->commandPool));
     }
 
-    this->destroyGenerations.resize(this->swapchainImageCount);
+    this->destroyGenerations.resize(frameSlotCount);
 
     vkGetDeviceQueue(this->device, this->graphicsQueueIndex, 0, &this->graphicsQueue);
 
@@ -1291,10 +1289,18 @@ VulkanContext::VulkanContext(SDL_Window * window, VulkanContextOptions options)
     // Pre-transitioning presentable images here is both unnecessary and a validation error, since
     // the images have not been acquired via vkAcquireNextImageKHR.
 
-    for (size_t i = 0; i < swapchainImageCount; i++) {
+    for (size_t i = 0; i < frameSlotCount; i++) {
         imageAvailableSemaphores.push_back(createSemaphore());
-        renderFinishedSemaphores.push_back(createSemaphore());
         submittedBuffersFinishedFences.push_back(createFence());
+    }
+    for (size_t i = 0; i < swapchainImages.size(); i++) {
+        renderFinishedSemaphores.push_back(createSemaphore());
+    }
+    if (!swapchainImageSlotsConsistent(
+            swapchainImages.size(),
+            swapchainImageViews.size(),
+            renderFinishedSemaphores.size())) {
+        throw std::logic_error("swapchain image-slot resources are inconsistent");
     }
 
     vkCmdDrawMeshTasks = (PFN_vkCmdDrawMeshTasksEXT)vkGetDeviceProcAddr(g_context().device, "vkCmdDrawMeshTasksEXT");
@@ -1314,8 +1320,15 @@ VulkanContext::~VulkanContext() {
 
     destroyGenerations.clear();
 
-    for (auto semaphore : semaphores) vkDestroySemaphore(device, semaphore, nullptr);
-    for (auto fence : fences) vkDestroyFence(device, fence, nullptr);
+    for (auto semaphore : imageAvailableSemaphores) {
+        vkDestroySemaphore(device, semaphore, nullptr);
+    }
+    for (auto semaphore : renderFinishedSemaphores) {
+        vkDestroySemaphore(device, semaphore, nullptr);
+    }
+    for (auto fence : submittedBuffersFinishedFences) {
+        vkDestroyFence(device, fence, nullptr);
+    }
     for (VkPipeline pipeline : pipelines) vkDestroyPipeline(device, pipeline, nullptr);
 
     if (pipelineCache != VK_NULL_HANDLE) {
@@ -1345,7 +1358,7 @@ void VulkanContext::onPreDestroy(std::function<void()> callback) {
     preDestroyCallbacks.push_back(std::move(callback));
 }
 
-void VulkanContext::onSwapchainResize(std::function<void(Commands &, VkExtent2D)> callback) {
+void VulkanContext::onSwapchainResize(std::function<void(Commands &, SwapchainInfo)> callback) {
     resizeCallback = callback;
 }
 
@@ -1374,13 +1387,33 @@ void VulkanContext::recreateSwapchain() {
     getSwapChainImageHandles(device, swapchain, swapchainImages);
     makeChainImageViews(device, colorFormat, swapchainImages, swapchainImageViews);
 
+    // recreateSwapchain waits for the device first. Vulkan treats each queued present as signaling
+    // an internal fence for WaitIdle after its semaphore wait and object-payload references finish.
+    for (VkSemaphore semaphore : renderFinishedSemaphores) {
+        vkDestroySemaphore(device, semaphore, nullptr);
+    }
+    renderFinishedSemaphores.clear();
+    renderFinishedSemaphores.reserve(swapchainImages.size());
+    for (size_t i = 0; i < swapchainImages.size(); ++i) {
+        renderFinishedSemaphores.push_back(createSemaphore());
+    }
+    if (!swapchainImageSlotsConsistent(
+            swapchainImages.size(),
+            swapchainImageViews.size(),
+            renderFinishedSemaphores.size())) {
+        throw std::logic_error("swapchain image-slot resources are inconsistent");
+    }
+
     // Recreated swapchain images start in Layout::Undefined; the next frame's begin transitions
     // each from Undefined (a valid first use). Pre-transitioning unacquired presentable images
     // is unnecessary and a validation error, so it is omitted here.
     Commands rebuildCmd = Commands::oneShot();
     if (resizeCallback) {
-        VkExtent2D extent = { (uint32_t)windowWidth, (uint32_t)windowHeight };
-        resizeCallback(rebuildCmd, extent);
+        SwapchainInfo info = {
+            .extent = { (uint32_t)windowWidth, (uint32_t)windowHeight },
+            .imageCount = swapchainImages.size(),
+        };
+        resizeCallback(rebuildCmd, info);
     }
     rebuildCmd.submitAndWait();
 }

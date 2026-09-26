@@ -205,6 +205,11 @@ struct Commands;
 struct ShaderModule;
 class Pipeline;
 
+struct SwapchainInfo {
+    VkExtent2D extent;
+    size_t imageCount;
+};
+
 class VulkanContext {
     friend struct Frame;
     friend struct Commands;
@@ -242,7 +247,9 @@ class VulkanContext {
     uint32_t minAccelerationStructureScratchOffsetAlignment = 1;
 
     BindlessTable bindlessTable;
-    std::function<void(Commands &, VkExtent2D)> resizeCallback;
+    std::function<void(Commands &, SwapchainInfo)> resizeCallback;
+
+    // Frame-slot resources are allocated once and retain their coordinate for the context lifetime.
     std::vector<VkCommandBuffer> frameCommandBuffers;
 
     // The pixel size the current swapchain was requested at (set by createSwapChain, before
@@ -263,25 +270,24 @@ class VulkanContext {
     size_t frameInFlightIndex;
 
     std::vector<VkSemaphore> imageAvailableSemaphores;
-    std::vector<VkSemaphore> renderFinishedSemaphores;
     std::vector<VkFence> submittedBuffersFinishedFences;
+    std::vector<DestroyGeneration> destroyGenerations;
+
+    // Present completion follows acquired swapchain images rather than frame submission fences.
+    // This vector is rebuilt with the swapchain and has one entry per current image.
+    std::vector<VkSemaphore> renderFinishedSemaphores;
 
     std::vector<VkImage> swapchainImages;
     std::vector<VkImageView> swapchainImageViews;
 
-    std::vector<VkSemaphore> semaphores;
-    std::vector<VkFence> fences;
     std::set<VkPipeline> pipelines;
     VkPipelineCache pipelineCache = VK_NULL_HANDLE;
-
-    std::vector<DestroyGeneration> destroyGenerations;
 
     std::vector<std::function<void()>> preDestroyCallbacks;
 
 public:
     size_t windowWidth;
     size_t windowHeight;
-    size_t swapchainImageCount;
     VkQueue graphicsQueue;
 
     VulkanContext(SDL_Window * window, VulkanContextOptions options);
@@ -290,7 +296,14 @@ public:
     VulkanContext(const VulkanContext & other) = delete;
     VulkanContext(VulkanContext && other) = delete;
 
-    void onSwapchainResize(std::function<void(Commands &, VkExtent2D)> callback);
+    // Stable count for rings indexed by Frame::inFlight(). It does not change on swapchain rebuild.
+    size_t frameInFlightCount() const { return frameCommandBuffers.size(); }
+
+    // Current image-slot count. Do not use it for resources indexed by Frame::inFlight().
+    size_t swapchainImageCount() const { return swapchainImages.size(); }
+
+    // Runs after images, views, and present semaphores match the new SwapchainInfo generation.
+    void onSwapchainResize(std::function<void(Commands &, SwapchainInfo)> callback);
     void waitIdle();
     void flushDestroys();
 
@@ -671,8 +684,8 @@ public:
     Commands beginCommands();
     void submit(Commands & cmd);
 
-    // Frame-in-flight slot this frame occupies (0 .. swapchainImageCount-1). The coordinate
-    // any per-frame-mutable resource ring must index by.
+    // Stable frame-in-flight slot in [0, VulkanContext::frameInFlightCount()). The coordinate any
+    // per-frame-mutable resource ring must index by, independent of swapchain image recreation.
     size_t inFlight() const { return inFlightIndex; }
     // The live frame, or nullptr outside a Frame's scope (e.g. setup, oneShot work).
     static Frame * current() { return currentGuard; }
@@ -683,7 +696,8 @@ class AccelStructureRing {
     std::vector<T> slots_;
 
 public:
-    void init(uint32_t n, const std::function<T(uint32_t slot)>& makeSlot) {
+    void init(const std::function<T(uint32_t slot)>& makeSlot) {
+        const size_t n = g_context().frameInFlightCount();
         slots_.clear();
         slots_.reserve(n);
         for (uint32_t i = 0; i < n; ++i) slots_.emplace_back(makeSlot(i));
@@ -693,7 +707,8 @@ public:
         assert(!slots_.empty());
         Frame* frame = Frame::current();
         uint32_t slot = frame ? static_cast<uint32_t>(frame->inFlight()) : 0;
-        return slots_[slot % slots_.size()];
+        assert(slot < slots_.size());
+        return slots_[slot];
     }
 
     T& at(uint32_t i) {

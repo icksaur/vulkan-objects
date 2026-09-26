@@ -61,7 +61,8 @@ Frame::Frame() :
 
 Frame::~Frame() {
     Frame::currentGuard = nullptr;
-    context.frameInFlightIndex = (context.frameInFlightIndex + 1) % context.swapchainImageCount;
+    context.frameInFlightIndex =
+        nextFrameInFlightSlot(context.frameInFlightIndex, context.frameInFlightCount());
 }
 
 uint32_t Frame::swapchainImageIndex() const { return imageIndex; }

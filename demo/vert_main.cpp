@@ -124,11 +124,11 @@ int main(int argc, char *argv[]) {
     auto setupCmd = Commands::oneShot();
     Image textureImage = createImageFromTGAFile(setupCmd, "vulkan.tga");
 
-    // Per-swapchain render targets
+    // Per-frame mutable resources
     std::vector<Image> depthImages;
     std::vector<Image> shadowMaps;
     std::vector<Image> offscreenColors;
-    for (size_t i = 0; i < context.swapchainImageCount; ++i) {
+    for (size_t i = 0; i < context.frameInFlightCount(); ++i) {
         depthImages.emplace_back(ImageBuilder().depth(), setupCmd);
         shadowMaps.emplace_back(ImageBuilder().depthSampled(shadowMapRes, shadowMapRes), setupCmd);
         offscreenColors.emplace_back(ImageBuilder().colorTarget(windowWidth, windowHeight), setupCmd);
@@ -136,12 +136,13 @@ int main(int argc, char *argv[]) {
     setupCmd.submitAndWait();
 
     // Resize callback — recreate depth images and offscreen colors; shadow maps are fixed resolution
-    context.onSwapchainResize([&](Commands & cmd, VkExtent2D extent) {
+    context.onSwapchainResize([&](Commands & cmd, SwapchainInfo info) {
         depthImages.clear();
         offscreenColors.clear();
-        for (size_t i = 0; i < context.swapchainImageCount; ++i) {
+        for (size_t i = 0; i < context.frameInFlightCount(); ++i) {
             depthImages.emplace_back(ImageBuilder().depth(), cmd);
-            offscreenColors.emplace_back(ImageBuilder().colorTarget(extent.width, extent.height), cmd);
+            offscreenColors.emplace_back(
+                ImageBuilder().colorTarget(info.extent.width, info.extent.height), cmd);
         }
     });
 
@@ -152,7 +153,7 @@ int main(int argc, char *argv[]) {
     Buffer vertexBuffer(BufferBuilder(sizeof(CubeVertex) * sceneVertexCount).storage().accelerationStructureInput());
 
     // One BLAS over the whole compute-generated (world-space) vertex buffer, plus a single
-    // identity-instance TLAS, per swapchain image. Rebuilt each frame as the cubes rotate; the
+    // identity-instance TLAS, per frame slot. Rebuilt each frame as the cubes rotate; the
     // fragment shader ray-queries the TLAS for shadows.
     BlasBuilder sceneBlasBuilder;
     sceneBlasBuilder.addGeometry(BlasGeometry(vertexBuffer)
@@ -161,7 +162,7 @@ int main(int argc, char *argv[]) {
         .triangleCount(sceneTriangleCount));
     std::vector<Blas> sceneBlas;
     std::vector<Tlas> sceneTlas;
-    for (size_t i = 0; i < context.swapchainImageCount; ++i) {
+    for (size_t i = 0; i < context.frameInFlightCount(); ++i) {
         sceneBlas.emplace_back(sceneBlasBuilder);
         sceneTlas.emplace_back(1);
     }
@@ -221,7 +222,7 @@ int main(int argc, char *argv[]) {
         }
 
         Frame frame;
-        uint32_t idx = frame.swapchainImageIndex();
+        size_t idx = frame.inFlight();
 
         // Accumulate rotation angle for cubes
         float seconds = (float)timer.elapsed() / 1000.0f;
