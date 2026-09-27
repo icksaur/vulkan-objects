@@ -874,6 +874,7 @@ struct GraphicsPipelineBuilder {
     bool noColorAttachments = false;
     bool enableAlphaBlend;
     bool disableDepthTest;
+    VkCompareOp depthCompareOp;
     VkFormat depthOnlyFormat;
     VkPrimitiveTopology primitiveTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     std::vector<VkFormat> colorAttachmentFormats;
@@ -892,6 +893,7 @@ struct GraphicsPipelineBuilder {
     GraphicsPipelineBuilder & colorFormats(std::vector<VkFormat> formats);
     GraphicsPipelineBuilder & alphaBlend();
     GraphicsPipelineBuilder & noDepth();
+    GraphicsPipelineBuilder & depthCompare(VkCompareOp compareOp);
     GraphicsPipelineBuilder & noColor();
     Pipeline build();
 };

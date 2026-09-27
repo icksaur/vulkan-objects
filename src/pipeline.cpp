@@ -2,7 +2,7 @@
 
 // --- Pipelines ---
 
-GraphicsPipelineBuilder::GraphicsPipelineBuilder() : sampleCountBit(VK_SAMPLE_COUNT_1_BIT), isDepthOnly(false), enableAlphaBlend(false), disableDepthTest(false), depthOnlyFormat(VK_FORMAT_D32_SFLOAT) {}
+GraphicsPipelineBuilder::GraphicsPipelineBuilder() : sampleCountBit(VK_SAMPLE_COUNT_1_BIT), isDepthOnly(false), enableAlphaBlend(false), disableDepthTest(false), depthCompareOp(VK_COMPARE_OP_LESS), depthOnlyFormat(VK_FORMAT_D32_SFLOAT) {}
 GraphicsPipelineBuilder & GraphicsPipelineBuilder::meshShader(ShaderModule & meshShaderModule, const char * entryPoint) {
     if (meshShaderModule.reflection.executionModel != VK_SHADER_STAGE_MESH_BIT_EXT) {
         throw std::runtime_error("pipeline build error: shader '" + meshShaderModule.fileName +
@@ -78,6 +78,11 @@ GraphicsPipelineBuilder & GraphicsPipelineBuilder::alphaBlend() {
 
 GraphicsPipelineBuilder & GraphicsPipelineBuilder::noDepth() {
     disableDepthTest = true;
+    return *this;
+}
+
+GraphicsPipelineBuilder & GraphicsPipelineBuilder::depthCompare(VkCompareOp compareOp) {
+    depthCompareOp = compareOp;
     return *this;
 }
 
@@ -287,7 +292,7 @@ Pipeline GraphicsPipelineBuilder::build() {
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = disableDepthTest ? VK_FALSE : VK_TRUE;
     depthStencil.depthWriteEnable = disableDepthTest ? VK_FALSE : VK_TRUE;
-    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthCompareOp = depthCompareOp;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
 
