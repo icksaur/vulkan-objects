@@ -81,6 +81,11 @@ GraphicsPipelineBuilder & GraphicsPipelineBuilder::noDepth() {
     return *this;
 }
 
+GraphicsPipelineBuilder & GraphicsPipelineBuilder::depthWrite(bool enable) {
+    enableDepthWrite = enable;
+    return *this;
+}
+
 GraphicsPipelineBuilder & GraphicsPipelineBuilder::depthCompare(VkCompareOp compareOp) {
     depthCompareOp = compareOp;
     return *this;
@@ -291,7 +296,10 @@ Pipeline GraphicsPipelineBuilder::build() {
     VkPipelineDepthStencilStateCreateInfo depthStencil = {};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = disableDepthTest ? VK_FALSE : VK_TRUE;
-    depthStencil.depthWriteEnable = disableDepthTest ? VK_FALSE : VK_TRUE;
+    depthStencil.depthWriteEnable =
+        !disableDepthTest && enableDepthWrite
+        ? VK_TRUE
+        : VK_FALSE;
     depthStencil.depthCompareOp = depthCompareOp;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;

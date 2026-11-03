@@ -164,7 +164,12 @@ add_custom_command(
 
 # stage name -> glslc -fshader-stage argument, for test shaders whose extension glslc
 # cannot infer or whose stage must be forced.
-set(TEST_STAGED_SHADERS pull.vert:vert pull.frag:frag attributes.vert:vert)
+set(TEST_STAGED_SHADERS
+    pull.vert:vert
+    pull.frag:frag
+    attributes.vert:vert
+    depth_write.vert:vert
+    depth_write.frag:frag)
 set(TEST_STAGED_SPIRV)
 foreach(ENTRY ${TEST_STAGED_SHADERS})
     string(REPLACE ":" ";" PARTS ${ENTRY})

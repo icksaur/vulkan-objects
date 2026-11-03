@@ -57,6 +57,13 @@ struct Push {
     uint32_t pad0 = 0, pad1 = 0, pad2 = 0;
 };
 
+struct DepthPush {
+    uint32_t vertexBufferRID;
+    float depth;
+    uint32_t color;
+    uint32_t pad = 0;
+};
+
 std::vector<uint32_t> readbackTexels(Image& img, Layout from) {
     const size_t bytes = size_t(kW) * kH * sizeof(uint32_t);
     Buffer staging(BufferBuilder(bytes).transferDestination().hostVisible());
@@ -72,6 +79,69 @@ std::vector<uint32_t> readbackTexels(Image& img, Layout from) {
     std::vector<uint32_t> out(size_t(kW) * kH);
     staging.download(out.data(), bytes);
     return out;
+}
+
+struct DepthTargets {
+    Image color;
+    Image depth;
+
+    explicit DepthTargets(Commands& commands)
+        : color(makeColor(commands))
+        , depth(makeDepth(commands)) {}
+
+private:
+    static Image makeColor(Commands& commands) {
+        auto builder =
+            ImageBuilder().colorTarget(kW, kH, VK_FORMAT_R8G8B8A8_UNORM);
+        return Image(builder, commands);
+    }
+
+    static Image makeDepth(Commands& commands) {
+        auto builder =
+            ImageBuilder().depth().size(kW, kH);
+        return Image(builder, commands);
+    }
+};
+
+void beginDepthPass(
+    Commands& commands,
+    DepthTargets& targets,
+    bool clear) {
+    Commands::ColorAttachment color =
+        clear
+        ? Commands::ColorAttachment::clearFloat(
+              targets.color.imageView, 0.0f, 0.0f, 0.0f, 1.0f)
+        : Commands::ColorAttachment::load(
+              targets.color.imageView);
+    const Commands::DepthAttachment depth =
+        clear
+        ? Commands::DepthAttachment::clear(
+              targets.depth.imageView, 0.4f)
+        : Commands::DepthAttachment::load(
+              targets.depth.imageView);
+    commands.beginRendering(
+        std::span<const Commands::ColorAttachment>(&color, 1),
+        depth,
+        VkExtent2D{kW, kH});
+}
+
+void drawDepthTriangle(
+    Commands& commands,
+    Pipeline& pipeline,
+    uint32_t vertices,
+    float depth,
+    uint32_t color) {
+    commands.bindGraphics(pipeline);
+    commands.pushConstants(
+        DepthPush{vertices, depth, color});
+    commands.draw(3);
+}
+
+uint32_t centerTexel(DepthTargets& targets) {
+    const auto texels =
+        readbackTexels(
+            targets.color, Layout::ColorAttachment);
+    return texels[size_t(kH / 2) * kW + kW / 2];
 }
 
 // A green triangle covering the image center, pulled from a storage buffer, on a
@@ -122,6 +192,113 @@ void testVertexPullingDraw() {
           "a corner outside the triangle is untouched (the draw was really rasterized)");
 }
 
+void testDepthWriteCanBeDisabled() {
+    ShaderModule vertModule(
+        ShaderBuilder().vertex().fromFile(
+            "tests/shaders/depth_write.vert.spv"));
+    ShaderModule fragModule(
+        ShaderBuilder().fragment().fromFile(
+            "tests/shaders/depth_write.frag.spv"));
+    Pipeline noWrite = GraphicsPipelineBuilder()
+        .vertexShader(vertModule)
+        .fragmentShader(fragModule)
+        .colorFormats({VK_FORMAT_R8G8B8A8_UNORM})
+        .depthWrite(false)
+        .build();
+    Pipeline write = GraphicsPipelineBuilder()
+        .vertexShader(vertModule)
+        .fragmentShader(fragModule)
+        .colorFormats({VK_FORMAT_R8G8B8A8_UNORM})
+        .build();
+
+    const float positions[6] = {
+        -0.9f, 0.9f,
+         0.9f, 0.9f,
+         0.0f, -0.9f};
+    Buffer vertices(
+        BufferBuilder(sizeof(positions))
+            .storage()
+            .hostVisible());
+    vertices.upload((void*)positions, sizeof(positions));
+
+    {
+        auto init = Commands::oneShot();
+        DepthTargets targets(init);
+        init.submitAndWait();
+
+        auto commands = Commands::oneShot();
+        beginDepthPass(commands, targets, true);
+        drawDepthTriangle(
+            commands,
+            noWrite,
+            vertices.rid(),
+            0.6f,
+            0x000000ffu);
+        commands.endRendering();
+        commands.submitAndWait();
+
+        check(
+            centerTexel(targets) == 0xff000000u,
+            "depthWrite(false) keeps depth testing enabled");
+    }
+
+    {
+        auto init = Commands::oneShot();
+        DepthTargets targets(init);
+        init.submitAndWait();
+
+        auto commands = Commands::oneShot();
+        beginDepthPass(commands, targets, true);
+        drawDepthTriangle(
+            commands,
+            noWrite,
+            vertices.rid(),
+            0.2f,
+            0x0000ff00u);
+        commands.endRendering();
+        commands.imageBarrier(
+            targets.color,
+            Stage::ColorOutput,
+            Access::ColorAttachmentWrite,
+            Layout::ColorAttachment,
+            Stage::ColorOutput,
+            Access::ColorAttachmentRead |
+                Access::ColorAttachmentWrite,
+            Layout::ColorAttachment);
+        Barrier(commands)
+            .image(targets.depth)
+            .from(
+                Stage::EarlyFragment |
+                    Stage::LateFragment,
+                Access::DepthStencilRead |
+                    Access::DepthStencilWrite,
+                Layout::DepthStencilAttachment)
+            .to(
+                Stage::EarlyFragment |
+                    Stage::LateFragment,
+                Access::DepthStencilRead |
+                    Access::DepthStencilWrite,
+                Layout::DepthStencilAttachment)
+            .aspectMask(
+                VK_IMAGE_ASPECT_DEPTH_BIT |
+                VK_IMAGE_ASPECT_STENCIL_BIT)
+            .record();
+        beginDepthPass(commands, targets, false);
+        drawDepthTriangle(
+            commands,
+            write,
+            vertices.rid(),
+            0.3f,
+            0x00ff0000u);
+        commands.endRendering();
+        commands.submitAndWait();
+
+        check(
+            centerTexel(targets) == 0xffff0000u,
+            "a passing depthWrite(false) draw leaves depth unchanged");
+    }
+}
+
 void testRejectsMeshAndVertexTogether() {
     // Deliberately does NOT require a mesh-capable device: the builder must reject the
     // combination from reflection alone, before any Vulkan call. A second module is loaded
@@ -161,6 +338,7 @@ int main() {
     try {
         TestContext ctx;
         testVertexPullingDraw();
+        testDepthWriteCanBeDisabled();
         testRejectsMeshAndVertexTogether();
         testRejectsVertexAttributeInputs();
     } catch (const std::exception& e) {
